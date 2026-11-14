@@ -24,7 +24,22 @@ const INV_Z_FAR = 1.0 / (FAR_DIST_M + CAM_Z_OFFSET_M);
 
 const WORLD_STEP_M = 2.0;
 const WORLD_STEPS = 96; // Covers 0m .. 190m ahead in 2m increments
-const MAX_SPRITE_POOL = 140;
+const MAX_SPRITE_POOL = 240;
+
+const COMPOUND_PIXEL_COLORS = {
+  SOFT: '#ff2020',
+  MEDIUM: '#fcf400',
+  HARD: '#f8f8f8',
+  INTERMEDIATE: '#00fc58',
+  FULL_WET: '#2898ff',
+};
+
+const CAMERA_MODE_LABELS_1982 = [
+  'CAM: 1982 CHASE',
+  'CAM: HALO T-CAM',
+  'CAM: 1ST-PERSON COCKPIT',
+  'CAM: NOSE WING CAM',
+];
 
 // Iconic 1982 Namco System-1 Rival Palettes
 const RIVAL_PALETTES_1982 = [
@@ -218,10 +233,12 @@ export class Retro1982Renderer {
     // Pre-allocated scanline & world curve buffers (Zero per-frame allocations!)
     this._worldCurveM = new Float32Array(WORLD_STEPS);
     this._worldElevM = new Float32Array(WORLD_STEPS);
-    this._lineDistM = new Float32Array(240);
-    this._lineScale = new Float32Array(240);
-    this._lineCenterX = new Float32Array(240);
-    this._lineRoadHalfPx = new Float32Array(240);
+    this._lineDistM = new Float32Array(512);
+    this._lineScale = new Float32Array(512);
+    this._lineCenterX = new Float32Array(512);
+    this._lineRoadHalfPx = new Float32Array(512);
+    this._lastHostW = 0;
+    this._lastHostH = 0;
 
     // Pre-allocated depth-sort sprite pool
     this._spritePool = new Array(MAX_SPRITE_POOL);
@@ -240,12 +257,23 @@ export class Retro1982Renderer {
       };
     }
 
-    // Continuous heading & explosion trackers
+    // Continuous heading, explosion, camera, crowd & sector-split trackers
     this._unwrappedYaw = 0;
     this._hasPrevYaw = false;
     this._prevRawYaw = 0;
     this._lastElapsedSec = 0;
     this._playerBlastSec = 0;
+    this._lastCamIdx = 0;
+    this._camBannerTimer = 0;
+    this._prevPlayerPos = 0;
+    this._crowdRoarTimer = 0;
+    this._crowdExcitement = 0;
+    this._prevSectorIdx = 0;
+    this._sectorStartSec = 0;
+    this._bestSectorTimes = [null, null, null];
+    this._autoSectorPopup = '';
+    this._autoSectorTimer = 0;
+    this._autoSectorGreen = true;
 
     // Pre-generate all pixel-art sprite sheets & bitmap font atlases ONCE
     this._fontAtlases = this._buildBitmapFontAtlases();
@@ -259,19 +287,38 @@ export class Retro1982Renderer {
     this._brakingSprites = this._buildBrakingBoardSprites();
     this._scenicSprites = this._buildScenicPropSprites();
     this._gantrySprites = this._buildGantrySprites();
+    this._momoWheelSprites = this._buildMomoWheelSprites();
     this._crtCanvas = null;
 
-    const initW = (host && host.clientWidth) || (typeof window !== 'undefined' ? window.innerWidth : 426) || 426;
-    const initH = (host && host.clientHeight) || (typeof window !== 'undefined' ? window.innerHeight : 240) || 240;
-    this.resize(initW, initH);
+    const readHostSize = () => {
+      const vp = typeof window !== 'undefined' ? window.visualViewport : null;
+      const w =
+        (host && host.clientWidth) ||
+        (vp && vp.width) ||
+        (typeof window !== 'undefined' ? window.innerWidth : 426) ||
+        426;
+      const h =
+        (host && host.clientHeight) ||
+        (vp && vp.height) ||
+        (typeof window !== 'undefined' ? window.innerHeight : 240) ||
+        240;
+      return { w, h };
+    };
+    this._readHostSize = readHostSize;
+
+    const initSz = readHostSize();
+    this.resize(initSz.w, initSz.h);
 
     if (typeof window !== 'undefined') {
       this._onWindowResize = () => {
-        const w = (host && host.clientWidth) || window.innerWidth || 426;
-        const h = (host && host.clientHeight) || window.innerHeight || 240;
-        this.resize(w, h);
+        const sz = this._readHostSize();
+        this.resize(sz.w, sz.h);
       };
       window.addEventListener('resize', this._onWindowResize, { passive: true });
+      window.addEventListener('orientationchange', this._onWindowResize, { passive: true });
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', this._onWindowResize, { passive: true });
+      }
     }
   }
 
@@ -280,11 +327,9 @@ export class Retro1982Renderer {
     if (this.canvas) {
       this.canvas.style.display = this.active ? 'block' : 'none';
     }
-    if (this.active && typeof window !== 'undefined') {
-      const host = this.canvas?.parentElement;
-      const w = (host && host.clientWidth) || window.innerWidth || 426;
-      const h = (host && host.clientHeight) || window.innerHeight || 240;
-      this.resize(w, h);
+    if (this.active && typeof window !== 'undefined' && this._readHostSize) {
+      const sz = this._readHostSize();
+      this.resize(sz.w, sz.h);
     }
   }
 
@@ -295,9 +340,29 @@ export class Retro1982Renderer {
   resize(width, height) {
     const safeW = Number.isFinite(width) && width > 0 ? width : 426;
     const safeH = Number.isFinite(height) && height > 0 ? height : 240;
-    const aspect = clamp(safeW / safeH, 0.72, 2.35);
-    const nextW = Math.round(240 * aspect);
-    const nextH = 240;
+    this._lastHostW = safeW;
+    this._lastHostH = safeH;
+
+    const rawAspect = safeW / safeH;
+    let nextW;
+    let nextH;
+    if (rawAspect >= 0.85) {
+      // Landscape / Desktop (up to 20:9+ Pixel 11 Pro Chrome-cropped 915x335)
+      nextH = 240;
+      nextW = Math.round(240 * clamp(rawAspect, 0.85, 2.85));
+    } else {
+      // Portrait Phone (Pixel 11 Pro 412x915 full & 412x765 Chrome): 100% square pixels, zero vertical stretch!
+      nextW = 196;
+      nextH = Math.round(nextW / clamp(rawAspect, 0.40, 0.85));
+    }
+
+    if (nextH > this._lineDistM.length) {
+      const cap = nextH + 32;
+      this._lineDistM = new Float32Array(cap);
+      this._lineScale = new Float32Array(cap);
+      this._lineCenterX = new Float32Array(cap);
+      this._lineRoadHalfPx = new Float32Array(cap);
+    }
 
     if (this.canvas.width !== nextW || this.canvas.height !== nextH || !this._crtCanvas) {
       this.bufW = nextW;
@@ -1083,7 +1148,164 @@ export class Retro1982Renderer {
     drawRawPixelText(pitSign.ctx, 'PIT', 9, 6, '#00fc58', 1, '#000000');
     drawRawPixelText(pitSign.ctx, '#1', 12, 15, '#fcf400', 1, '#000000');
 
-    return { pine: pine.canvas, sakura: sakura.canvas, pitSign: pitSign.canvas };
+    const palm = makeOffscreenCanvas(30, 46);
+    palm.ctx.fillStyle = '#7c4c24';
+    for (let y = 16; y < 46; y++) {
+      const curveX = Math.round(Math.sin((46 - y) * 0.08) * 2);
+      palm.ctx.fillStyle = (y & 1) === 0 ? '#8c5828' : '#643c18';
+      palm.ctx.fillRect(13 + curveX, y, 4, 1);
+    }
+    const fronds = [[-11, -2], [-9, 4], [11, -2], [9, 4], [0, -6]];
+    for (const [fx, fy] of fronds) {
+      palm.ctx.fillStyle = '#18b848';
+      palm.ctx.fillRect(15 + Math.min(0, fx), 14 + Math.min(0, fy), Math.max(3, Math.abs(fx)), 3);
+      palm.ctx.fillStyle = '#0c8430';
+      palm.ctx.fillRect(15 + Math.min(0, fx), 16 + Math.min(0, fy), Math.max(3, Math.abs(fx)), 2);
+    }
+
+    const autumnPine = makeOffscreenCanvas(28, 44);
+    autumnPine.ctx.fillStyle = '#543018';
+    autumnPine.ctx.fillRect(12, 32, 4, 12);
+    for (const [cx, topY, halfW] of tiers) {
+      for (let r = 0; r < 11; r++) {
+        const hw = Math.max(1, Math.round((r / 10) * halfW));
+        autumnPine.ctx.fillStyle = r < 4 ? '#fca028' : (r < 8 ? '#e45818' : '#9c3010');
+        autumnPine.ctx.fillRect(cx - hw, topY + r, hw * 2, 1);
+      }
+    }
+
+    const neonSign = makeOffscreenCanvas(34, 48);
+    neonSign.ctx.fillStyle = '#242c40';
+    neonSign.ctx.fillRect(15, 32, 4, 16);
+    neonSign.ctx.fillStyle = '#120828';
+    neonSign.ctx.fillRect(2, 2, 30, 30);
+    neonSign.ctx.fillStyle = '#ff28a8';
+    neonSign.ctx.fillRect(3, 3, 28, 28);
+    neonSign.ctx.fillStyle = '#180c38';
+    neonSign.ctx.fillRect(5, 5, 24, 24);
+    drawRawPixelText(neonSign.ctx, '777', 8, 8, '#fcf400', 1, '#000000');
+    drawRawPixelText(neonSign.ctx, 'VIP', 8, 18, '#00f4ff', 1, '#000000');
+
+    // 2-Frame Animated 1982 Pixel Pit-Crew Mechanic with Lollipop Sign & Spare Slick!
+    const buildPitCrew = (waveUp) => {
+      const pc = makeOffscreenCanvas(28, 34);
+      const c = pc.ctx;
+      // Spare black slick tire beside mechanic
+      c.fillStyle = '#141820';
+      c.fillRect(2, 22, 8, 11);
+      c.fillStyle = '#d8e0ec';
+      c.fillRect(4, 25, 4, 5);
+      // Mechanic white/red F1 overalls + yellow helmet
+      c.fillStyle = '#f8f8f8';
+      c.fillRect(12, 16, 8, 10);
+      c.fillStyle = '#e4181c';
+      c.fillRect(12, 20, 8, 3);
+      c.fillRect(12, 26, 3, 7);
+      c.fillRect(17, 26, 3, 7);
+      c.fillStyle = '#fcf400';
+      c.fillRect(13, 10, 6, 6);
+      c.fillStyle = '#1858f8';
+      c.fillRect(14, 12, 4, 2);
+      // Waving lollipop / pit board arm
+      const armY = waveUp ? 4 : 7;
+      c.fillStyle = '#dce4f0';
+      c.fillRect(21, armY + 6, 2, 14);
+      c.fillStyle = '#fc1800';
+      c.fillRect(18, armY, 8, 7);
+      c.fillStyle = '#fcf400';
+      c.fillRect(20, armY + 2, 4, 3);
+      return pc.canvas;
+    };
+
+    // Animated Trackside FIA Marshal Post + Waving Flag Marshal (Green, Yellow, Blue, Checkered)
+    const buildMarshal = (flagType, waveAlt) => {
+      const m = makeOffscreenCanvas(30, 38);
+      const c = m.ctx;
+      // White/blue marshal post shelter box at base
+      c.fillStyle = '#dce4f2';
+      c.fillRect(2, 24, 10, 13);
+      c.fillStyle = '#1858f8';
+      c.fillRect(2, 24, 10, 3);
+      // Marshal in orange safety suit + white helmet
+      c.fillStyle = '#fc6800';
+      c.fillRect(10, 18, 7, 11);
+      c.fillRect(10, 29, 3, 8);
+      c.fillRect(14, 29, 3, 8);
+      c.fillStyle = '#f8f8f8';
+      c.fillRect(11, 13, 5, 5);
+      c.fillRect(10, 22, 7, 2);
+      // Flagpole + waving flag
+      const fy = waveAlt ? 3 : 6;
+      c.fillStyle = '#d8e0ec';
+      c.fillRect(17, fy, 2, 20);
+      const fw = 11;
+      const fh = 8;
+      if (flagType === 'CHECKERED') {
+        for (let r = 0; r < 4; r++) {
+          for (let col = 0; col < 5; col++) {
+            c.fillStyle = ((r + col + (waveAlt ? 1 : 0)) & 1) === 0 ? '#f8f8f8' : '#101010';
+            c.fillRect(19 + col * 2, fy + r * 2 + ((col & 1) && waveAlt ? 1 : 0), 2, 2);
+          }
+        }
+      } else {
+        const hex =
+          flagType === 'YELLOW' ? '#fcf400' : (flagType === 'BLUE' ? '#2888ff' : '#00fc58');
+        const shade =
+          flagType === 'YELLOW' ? '#d8a800' : (flagType === 'BLUE' ? '#1450b8' : '#00a838');
+        c.fillStyle = '#0c1018';
+        c.fillRect(18, fy - 1, fw + 2, fh + 2);
+        c.fillStyle = hex;
+        c.fillRect(19, fy, fw, fh);
+        c.fillStyle = shade;
+        c.fillRect(22, fy + (waveAlt ? 1 : 3), 5, 4);
+      }
+      return m.canvas;
+    };
+
+    // Giant Waving Grandstand Supporter Team Flags (Red, Papaya, Cyan, Gold)
+    const buildGrandstandFlag = (primaryHex, accentHex, waveAlt) => {
+      const gf = makeOffscreenCanvas(34, 42);
+      const c = gf.ctx;
+      c.fillStyle = '#dce4f2';
+      c.fillRect(5, 4, 2, 37);
+      const waveOff = waveAlt ? 2 : 0;
+      c.fillStyle = '#0c1018';
+      c.fillRect(7, 4 + waveOff, 24, 15);
+      c.fillStyle = primaryHex;
+      c.fillRect(8, 5 + waveOff, 22, 13);
+      c.fillStyle = accentHex;
+      c.fillRect(8, 10 + waveOff, 22, 3);
+      c.fillStyle = '#f8f8f8';
+      c.fillRect(11, 7 + waveOff, 4, 4);
+      return gf.canvas;
+    };
+
+    return {
+      pine: pine.canvas,
+      sakura: sakura.canvas,
+      palm: palm.canvas,
+      autumnPine: autumnPine.canvas,
+      neonSign: neonSign.canvas,
+      pitSign: pitSign.canvas,
+      pitCrew0: buildPitCrew(false),
+      pitCrew1: buildPitCrew(true),
+      marshalGreen0: buildMarshal('GREEN', false),
+      marshalGreen1: buildMarshal('GREEN', true),
+      marshalYellow0: buildMarshal('YELLOW', false),
+      marshalYellow1: buildMarshal('YELLOW', true),
+      marshalBlue0: buildMarshal('BLUE', false),
+      marshalBlue1: buildMarshal('BLUE', true),
+      marshalCheck0: buildMarshal('CHECKERED', false),
+      marshalCheck1: buildMarshal('CHECKERED', true),
+      flagRed0: buildGrandstandFlag('#e4181c', '#fcf400', false),
+      flagRed1: buildGrandstandFlag('#e4181c', '#fcf400', true),
+      flagPapaya0: buildGrandstandFlag('#ff7800', '#1858f8', false),
+      flagPapaya1: buildGrandstandFlag('#ff7800', '#1858f8', true),
+      flagCyan0: buildGrandstandFlag('#00e4dc', '#101824', false),
+      flagCyan1: buildGrandstandFlag('#00e4dc', '#101824', true),
+      flagGold0: buildGrandstandFlag('#fcf400', '#10141c', false),
+      flagGold1: buildGrandstandFlag('#fcf400', '#10141c', true),
+    };
   }
 
   _buildGantrySprites() {
@@ -1161,6 +1383,120 @@ export class Retro1982Renderer {
     };
   }
 
+  _buildMomoWheelSprites() {
+    // 9 Pre-Baked Pixel-Art Angles (-4..+4, -64 deg .. +64 deg) of a 3-Spoke MOMO Leather Wheel + Nomex Racing Gloves!
+    const sprites = [];
+    const W = 76;
+    const H = 64;
+    const cx = 38;
+    const cy = 34;
+    const outerR = 23;
+    const innerR = 18;
+
+    for (let step = -4; step <= 4; step++) {
+      const ang = (step / 4) * 1.12; // +-64 deg max visual lock
+      const cosA = Math.cos(ang);
+      const sinA = Math.sin(ang);
+      const { canvas, ctx } = makeOffscreenCanvas(W, H);
+
+      // 1. Brushed Aluminum 3-Spoke Core (9 o'clock, 3 o'clock, 6 o'clock rotated by ang)
+      const spokeAngles = [Math.PI, 0, Math.PI * 0.5];
+      for (let s = 0; s < 3; s++) {
+        const sa = spokeAngles[s] + ang;
+        const ux = Math.cos(sa);
+        const uy = Math.sin(sa);
+        const px = -uy;
+        const py = ux;
+        for (let r = 5; r <= innerR + 1; r++) {
+          for (let w = -2; w <= 2; w++) {
+            const x = Math.round(cx + ux * r + px * w);
+            const y = Math.round(cy + uy * r + py * w);
+            ctx.fillStyle = Math.abs(w) === 2 ? '#181c24' : (w === 0 ? '#dce6f4' : '#8c98ac');
+            ctx.fillRect(x, y, 1, 1);
+          }
+        }
+      }
+
+      // 2. Stitched Black MOMO Perforated Leather Rim + Yellow 12-o'clock Top Centering Stripe
+      const topX = cx + Math.sin(ang) * ((outerR + innerR) * 0.5);
+      const topY = cy - Math.cos(ang) * ((outerR + innerR) * 0.5);
+      for (let y = cy - outerR - 1; y <= cy + outerR + 1; y++) {
+        for (let x = cx - outerR - 1; x <= cx + outerR + 1; x++) {
+          const dx = x - cx;
+          const dy = y - cy;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist >= innerR - 0.5 && dist <= outerR + 0.5) {
+            if (dist < innerR + 0.6 || dist > outerR - 0.6) {
+              ctx.fillStyle = '#080a10';
+            } else {
+              const dTop = Math.hypot(x - topX, y - topY);
+              if (dTop <= 2.7) {
+                ctx.fillStyle = '#fcf400';
+              } else {
+                ctx.fillStyle = (dx + dy < 0) ? '#323846' : '#1c202a';
+              }
+            }
+            ctx.fillRect(x, y, 1, 1);
+          }
+        }
+      }
+
+      // 3. Center MOMO Hub Boss + Red/Gold #1 Horn Emblem
+      for (let y = cy - 7; y <= cy + 7; y++) {
+        for (let x = cx - 7; x <= cx + 7; x++) {
+          const d2 = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+          if (d2 <= 49) {
+            ctx.fillStyle = d2 > 34 ? '#0c1018' : (d2 > 16 ? '#283040' : '#e4181c');
+            ctx.fillRect(x, y, 1, 1);
+          }
+        }
+      }
+      ctx.fillStyle = '#fcf400';
+      ctx.fillRect(cx - 1, cy - 2, 2, 5);
+
+      // 4. Left & Right Nomex Racing Gloves + Moulded Carbon Knuckles + Forearm Cuffs at 9 & 3 o'clock!
+      const gripAngles = [Math.PI + ang, 0 + ang];
+      for (let g = 0; g < 2; g++) {
+        const ga = gripAngles[g];
+        const gx = Math.round(cx + Math.cos(ga) * 20.5);
+        const gy = Math.round(cy + Math.sin(ga) * 20.5);
+
+        // White/Red Nomex Forearm Sleeve extending down into cockpit
+        const cuffBaseX = g === 0 ? cx - 22 : cx + 22;
+        for (let t = 0; t <= 12; t++) {
+          const u = t / 12;
+          const sx = Math.round(gx + (cuffBaseX - gx) * u);
+          const sy = Math.round(gy + 5 + (H - 1 - (gy + 5)) * u);
+          if (sy < H) {
+            ctx.fillStyle = '#10141c';
+            ctx.fillRect(sx - 6, sy, 12, 2);
+            ctx.fillStyle = t < 3 ? '#f8f8f8' : '#d8181c';
+            ctx.fillRect(sx - 5, sy, 10, 2);
+            if (t >= 4 && t <= 6) {
+              ctx.fillStyle = '#fcf400';
+              ctx.fillRect(sx - 4, sy, 8, 1);
+            }
+          }
+        }
+
+        // Nomex Glove Fist + Carbon Knuckle Guard gripping rim
+        ctx.fillStyle = '#080c14';
+        ctx.fillRect(gx - 6, gy - 5, 12, 11);
+        ctx.fillStyle = '#e4181c';
+        ctx.fillRect(gx - 5, gy - 4, 10, 9);
+        ctx.fillStyle = '#f8f8f8';
+        ctx.fillRect(gx - 4, gy - 3, 8, 3);
+        // Thumb wrapping inward over spoke
+        const thumbDir = g === 0 ? 4 : -6;
+        ctx.fillStyle = '#181c24';
+        ctx.fillRect(gx + thumbDir, gy - 2, 3, 4);
+      }
+
+      sprites.push(canvas);
+    }
+    return sprites;
+  }
+
   _rebuildCrtOverlay(w, h) {
     const { canvas, ctx } = makeOffscreenCanvas(w, h);
     // Subtle 1982 CRT horizontal scanline shadow every 2nd pixel row
@@ -1235,6 +1571,11 @@ export class Retro1982Renderer {
   // MAIN 60FPS ARCADE RASTER-SCANLINE & SPRITE FRAME RENDERER
   // ==========================================================================
 
+  // Alias `render` -> `renderFrame` so callers using either `retro1982.render(...)` or `retro1982.renderFrame(...)` work seamlessly!
+  render(params = {}) {
+    return this.renderFrame(params);
+  }
+
   renderFrame(params = {}) {
     if (!this.ctx) return;
 
@@ -1257,11 +1598,40 @@ export class Retro1982Renderer {
       centerCallout = '',
       elapsedSec,
       crtScanlines = true,
+      cameraIndex,
+      pitServiceSubPhase = '',
+      sectorDeltaPopup = null,
+      crowdExcitement,
+      raceSystems = null,
+      lookApexNormalized = 0,
     } = params;
 
     const nowSec = Number.isFinite(elapsedSec) ? elapsedSec : performance.now() * 0.001;
     const rawDt = clamp(nowSec - this._lastElapsedSec, 0, 0.1);
     this._lastElapsedSec = nowSec;
+
+    const camIdx = clamp(
+      Math.round(Number.isFinite(cameraIndex) ? cameraIndex : (params.state?.cameraIndex ?? 0)),
+      0,
+      3
+    );
+    if (camIdx !== this._lastCamIdx) {
+      this._lastCamIdx = camIdx;
+      this._camBannerTimer = 1.85;
+    } else if (this._camBannerTimer > 0) {
+      this._camBannerTimer = Math.max(0, this._camBannerTimer - (rawDt || 0.016));
+    }
+
+    const host = this.canvas?.parentElement;
+    const liveW = host ? host.clientWidth : 0;
+    const liveH = host ? host.clientHeight : 0;
+    if (
+      liveW > 0 &&
+      liveH > 0 &&
+      (Math.abs(liveW - this._lastHostW) > 1 || Math.abs(liveH - this._lastHostH) > 1)
+    ) {
+      this.resize(liveW, liveH);
+    }
 
     const ctx = this.ctx;
     ctx.imageSmoothingEnabled = false;
@@ -1317,20 +1687,80 @@ export class Retro1982Renderer {
         ? (((nowSec * 60) | 0) % 2 === 0 ? -2 : 2)
         : 0;
 
-    // Compute Horizon Y with Spline Hill Pitch
-    const pitchPx = clamp(Math.round(-roadSlope * 54), -11, 11);
-    const horizonY = clamp(120 + pitchPx + blastShakeY, 102, 136);
+    // Compute Horizon Y, 3D Suspension Pitch/Roll & Camera-Mode Perspective (Pixel 11 Pro Portrait H > 275 lifts cockpit/car above touch controls!)
+    const isPortrait = H > 275;
+    const chassisPitch = Number.isFinite(playerCar?.chassisPitchRad) ? playerCar.chassisPitchRad : 0;
+    const chassisRoll = Number.isFinite(playerCar?.chassisRollRad) ? playerCar.chassisRollRad : 0;
+    const suspPitchPx = Math.round(clamp(chassisPitch * 140, -6, 6));
+    const camHorizonDelta = camIdx === 1 ? 6 : (camIdx === 2 ? -3 : (camIdx === 3 ? -8 : 0));
+    const pitchPx = clamp(Math.round(-roadSlope * 54) + suspPitchPx + camHorizonDelta, -15, 15);
+    const baseHorizon = isPortrait ? Math.round(H * 0.36) : 120;
+    const horizonY = isPortrait
+      ? clamp(baseHorizon + pitchPx + blastShakeY, Math.round(H * 0.28), Math.round(H * 0.44))
+      : clamp(120 + pitchPx + blastShakeY, 96, 140);
+
+    // Track Crowd Excitement & Overtake "CROWD ROAR!" + Autonomous Sector Split Deltas (S1/S2/S3)
+    const resolvedPosEarly = this._resolvePlayerPosition(playerPos, playerCar, allCars);
+    if (state === GAME_STATES.RACING && this._prevPlayerPos > 0 && resolvedPosEarly < this._prevPlayerPos) {
+      this._crowdRoarTimer = 2.4;
+      this._crowdExcitement = 1.0;
+    }
+    this._prevPlayerPos = resolvedPosEarly;
+    if (this._crowdRoarTimer > 0) {
+      this._crowdRoarTimer = Math.max(0, this._crowdRoarTimer - (rawDt || 0.016));
+    }
+    if (Number.isFinite(crowdExcitement) && crowdExcitement > this._crowdExcitement) {
+      this._crowdExcitement = clamp(crowdExcitement, 0, 1);
+    } else if (pSpeed > 295 || playerCar?.drsActive) {
+      this._crowdExcitement = Math.max(this._crowdExcitement, 0.55);
+    } else {
+      this._crowdExcitement = Math.max(0, this._crowdExcitement - (rawDt || 0.016) * 0.35);
+    }
+
+    const curSectorIdx = pS < 333.3 ? 0 : (pS < 666.6 ? 1 : 2);
+    if (state === GAME_STATES.RACING || state === GAME_STATES.QUALIFYING) {
+      if (curSectorIdx !== this._prevSectorIdx) {
+        const expectedPrev = (curSectorIdx + 2) % 3;
+        const splitDur = nowSec - this._sectorStartSec;
+        if (curSectorIdx === (this._prevSectorIdx + 1) % 3 && splitDur > 3.0 && splitDur < 90.0) {
+          const prevBest = this._bestSectorTimes[expectedPrev];
+          if (prevBest === null) {
+            this._bestSectorTimes[expectedPrev] = splitDur;
+            this._autoSectorPopup = `S${expectedPrev + 1} ${splitDur.toFixed(2)}S`;
+            this._autoSectorGreen = true;
+          } else {
+            const diff = splitDur - prevBest;
+            if (splitDur < prevBest) this._bestSectorTimes[expectedPrev] = splitDur;
+            const sign = diff <= 0 ? '' : '+';
+            this._autoSectorPopup = `S${expectedPrev + 1} ${sign}${diff.toFixed(2)}S`;
+            this._autoSectorGreen = diff <= 0.001;
+          }
+          this._autoSectorTimer = 2.6;
+        }
+        this._prevSectorIdx = curSectorIdx;
+        this._sectorStartSec = nowSec;
+      }
+    } else {
+      this._prevSectorIdx = curSectorIdx;
+      this._sectorStartSec = nowSec;
+    }
+    if (this._autoSectorTimer > 0) {
+      this._autoSectorTimer = Math.max(0, this._autoSectorTimer - (rawDt || 0.016));
+    }
 
     // 2. Determine Sky / Weather / Biome Palette (Fuji defaults to iconic 1982 Namco Cyan-Blue!)
+    const trackId = track?.trackId || track?.trackDef?.id || 'FUJI_1982';
     const trackTheme = track?.trackDef?.theme || 'FUJI';
-    const forceNight = !!track?.trackDef?.forceNight || !!weather?.isNightActive || weather?.currentRegimeId === 'NEON_NIGHT';
+    const forceNight = !!track?.trackDef?.forceNight || trackId === 'VEGAS_NEON' || !!weather?.isNightActive || weather?.currentRegimeId === 'NEON_NIGHT';
     const regimeId = forceNight ? 'NEON_NIGHT' : (weather?.currentRegimeId || 'HOT_SUNNY');
     const isRainy = regimeId === 'LIGHT_DRIZZLE' || regimeId === 'MONSOON_STORM' || (weather?.grooveMoisture || 0) > 0.30;
-    const isSunset = regimeId === 'GOLDEN_SUNSET';
-    const isOvercast = regimeId === 'OVERCAST_COOL';
+    const isSunset = regimeId === 'GOLDEN_SUNSET' || (!forceNight && !isRainy && trackId === 'MONZA_TEMPLE' && weather?.currentRegimeId === 'GOLDEN_SUNSET');
+    const isOvercast = regimeId === 'OVERCAST_COOL' || (!forceNight && !isRainy && trackId === 'SILVERSTONE_GP');
 
-    // 3. Render 1:1 1982 Namco Sky, Clouds & Parallax Mount Fuji Panorama
+    // 3. Render 1:1 1982 Namco Sky, Clouds, Parallax Mount Fuji & Circuit-Specific Horizon Landmarks
     this._renderSkyAndHorizon(W, horizonY, {
+      trackId,
+      trackTheme,
       forceNight,
       isSunset,
       isRainy,
@@ -1363,8 +1793,13 @@ export class Retro1982Renderer {
     }
 
     // 5. Render Perspective Scanline Road (From Bottom y = H - 1 up to y = horizonY)
-    const roadSpanRows = Math.max(1, (H - 1) - horizonY);
-    const baseRoadHalfPx = clamp(Math.round(W * 0.44), 76, 174);
+    // In Portrait (H > 275), anchor NEAR_DIST_M right under the lifted Player #1 car / cockpit cowling so rivals & road width match 1:1!
+    const refBottomY = isPortrait ? H - Math.round(H * 0.25) + 4 : H - 1;
+    const roadSpanRows = Math.max(1, refBottomY - horizonY);
+    const camRoadZoom = camIdx === 3 ? 1.12 : (camIdx === 2 ? 1.06 : 1.0);
+    const baseRoadHalfPx = Math.round(
+      (isPortrait ? W * 0.46 : clamp(W * 0.42, 76, 212)) * camRoadZoom
+    );
     const puddles = Array.isArray(track?.puddles) ? track.puddles : null;
     const puddlesActive = !!(
       puddles &&
@@ -1378,12 +1813,14 @@ export class Retro1982Renderer {
     const isMonza = trackTheme === 'MONZA';
 
     const playerWorldMeters = pDistGame * mPerGameM;
-    const yawVanishShiftPx = -pYaw * (W * 0.24);
+    const apexPan = Number.isFinite(lookApexNormalized) ? lookApexNormalized : (playerCar?.lookApexNormalized || 0);
+    const rollPanPx = camIdx >= 2 ? clamp(chassisRoll * 160, -7, 7) : 0;
+    const yawVanishShiftPx = -(pYaw + apexPan * 0.18) * (W * 0.24) + rollPanPx;
 
     for (let y = H - 1; y >= horizonY; y--) {
-      const v = (y - horizonY + 0.6) / (roadSpanRows + 0.6); // 1.0 at bottom -> ~0 at horizon
+      const v = (y - horizonY + 0.6) / (roadSpanRows + 0.6); // 1.0 at player axle -> ~0 at horizon
       const invZ = INV_Z_FAR + v * (INV_Z_NEAR - INV_Z_FAR);
-      const distReal = Math.max(NEAR_DIST_M, (1.0 / invZ) - CAM_Z_OFFSET_M);
+      const distReal = Math.max(0.35, (1.0 / invZ) - CAM_Z_OFFSET_M);
       const scale = (NEAR_DIST_M + CAM_Z_OFFSET_M) * invZ; // 1.0 at NEAR_DIST_M -> ~0.04 at FAR_DIST_M
 
       // Interpolate integrated world curve at distReal
@@ -1434,10 +1871,52 @@ export class Retro1982Renderer {
       const roadW = Math.max(2, roadR - roadL);
       const curbPx = Math.max(1, Math.round((CURB_WIDTH * 1.15) * pxPerMeter));
 
-      // B. Pit Lane Shoulder Merge on Right (s >= 912 || s <= 110)
-      if (lineS >= 912 || lineS <= 110) {
-        const pitOffM = this._readPitOffsetAt(track, lineS);
-        if (pitOffM > 0) {
+      // A2. Animated Pixel Grandstands with Rolling Mexican Stadium Wave! (Main Straight + Mid-Circuit Tribunes)
+      const hasLeftGrandstand = !inTunnel && ((lineS >= 910 || lineS <= 190) || (lineS >= 590 && lineS <= 650));
+      const hasRightGrandstand = !inTunnel && (lineS >= 380 && lineS <= 445);
+      if ((hasLeftGrandstand || hasRightGrandstand) && scale > 0.055) {
+        const waveSpeed = 6.5 + this._crowdExcitement * 7.5;
+        const mexicanWave = Math.sin(absWorldM * 0.15 - nowSec * waveSpeed);
+        const isWaveCrest = mexicanWave > 0.42;
+        const crowdTick = ((nowSec * (9 + Math.round(this._crowdExcitement * 6))) | 0) + (y >> 1);
+        const crowdCols = ['#fc2818', '#fcf400', '#00fc58', '#54dcff', '#ff58c8', '#f8f8f8'];
+        const stepDot = Math.max(2, Math.round(1.3 * pxPerMeter));
+        const standH = isWaveCrest ? 2 : 1;
+
+        if (hasLeftGrandstand) {
+          const standInL = Math.round(centerX - (ROAD_HALF_WIDTH + 4.8) * pxPerMeter);
+          const standOutL = Math.max(0, Math.round(centerX - (ROAD_HALF_WIDTH + 14.2) * pxPerMeter));
+          if (standInL > standOutL + 2) {
+            ctx.fillStyle = grassBand ? '#344056' : '#283244';
+            ctx.fillRect(standOutL, y, standInL - standOutL, 1);
+            for (let cx = standOutL + 1; cx < standInL - 1; cx += stepDot) {
+              const cIdx = (cx + crowdTick) % crowdCols.length;
+              const isFlash = ((cx * 17 + ((nowSec * 16) | 0) * 7) % 47) === 0;
+              ctx.fillStyle = isFlash ? '#ffffff' : (isWaveCrest && (cIdx & 1) === 0 ? '#fcf400' : crowdCols[cIdx]);
+              ctx.fillRect(cx, y - (standH - 1), Math.max(1, stepDot - 1), standH);
+            }
+          }
+        }
+        if (hasRightGrandstand) {
+          const standInR = Math.round(centerX + (ROAD_HALF_WIDTH + 4.8) * pxPerMeter);
+          const standOutR = Math.min(W, Math.round(centerX + (ROAD_HALF_WIDTH + 14.2) * pxPerMeter));
+          if (standOutR > standInR + 2) {
+            ctx.fillStyle = grassBand ? '#344056' : '#283244';
+            ctx.fillRect(standInR, y, standOutR - standInR, 1);
+            for (let cx = standInR + 1; cx < standOutR - 1; cx += stepDot) {
+              const cIdx = (cx + crowdTick + 2) % crowdCols.length;
+              const isFlash = ((cx * 19 + ((nowSec * 16) | 0) * 5) % 49) === 0;
+              ctx.fillStyle = isFlash ? '#ffffff' : (isWaveCrest && (cIdx & 1) === 0 ? '#fcf400' : crowdCols[cIdx]);
+              ctx.fillRect(cx, y - (standH - 1), Math.max(1, stepDot - 1), standH);
+            }
+          }
+        }
+      }
+
+      // B. Pit Lane Shoulder Merge, Pit-Box Markers & Pit-Wall Signboards on Right (s >= 912 || s <= 180)
+      if (lineS >= 912 || lineS <= 180) {
+        const pitOffM = this._readPitOffsetAt(track, lineS <= 110 || lineS >= 912 ? lineS : 108);
+        if (pitOffM > 0 && (lineS >= 912 || lineS <= 110)) {
           const pitCenterPx = centerX + pitOffM * pxPerMeter;
           const pitHalfPx = Math.max(2, 4.6 * pxPerMeter);
           const pitL = Math.min(roadR, Math.round(pitCenterPx - pitHalfPx));
@@ -1445,27 +1924,32 @@ export class Retro1982Renderer {
           if (pitR > pitL) {
             ctx.fillStyle = grassBand ? '#586478' : '#4e586a';
             ctx.fillRect(pitL, y, pitR - pitL, 1);
-            // Crisp white outer pit-lane edge line
+            // Crisp white outer pit-lane edge line + team pit-box stall hash marks
             const linePx = Math.max(1, Math.round(0.28 * pxPerMeter));
-            ctx.fillStyle = '#f8f8f8';
+            ctx.fillStyle = curbBand ? '#fcf400' : '#f8f8f8';
             ctx.fillRect(pitR - linePx, y, linePx, 1);
             // Yellow 80 km/h speed limit line at s = 942
             if (Math.abs(lineS - PIT_LANE_CONFIG.speedLimitLineS) < 0.45) {
               ctx.fillStyle = '#fcf400';
               ctx.fillRect(pitL, y, pitR - pitL, 1);
             }
-            // Neon green Player #1 Pit Stop Box pad around s = 20
-            if (Math.abs(lineS - PIT_LANE_CONFIG.playerBoxS) < 1.2) {
+            // Neon green Player #1 Pit Stop Box pad around s = 20 + Red/White Team Pit Stalls at s = 34, 48
+            if (Math.abs(lineS - PIT_LANE_CONFIG.playerBoxS) < 1.35) {
               const boxL = Math.round(pitCenterPx);
-              ctx.fillStyle = '#00fc58';
+              ctx.fillStyle = curbBand ? '#00fc58' : '#fcf400';
+              ctx.fillRect(boxL, y, Math.max(1, pitR - boxL - 1), 1);
+            } else if (Math.abs(lineS - 35) < 1.1 || Math.abs(lineS - 50) < 1.1) {
+              const boxL = Math.round(pitCenterPx);
+              ctx.fillStyle = '#fc2818';
               ctx.fillRect(boxL, y, Math.max(1, pitR - boxL - 1), 1);
             }
           }
-          // Concrete Pit Wall separating Main Straight & Pit Lane (s in 952..1000 U 0..68)
-          if (lineS >= 952 || lineS <= 68) {
+          // Concrete Pit Wall + Pit-Wall Team Signboards separating Main Straight & Pit Lane (s in 948..1000 U 0..76)
+          if (lineS >= 948 || lineS <= 76) {
             const wallX = Math.round(centerX + (ROAD_HALF_WIDTH + 1.65) * pxPerMeter);
-            const wallW = Math.max(1, Math.round(0.65 * pxPerMeter));
-            ctx.fillStyle = curbBand ? '#d8e0ec' : '#1858f8';
+            const wallW = Math.max(1, Math.round(0.75 * pxPerMeter));
+            const signPulse = (Math.floor(absWorldM / 9.0) % 3) === 0;
+            ctx.fillStyle = signPulse ? '#fcf400' : (curbBand ? '#d8e0ec' : '#1858f8');
             ctx.fillRect(wallX, y, wallW, 1);
           }
         }
@@ -1483,9 +1967,15 @@ export class Retro1982Renderer {
         ctx.fillRect(roadR, y, curbPx, 1);
       }
 
-      // D. Two-Tone 1982 Namco Asphalt (#686868 / #5e5e5e)
+      // D. Two-Tone 1982 Namco Asphalt (#686868 / #5e5e5e) + Subtle Rubbered Racing Groove
       ctx.fillStyle = grassBand ? '#686868' : '#5e5e5e';
       ctx.fillRect(roadL, y, roadW, 1);
+      if (roadW >= 24) {
+        const grooveW = Math.max(2, Math.round(1.15 * pxPerMeter));
+        ctx.fillStyle = grassBand ? '#585a62' : '#50525a';
+        ctx.fillRect(Math.round(centerX - roadHalfPx * 0.22 - grooveW * 0.5), y, grooveW, 1);
+        ctx.fillRect(Math.round(centerX + roadHalfPx * 0.22 - grooveW * 0.5), y, grooveW, 1);
+      }
 
       // Subtle crisp white outer asphalt edge lines
       if (roadW >= 14) {
@@ -1495,13 +1985,15 @@ export class Retro1982Renderer {
         ctx.fillRect(roadR - edgeW, y, edgeW, 1);
       }
 
-      // E. Crisp White Dashed Lane Dividers (3-lane GP layout / Classic Namco center dashes)
-      if (dashBand && roadW >= 10) {
-        const dashW = Math.max(1, Math.round(0.26 * pxPerMeter));
+      // E. Speed-Synchronized Crisp White & Yellow Dashed Lane Dividers (3-lane GP layout / Classic Namco center dashes)
+      const speedDashBand = (Math.floor(absWorldM / 4.0) % 3) === 0;
+      if ((dashBand || speedDashBand) && roadW >= 10) {
+        const dashW = Math.max(1, Math.round(0.28 * pxPerMeter));
         ctx.fillStyle = '#f8f8f8';
         // Classic center dashed line + twin outer lane dashes
         ctx.fillRect(Math.round(centerX - dashW * 0.5), y, dashW, 1);
-        if (roadW >= 32) {
+        if (roadW >= 30) {
+          ctx.fillStyle = curbBand ? '#f8f8f8' : '#dce8ff';
           ctx.fillRect(Math.round(centerX - roadHalfPx * 0.36), y, dashW, 1);
           ctx.fillRect(Math.round(centerX + roadHalfPx * 0.36), y, dashW, 1);
         }
@@ -1546,7 +2038,7 @@ export class Retro1982Renderer {
         }
       }
 
-      // G. Shimmering Blue 1982 Pixel Puddles (#1868fc / #68b8ff) when active!
+      // G. Shimmering Blue 1982 Pixel Puddles (#1868fc / #68b8ff) with Sky-Reflection Shimmer Scanlines!
       if (puddlesActive) {
         for (let pIdx = 0; pIdx < puddles.length; pIdx++) {
           const pud = puddles[pIdx];
@@ -1559,13 +2051,16 @@ export class Retro1982Renderer {
               const pudCx = Math.round(centerX + (pud.lat || 0) * pxPerMeter);
               const px0 = Math.max(roadL, pudCx - pudHalfPx);
               const px1 = Math.min(roadR, pudCx + pudHalfPx);
-              if (px1 > px0) {
-                const shimmer = ((y + ((nowSec * 14) | 0)) % 3) === 0;
-                ctx.fillStyle = shimmer ? '#68b8ff' : '#1868fc';
-                ctx.fillRect(px0, y, px1 - px0, 1);
-                if (px1 - px0 >= 6 && ((y + pIdx) & 1) === 0) {
-                  ctx.fillStyle = '#d0f0ff';
-                  ctx.fillRect(px0 + 2, y, Math.max(1, ((px1 - px0) >> 2)), 1);
+              const pw = px1 - px0;
+              if (pw > 0) {
+                const shimmerPhase = (y + ((nowSec * 16) | 0) + pIdx * 3) % 4;
+                ctx.fillStyle = shimmerPhase === 0 ? '#68b8ff' : (shimmerPhase === 2 ? '#3488fc' : '#1868fc');
+                ctx.fillRect(px0, y, pw, 1);
+                // Specular sky-reflection ripple bars across puddle interior
+                if (pw >= 5) {
+                  const ripOff = ((y * 3 + ((nowSec * 20) | 0)) % Math.max(2, pw >> 1));
+                  ctx.fillStyle = shimmerPhase === 0 ? '#f0fcff' : '#b8e8ff';
+                  ctx.fillRect(px0 + 1 + ripOff, y, Math.max(1, pw >> 2), 1);
                 }
               }
             }
@@ -1708,16 +2203,24 @@ export class Retro1982Renderer {
           0
         );
       } else {
-        // Outer pixel sakura / alpine pine tree
-        const treeImg =
-          trackTheme === 'FUJI' && slot % 4 === 1
-            ? this._scenicSprites.sakura
-            : this._scenicSprites.pine;
-        pushSprite(dsReal, 0, treeImg, side * (ROAD_HALF_WIDTH + 14.5), 4.2, 0);
+        // Circuit-Specific Outer Pixel Scenic Props (Sakura, Autumn Maple, Palm, Vegas Neon Sign, Alpine Pine)
+        let propImg = this._scenicSprites.pine;
+        if (trackId === 'VEGAS_NEON') {
+          propImg = slot % 3 === 1 ? this._scenicSprites.neonSign : this._scenicSprites.palm;
+        } else if (trackId === 'MONACO_HARBOR') {
+          propImg = slot % 2 === 0 ? this._scenicSprites.palm : this._scenicSprites.pine;
+        } else if (trackId === 'MONZA_TEMPLE') {
+          propImg = slot % 2 === 0 ? this._scenicSprites.autumnPine : this._scenicSprites.pine;
+        } else if (trackId === 'SUZUKA_130R') {
+          propImg = slot % 3 === 1 ? this._scenicSprites.autumnPine : (slot % 3 === 2 ? this._scenicSprites.sakura : this._scenicSprites.pine);
+        } else if (trackTheme === 'FUJI' && slot % 4 === 1) {
+          propImg = this._scenicSprites.sakura;
+        }
+        pushSprite(dsReal, 0, propImg, side * (ROAD_HALF_WIDTH + 14.5), 4.2, 0);
       }
     }
 
-    // Player #1 Pit Box Beacon Sign at s = 20
+    // Player #1 Pit Box Beacon Sign at s = 20 + Animated 1982 Pit-Crew Mechanics along Pit Lane!
     const pitBeaconDist = forwardDeltaS(pS, PIT_LANE_CONFIG.playerBoxS) * mPerGameM;
     if (pitBeaconDist > 1.5 && pitBeaconDist < 165.0) {
       pushSprite(
@@ -1728,6 +2231,92 @@ export class Retro1982Renderer {
         3.2,
         0
       );
+    }
+    const crewStations = [18.5, 22.0, 35.0, 50.0];
+    for (let cIdx = 0; cIdx < crewStations.length; cIdx++) {
+      const crewDist = forwardDeltaS(pS, crewStations[cIdx]) * mPerGameM;
+      if (crewDist > 1.5 && crewDist < 145.0) {
+        const waveFrame = (((nowSec * 6 + cIdx) | 0) & 1) === 0 ? this._scenicSprites.pitCrew0 : this._scenicSprites.pitCrew1;
+        pushSprite(
+          crewDist,
+          0,
+          waveFrame,
+          PIT_LANE_CONFIG.lateralOffset + 4.4,
+          2.2,
+          0
+        );
+      }
+    }
+
+    // 6B2. Giant Waving Grandstand Supporter Team Flags & 6 FIA Trackside Flag Marshal Posts!
+    const flagWaveSpeed = 7.0 + this._crowdExcitement * 6.0;
+    const grandstandFlagPosts = [
+      { s: 932, side: -1, kind: 0 },
+      { s: 958, side: -1, kind: 1 },
+      { s: 984, side: -1, kind: 2 },
+      { s: 14, side: -1, kind: 3 },
+      { s: 44, side: -1, kind: 0 },
+      { s: 76, side: -1, kind: 1 },
+      { s: 112, side: -1, kind: 2 },
+      { s: 152, side: -1, kind: 3 },
+      { s: 396, side: 1, kind: 0 },
+      { s: 426, side: 1, kind: 3 },
+      { s: 606, side: -1, kind: 1 },
+      { s: 636, side: -1, kind: 2 },
+    ];
+    for (let f = 0; f < grandstandFlagPosts.length; f++) {
+      const fp = grandstandFlagPosts[f];
+      if (tunnelRange && fp.s >= tunnelRange[0] && fp.s <= tunnelRange[1]) continue;
+      const dsReal = forwardDeltaS(pS, fp.s) * mPerGameM;
+      if (dsReal > 1.8 && dsReal < 168.0) {
+        const alt = (((nowSec * flagWaveSpeed + f) | 0) & 1) === 1;
+        let fImg = alt ? this._scenicSprites.flagRed1 : this._scenicSprites.flagRed0;
+        if (fp.kind === 1) fImg = alt ? this._scenicSprites.flagPapaya1 : this._scenicSprites.flagPapaya0;
+        else if (fp.kind === 2) fImg = alt ? this._scenicSprites.flagCyan1 : this._scenicSprites.flagCyan0;
+        else if (fp.kind === 3) fImg = alt ? this._scenicSprites.flagGold1 : this._scenicSprites.flagGold0;
+        pushSprite(dsReal, 0, fImg, fp.side * (ROAD_HALF_WIDTH + 6.2), 3.6, 0);
+      }
+    }
+
+    const resolvedLapForFlags = Number.isFinite(currentLap) && currentLap > 0 ? currentLap : (playerCar?.lap || 1);
+    const marshalPosts = [
+      { s: 6, side: -1, sec: 0 },
+      { s: 156, side: 1, sec: 0 },
+      { s: 333, side: -1, sec: 1 },
+      { s: 498, side: 1, sec: 1 },
+      { s: 666, side: -1, sec: 2 },
+      { s: 882, side: -1, sec: 2 },
+    ];
+    const vscNow = !!(raceSystems?.vscActive || playerCar?.vscActive);
+    for (let m = 0; m < marshalPosts.length; m++) {
+      const mp = marshalPosts[m];
+      if (tunnelRange && mp.s >= tunnelRange[0] && mp.s <= tunnelRange[1]) continue;
+      const dsReal = forwardDeltaS(pS, mp.s) * mPerGameM;
+      if (dsReal <= 1.4 || dsReal >= 165.0) continue;
+
+      let crashedNear = false;
+      let blueFlagNear = false;
+      if (Array.isArray(allCars)) {
+        for (let ci = 0; ci < allCars.length; ci++) {
+          const c = allCars[ci];
+          if (!c) continue;
+          const dPost = Math.abs(signedDeltaS(c.s || 0, mp.s)) * mPerGameM;
+          if (c.exploded && dPost < 65.0) crashedNear = true;
+          if (!c.isPlayer && (c.lap || 1) < resolvedLapForFlags && dPost < 45.0) blueFlagNear = true;
+        }
+      }
+      const sectorYellow = !!(raceSystems?.yellowSectors && typeof raceSystems.yellowSectors.get === 'function' && raceSystems.yellowSectors.get(mp.sec) > 0);
+      const isCheckered = mp.s === 6 && (state === GAME_STATES.PODIUM || (state === GAME_STATES.RACING && resolvedLapForFlags >= totalLaps));
+      const isYellow = !isCheckered && (vscNow || sectorYellow || crashedNear);
+      const isBlue = !isCheckered && !isYellow && blueFlagNear;
+      const waveAlt = (((nowSec * 9 + m) | 0) & 1) === 1;
+
+      let mImg = waveAlt ? this._scenicSprites.marshalGreen1 : this._scenicSprites.marshalGreen0;
+      if (isCheckered) mImg = waveAlt ? this._scenicSprites.marshalCheck1 : this._scenicSprites.marshalCheck0;
+      else if (isYellow) mImg = waveAlt ? this._scenicSprites.marshalYellow1 : this._scenicSprites.marshalYellow0;
+      else if (isBlue) mImg = waveAlt ? this._scenicSprites.marshalBlue1 : this._scenicSprites.marshalBlue0;
+
+      pushSprite(dsReal, 0, mImg, mp.side * (ROAD_HALF_WIDTH + 2.85), 2.5, 0);
     }
 
     // 6C. 150m / 100m / 50m Corner Braking Distance Pixel Boards
@@ -1767,11 +2356,14 @@ export class Retro1982Renderer {
         if (dsReal <= 0.6 || dsReal >= 175.0) continue;
 
         const palIdx = Math.abs((car.carNum || i) + i) % this._rivalSprites.length;
-        const tirePhase = (car.speedKmh || 0) > 1 ? (Math.floor((car.totalDistanceGameM || car.s || 0) * 3.8) & 1) : 0;
+        const cSpeed = Math.max(0, car.speedKmh || 0);
+        const tirePhase = cSpeed > 1 ? ((Math.floor((car.totalDistanceGameM || car.s || 0) * 4.8) + ((nowSec * 18) | 0)) & 1) : 0;
 
-        // Perspective relative view angle (-1: left, 0: dead-ahead, +1: right)
+        // Perspective relative view angle + active corner banking lean (-1: left, 0: straight, +1: right)
         const relLat = (car.lateralOffset || 0) - pLat;
-        const viewIdx = relLat < -2.2 ? 0 : (relLat > 2.2 ? 2 : 1);
+        const kRival = track && typeof track.getPhysicsCurvature === 'function' ? track.getPhysicsCurvature(car.s || 0) : 0;
+        const bankSignal = relLat * 0.35 + kRival * 2.4 + (car.steerInput || 0) * 1.5;
+        const viewIdx = bankSignal < -0.65 ? 0 : (bankSignal > 0.65 ? 2 : 1);
         const rivalImg = this._rivalSprites[palIdx][viewIdx][tirePhase];
 
         if (car.exploded) {
@@ -1779,8 +2371,9 @@ export class Retro1982Renderer {
           const expFrame = this._explosionFrames[Math.min(3, ((nowSec * 14) | 0) % 4)];
           pushSprite(dsReal, 2, expFrame, car.lateralOffset || 0, 6.4, 0, 0, false, prog, false);
         } else {
-          const curbHop = car.onCurb ? (((nowSec * 36 + i) | 0) & 1) : 0;
-          pushSprite(dsReal, 0, rivalImg, car.lateralOffset || 0, 4.35, curbHop, 0, false, 0, false);
+          const curbHop = (car.onCurb || Math.abs(kRival) > 0.32) ? (((nowSec * 36 + i) | 0) & 1) : 0;
+          const rivalFx = (cSpeed > 245 || (car.skidIntensity || 0) > 0.18) ? 1 : 0;
+          pushSprite(dsReal, 0, rivalImg, car.lateralOffset || 0, 4.35, curbHop, rivalFx, false, 0, false);
         }
       }
     }
@@ -1848,6 +2441,17 @@ export class Retro1982Renderer {
         ctx.drawImage(img, 0, 0, img.width, srcH, dx, dy, dstW, visH);
       }
 
+      // Rival F1 car exhaust backfire & rear-tire spark/smoke pixels when charging hard!
+      if (sp.kind === 0 && sp.lightsLit > 0 && sp.widthMeters > 4.0 && sp.widthMeters < 5.0 && dstW >= 12 && groundY <= H) {
+        const sparkOn = (((nowSec * 30 + i * 3) | 0) & 1) === 0;
+        if (sparkOn) {
+          ctx.fillStyle = '#fcf400';
+          ctx.fillRect(Math.round(screenX - 2), groundY - 2, 2, 1);
+          ctx.fillStyle = '#fc6800';
+          ctx.fillRect(Math.round(screenX + 1), groundY - 3, 2, 1);
+        }
+      }
+
       // Overlay live glowing 5 red / green start lamps on Overhead Start Gantry!
       if (sp.kind === 1 && dstW >= 18) {
         const sxRatio = dstW / img.width;
@@ -1874,15 +2478,43 @@ export class Retro1982Renderer {
       }
     }
 
+    // 8B. Billowing Colored Grandstand Smoke Flares & Final-Lap Celebratory Pixel Confetti!
+    this._renderGrandstandFlaresAndConfetti(W, H, horizonY, pS, state, resolvedLapForFlags, totalLaps, nowSec);
+
     // 9. High-Speed (>280 km/h) & Slipstream Radial Pixel Wind Lines
-    if (!pExploded && (pSpeed > 280 || (playerCar?.inSlipstream && pSpeed > 185))) {
-      this._renderSpeedWindLines(W, H, horizonY, pSpeed, !!playerCar?.inSlipstream, nowSec);
+    if (!pExploded && (pSpeed > 280 || ((playerCar?.inSlipstream || playerCar?.drsActive) && pSpeed > 185))) {
+      this._renderSpeedWindLines(W, H, horizonY, pSpeed, !!(playerCar?.inSlipstream || playerCar?.drsActive), nowSec);
     }
 
-    // 10. Foreground Player #1 1982 F1 Car (or Fiery 4-Frame Explosion + 4 Bouncing Pixel Wheels!)
-    this._renderPlayerForeground(W, H, playerCar, pSpeed, pSteer, pYaw, pDistGame, pExploded, isRainy, puddlesActive, nowSec);
+    // 10. Foreground Camera View (0: 1982 Chase + 6-Man Pit Stop, 1: Halo T-Cam, 2: 1st-Person Cockpit + Mirrors, 3: Nose Wing Cam)
+    const isPitServiceActive = !!(
+      state === GAME_STATES.PIT_STOP ||
+      playerCar?.pitPhase === 'STOPPED' ||
+      (playerCar?.inPitLane && pSpeed < 9.0 && Math.abs(signedDeltaS(pS, PIT_LANE_CONFIG.playerBoxS)) < 4.8)
+    );
+    if (pExploded || camIdx === 0) {
+      this._renderPlayerForeground(
+        W, H, playerCar, pSpeed, pSteer, pYaw, pDistGame, pExploded,
+        isRainy, puddlesActive, isPitServiceActive, pitServiceSubPhase, raceSystems, nowSec
+      );
+    } else if (camIdx === 1) {
+      this._renderTCamForeground(
+        W, H, horizonY, playerCar, pSpeed, pSteer, pDistGame, rollPanPx,
+        isRainy, puddlesActive, isPitServiceActive, pitServiceSubPhase, raceSystems, nowSec
+      );
+    } else if (camIdx === 2) {
+      this._renderCockpitViewForeground(
+        W, H, horizonY, playerCar, allCars, pS, pLat, mPerGameM, pSpeed, pSteer, pDistGame, rollPanPx,
+        isRainy, puddlesActive, isPitServiceActive, pitServiceSubPhase, raceSystems, nowSec
+      );
+    } else {
+      this._renderNoseCamForeground(
+        W, H, horizonY, playerCar, pSpeed, pSteer, pDistGame, rollPanPx,
+        isRainy, puddlesActive, isPitServiceActive, pitServiceSubPhase, raceSystems, nowSec
+      );
+    }
 
-    // 11. Diagonal Arcade Pixel Rain Streaks in Wet Regimes
+    // 11. Diagonal Arcade Pixel Rain Streaks + Onboard Helmet Visor Raindrops in Wet Regimes!
     if (isRainy) {
       const rainIntensity = regimeId === 'MONSOON_STORM' ? 46 : 24;
       ctx.fillStyle = regimeId === 'MONSOON_STORM' ? '#a8d8ff' : '#88b8ec';
@@ -1893,9 +2525,12 @@ export class Retro1982Renderer {
         ctx.fillRect(rx, ry, 1, 5);
         ctx.fillRect(rx - 1, ry + 4, 1, 3);
       }
+      if (camIdx >= 1 && !pExploded) {
+        this._renderVisorRaindrops(W, H, pSpeed, regimeId === 'MONSOON_STORM', nowSec);
+      }
     }
 
-    // 12. Authentic 1:1 1982 Namco Top Arcade Bitmap HUD & Center Callout Banner
+    // 12. Authentic 1:1 1982 Namco Top Arcade Bitmap HUD, Full-Game Telemetry Widget & Sector/Pit Popups
     if (state !== GAME_STATES.PRE_RACE_MENU) {
       const resolvedPos = this._resolvePlayerPosition(playerPos, playerCar, allCars);
       const resolvedTotal = Number.isFinite(totalCars) && totalCars > 0 ? totalCars : Math.max(1, allCars?.length || 8);
@@ -1916,6 +2551,15 @@ export class Retro1982Renderer {
         gear: playerCar?.gear || 1,
         gearboxMode: playerCar?.gearboxMode || 'AUTO_8SPD',
         rpm: playerCar?.rpm || 3800,
+        inSlipstream: !!playerCar?.inSlipstream,
+        drsActive: !!playerCar?.drsActive,
+        playerS: pS,
+        playerCar,
+        raceSystems,
+        isPitServiceActive,
+        pitServiceSubPhase,
+        sectorDeltaPopup,
+        camIdx,
         centerCallout,
         nowSec,
       });
@@ -1931,17 +2575,17 @@ export class Retro1982Renderer {
   // SKY, CLOUDS, FOREGROUND FX & BITMAP HUD SUB-RENDERERS
   // ==========================================================================
 
-  _renderSkyAndHorizon(W, horizonY, { forceNight, isSunset, isRainy, isOvercast, lightningFlash, nowSec }) {
+  _renderSkyAndHorizon(W, horizonY, { trackId = 'FUJI_1982', trackTheme = 'FUJI', forceNight, isSunset, isRainy, isOvercast, lightningFlash, nowSec }) {
     const ctx = this.ctx;
 
-    // Stepped 1982 Namco System-1 Sky Color Bands
+    // Stepped 1982 Namco System-1 Sky Color Bands (Circuit-Flavored!)
     let bands;
     let panoKey = 'DAY';
     if (lightningFlash > 0.22) {
       bands = ['#b8dcff', '#d8ecff', '#f0f8ff', '#ffffff'];
       panoKey = 'STORM';
-    } else if (forceNight) {
-      bands = ['#040618', '#080c2c', '#121848', '#221c58'];
+    } else if (forceNight || trackId === 'VEGAS_NEON') {
+      bands = ['#040618', '#080c2c', '#141244', '#281458'];
       panoKey = 'NIGHT';
     } else if (isSunset) {
       bands = ['#282468', '#7c3464', '#dc5438', '#fc7438', '#fcb04c'];
@@ -1949,11 +2593,20 @@ export class Retro1982Renderer {
     } else if (isRainy) {
       bands = ['#1c283c', '#2e425e', '#486284', '#6884a6'];
       panoKey = 'STORM';
-    } else if (isOvercast) {
-      bands = ['#284888', '#426ab4', '#648ed8', '#8ab4f4'];
+    } else if (trackId === 'MONZA_TEMPLE') {
+      // Warm Italian Brianza Late-Summer Golden-Amber Horizon Glow
+      bands = ['#1848d0', '#346ce8', '#5894f8', '#98bcf8', '#fcd088'];
+      panoKey = 'SUNSET';
+    } else if (trackId === 'SILVERSTONE_GP' || isOvercast) {
+      // Classic British GP Silver-Blue Overcast Sky
+      bands = ['#284888', '#426ab4', '#648ed8', '#8ab4f4', '#b4d0f8'];
+      panoKey = 'DAY';
+    } else if (trackId === 'MONACO_HARBOR') {
+      // Côte d'Azur Riviera Azure Sky
+      bands = ['#1054ec', '#2474fc', '#4498ff', '#6cc0ff', '#9ce0ff'];
       panoKey = 'DAY';
     } else {
-      // Iconic 1982 Namco Fuji Cyan-Blue Arcade Sky (#1c5cf8 -> #549cff -> #7cb8ff)
+      // Iconic 1982 Namco Fuji & Suzuka Cyan-Blue Arcade Sky (#1c5cf8 -> #549cff -> #7cb8ff)
       bands = ['#1c5cf8', '#2c6cfc', '#4084fc', '#549cff', '#7cb8ff'];
       panoKey = 'DAY';
     }
@@ -1967,7 +2620,7 @@ export class Retro1982Renderer {
     }
 
     // Twinkling Arcade Pixel Stars at Night
-    if (forceNight && lightningFlash <= 0.22) {
+    if ((forceNight || trackId === 'VEGAS_NEON') && lightningFlash <= 0.22) {
       for (let i = 0; i < 36; i++) {
         const sx = ((i * 73 + Math.round(this._unwrappedYaw * 80)) % W + W) % W;
         const sy = 6 + ((i * 29) % Math.max(12, horizonY - 42));
@@ -1979,8 +2632,8 @@ export class Retro1982Renderer {
       }
     }
 
-    // Pixel Setting Sun Disc in Sunset Regime
-    if (isSunset) {
+    // Pixel Setting Sun Disc in Sunset / Monza Golden Regime
+    if (isSunset || trackId === 'MONZA_TEMPLE') {
       const sunX = (((Math.round(W * 0.68 - this._unwrappedYaw * 85)) % (W + 80)) + (W + 80)) % (W + 80) - 40;
       const sunY = horizonY - 22;
       for (let dy = -11; dy <= 11; dy += 2) {
@@ -1991,7 +2644,7 @@ export class Retro1982Renderer {
     }
 
     // Scrolling Fluffy White Pixel Clouds (Parallax 0.55x world heading + gentle wind drift)
-    if (!forceNight) {
+    if (!forceNight && trackId !== 'VEGAS_NEON') {
       const cloudLoopW = Math.max(380, W + 90);
       const cloudScroll = this._unwrappedYaw * 95 + nowSec * 2.4;
       const cloudDefs = [
@@ -2011,12 +2664,11 @@ export class Retro1982Renderer {
       }
     }
 
-    // Scrolling Pixel-Art Mount Fuji Panorama (512px seamless loop anchored on horizonY)
+    // Scrolling Pixel-Art Mount Fuji / Alpine Panorama (512px seamless loop anchored on horizonY)
     const pano = this._panoramas[panoKey] || this._panoramas.DAY;
     const panoW = pano.width;
     const panoH = pano.height;
     const panoY = horizonY - panoH;
-    // Map full 2*PI heading rotation to 512px panorama loop
     const rawShift = Math.round((this._unwrappedYaw / (Math.PI * 2)) * panoW) % panoW;
     const scrollX = ((rawShift % panoW) + panoW) % panoW;
 
@@ -2025,6 +2677,175 @@ export class Retro1982Renderer {
       ctx.drawImage(pano, drawX, panoY);
       drawX += panoW;
     }
+
+    // Circuit-Specific 1982 Pixel Horizon Landmarks!
+    const landmarkLoopW = Math.max(320, W + 80);
+    const landmarkScroll = Math.round(this._unwrappedYaw * 115);
+
+    if (trackId === 'MONACO_HARBOR') {
+      // Mediterranean Azure Sea Strip + Animated White Wave Crests + Superyachts on Horizon!
+      ctx.fillStyle = '#0848b8';
+      ctx.fillRect(0, horizonY - 7, W, 4);
+      ctx.fillStyle = '#1878e8';
+      ctx.fillRect(0, horizonY - 3, W, 3);
+      ctx.fillStyle = '#d8f4ff';
+      const waveTick = (nowSec * 12) | 0;
+      for (let wx = (waveTick % 14); wx < W; wx += 14) {
+        ctx.fillRect(wx, horizonY - 5, 4, 1);
+      }
+      for (let yIdx = 0; yIdx < 3; yIdx++) {
+        const yx = (((yIdx * 112 + 48 - landmarkScroll) % landmarkLoopW) + landmarkLoopW) % landmarkLoopW - 30;
+        ctx.fillStyle = '#f8f8f8';
+        ctx.fillRect(yx, horizonY - 10, 22, 4);
+        ctx.fillRect(yx + 4, horizonY - 13, 12, 3);
+        ctx.fillStyle = '#1868fc';
+        ctx.fillRect(yx + 5, horizonY - 12, 9, 1);
+        ctx.fillStyle = '#fcf400';
+        ctx.fillRect(yx + 10, horizonY - 18, 1, 5);
+      }
+    } else if (trackId === 'SUZUKA_130R') {
+      // Iconic Suzuka Giant Ferris Wheel Silhouette with Rotating Illuminated Gondolas!
+      const fwX = (((Math.round(W * 0.28 - landmarkScroll)) % landmarkLoopW) + landmarkLoopW) % landmarkLoopW - 24;
+      const fwY = horizonY - 22;
+      const rad = 16;
+      // A-frame support legs
+      ctx.fillStyle = '#dce8f8';
+      for (let leg = 0; leg < 20; leg++) {
+        ctx.fillRect(fwX - Math.round(leg * 0.45), fwY + leg, 2, 1);
+        ctx.fillRect(fwX + Math.round(leg * 0.45), fwY + leg, 2, 1);
+      }
+      // 12 Rotating Pixel Gondolas + Neon Rim
+      for (let g = 0; g < 12; g++) {
+        const ang = (g / 12) * Math.PI * 2 + nowSec * 0.55;
+        const gx = fwX + Math.round(Math.cos(ang) * rad);
+        const gy = fwY + Math.round(Math.sin(ang) * rad);
+        ctx.fillStyle = g % 3 === 0 ? '#00fc58' : (g % 3 === 1 ? '#fcf400' : '#ff28a8');
+        ctx.fillRect(gx - 1, gy - 1, 3, 3);
+      }
+      ctx.fillStyle = '#fcf400';
+      ctx.fillRect(fwX - 1, fwY - 1, 3, 3);
+    } else if (trackId === 'SILVERSTONE_GP') {
+      // WWII RAF Airfield Control Tower + Cantilevered Silverstone Wing Roofline!
+      const twX = (((Math.round(W * 0.72 - landmarkScroll)) % landmarkLoopW) + landmarkLoopW) % landmarkLoopW - 24;
+      ctx.fillStyle = '#48586c';
+      ctx.fillRect(twX, horizonY - 18, 10, 18);
+      ctx.fillStyle = '#98d8ff';
+      ctx.fillRect(twX - 2, horizonY - 22, 14, 4);
+      // Rotating green/white airfield beacon
+      ctx.fillStyle = (((nowSec * 6) | 0) & 1) === 0 ? '#00fc58' : '#f8f8f8';
+      ctx.fillRect(twX + 4, horizonY - 25, 2, 3);
+      // Silverstone Wing angled blade roof
+      ctx.fillStyle = '#dce4f0';
+      ctx.fillRect(twX + 18, horizonY - 10, 28, 3);
+      ctx.fillStyle = '#ce1126';
+      ctx.fillRect(twX + 20, horizonY - 7, 24, 2);
+    } else if (trackId === 'VEGAS_NEON') {
+      // Las Vegas Strip Neon Casino Skyline Silhouette with Glowing Pixel Windows!
+      const towers = [
+        { off: 28, w: 18, h: 28, neon: '#ff28a8' },
+        { off: 86, w: 22, h: 34, neon: '#00f4ff' },
+        { off: 158, w: 16, h: 24, neon: '#fcf400' },
+        { off: 224, w: 24, h: 30, neon: '#00fc58' },
+      ];
+      for (let t = 0; t < towers.length; t++) {
+        const td = towers[t];
+        const tx = (((td.off - landmarkScroll) % landmarkLoopW) + landmarkLoopW) % landmarkLoopW - 24;
+        const ty = horizonY - td.h;
+        ctx.fillStyle = '#0c0820';
+        ctx.fillRect(tx, ty, td.w, td.h);
+        ctx.fillStyle = td.neon;
+        ctx.fillRect(tx, ty, td.w, 2);
+        ctx.fillRect(tx, ty, 1, td.h);
+        ctx.fillRect(tx + td.w - 1, ty, 1, td.h);
+        for (let wy = ty + 4; wy < horizonY - 3; wy += 4) {
+          for (let wx = tx + 3; wx < tx + td.w - 3; wx += 4) {
+            ctx.fillStyle = ((wx + wy + ((nowSec * 4) | 0)) % 3 === 0) ? '#fcf400' : td.neon;
+            ctx.fillRect(wx, wy, 2, 2);
+          }
+        }
+      }
+    }
+  }
+
+  _renderGrandstandFlaresAndConfetti(W, H, horizonY, pS, state, currentLap, totalLaps, nowSec) {
+    const ctx = this.ctx;
+    // Billowing Team-Colored Motorsport Smoke Flares rising directly from Grandstand Bleachers!
+    const nearMainStand = pS >= 895 || pS <= 185;
+    const nearMidStand = (pS >= 365 && pS <= 445) || (pS >= 575 && pS <= 650);
+    if (nearMainStand || nearMidStand) {
+      const flareDefs = [
+        { rowFrac: 0.16, col: '#ff3818', hi: '#ffa088' },
+        { rowFrac: 0.28, col: '#ff8400', hi: '#ffd288' },
+        { rowFrac: 0.42, col: '#00e0dc', hi: '#a8ffff' },
+      ];
+      const rightSide = pS >= 365 && pS <= 445;
+      const span = Math.max(24, (H > 275 ? H - Math.round(H * 0.25) : H - 1) - horizonY);
+      for (let f = 0; f < flareDefs.length; f++) {
+        const fd = flareDefs[f];
+        const scanY = Math.min(H - 6, Math.round(horizonY + span * fd.rowFrac));
+        const rCx = this._lineCenterX[scanY] || (W * 0.5);
+        const rHalf = this._lineRoadHalfPx[scanY] || 40;
+        const standX = rightSide
+          ? Math.round(rCx + rHalf * 1.85)
+          : Math.round(rCx - rHalf * 1.85);
+        if (standX < 2 || standX > W - 6) continue;
+
+        // Glowing handheld flare spark at bleacher rail
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(standX, scanY - 1, 2, 2);
+        // 6 billowing pixel smoke puffs expanding & drifting windward as they rise!
+        for (let p = 0; p < 6; p++) {
+          const age = ((nowSec * 1.35 + f * 0.31 + p * 0.165) % 1.0);
+          const risePx = Math.round(2 + age * 18);
+          const driftPx = Math.round((rightSide ? -1 : 1) * age * 7 + Math.sin(nowSec * 4 + f + p) * 1.5);
+          const pw = Math.round(3 + age * 6);
+          const ph = Math.round(2 + age * 4);
+          const px = standX + driftPx - (pw >> 1);
+          const py = scanY - risePx - ph;
+          if (px >= 0 && px + pw <= W && py > 28) {
+            ctx.fillStyle = age < 0.28 ? fd.hi : fd.col;
+            ctx.fillRect(px, py, pw, ph);
+          }
+        }
+      }
+    }
+
+    // Celebratory Multi-Color Pixel Confetti on Final Lap Start/Finish Zone or Podium!
+    const isFinalCelebration =
+      state === GAME_STATES.PODIUM ||
+      (state === GAME_STATES.RACING && currentLap >= totalLaps && (pS >= 948 || pS <= 42));
+    if (isFinalCelebration) {
+      const confCols = ['#fcf400', '#ff2828', '#00fc58', '#54dcff', '#ff58d8', '#ffffff'];
+      const maxConfY = H > 275 ? H - Math.round(H * 0.26) : H - 12;
+      const tick = (nowSec * 28) | 0;
+      for (let c = 0; c < 28; c++) {
+        const cx = ((c * 37 + tick * ((c % 3) + 1) + Math.round(Math.sin(nowSec * 4 + c) * 6)) % W + W) % W;
+        const cy = 28 + ((c * 23 + tick * 2) % Math.max(24, maxConfY - 28));
+        ctx.fillStyle = confCols[c % confCols.length];
+        ctx.fillRect(cx, cy, (c & 1) === 0 ? 2 : 1, 2);
+      }
+    }
+  }
+
+  _resolveCompoundColor(compoundName) {
+    return COMPOUND_PIXEL_COLORS[compoundName] || COMPOUND_PIXEL_COLORS.SOFT;
+  }
+
+  _resolvePitProgressAndLabel(playerCar, pitServiceSubPhase, nowSec) {
+    const totalDur = Math.max(1.2, Number.isFinite(playerCar?.pitStopTotalDuration) ? playerCar.pitStopTotalDuration : 2.8);
+    const remSec = Number.isFinite(playerCar?.pitStopTimer) && playerCar.pitStopTimer > 0
+      ? playerCar.pitStopTimer
+      : (totalDur * (1.0 - ((nowSec * 0.38) % 1.0)));
+    const prog = clamp(1.0 - remSec / totalDur, 0, 1);
+    let sub = typeof pitServiceSubPhase === 'string' && pitServiceSubPhase ? pitServiceSubPhase : (playerCar?.pitServiceSubPhase || '');
+    if (!sub) {
+      if (prog < 0.16) sub = 'JACK UP';
+      else if (prog < 0.48) sub = 'WHEELS OFF';
+      else if (prog < 0.80) sub = 'NEW TIRES ON';
+      else if (prog < 0.92) sub = 'DROP JACK';
+      else sub = 'GO! GO! GO!';
+    }
+    return { prog, remSec, sub };
   }
 
   _renderSpeedWindLines(W, H, horizonY, speedKmh, inSlipstream, nowSec) {
@@ -2032,29 +2853,34 @@ export class Retro1982Renderer {
     const intensity = clamp((speedKmh - 265) / 60, 0.25, 1.0);
     const count = Math.round(6 + intensity * 10);
     const tick = (nowSec * 45) | 0;
+    const maxWindY = H > 275 ? H - Math.round(H * 0.25) - 4 : H - 8;
 
     ctx.fillStyle = inSlipstream ? '#68ecff' : '#f8f8f8';
     for (let i = 0; i < count; i++) {
       const side = i % 2 === 0 ? -1 : 1;
       const phase = ((i * 19 + tick * 3) % 24) / 24;
-      const y = Math.round(horizonY + 14 + phase * (H - horizonY - 22));
+      const y = Math.round(horizonY + 14 + phase * Math.max(16, maxWindY - horizonY - 14));
       const xEdge = side < 0 ? Math.round((1 - phase) * (W * 0.24)) : Math.round(W - (1 - phase) * (W * 0.24));
       const len = Math.max(3, Math.round(4 + phase * 12));
       ctx.fillRect(side < 0 ? xEdge : xEdge - len, y, len, 1);
     }
   }
 
-  _renderPlayerForeground(W, H, playerCar, speedKmh, steerInput, relYaw, distGame, exploded, isRainy, puddlesActive, nowSec) {
+  _renderPlayerForeground(
+    W, H, playerCar, speedKmh, steerInput, relYaw, distGame, exploded,
+    isRainy, puddlesActive, isPitServiceActive, pitServiceSubPhase, raceSystems, nowSec
+  ) {
     const ctx = this.ctx;
     const baseCarX = W >> 1;
-    const baseCarY = H - 8;
+    // Portrait phone (H > 275): lift Player #1 car above lower ~25% touch wheel & pedals!
+    const baseCarY = H > 275 ? H - Math.round(H * 0.25) : H - 8;
 
     if (exploded) {
       // 4-Frame 1982 Fiery Pixel Fireball + 4 Bouncing Black Pixel Wheels!
       const t = this._playerBlastSec; // 0 .. 2.1s
       const frameIdx = Math.min(3, ((nowSec * 15) | 0) % 4);
       const fireImg = this._explosionFrames[frameIdx];
-      const scale = W < 220 ? 1.0 : 1.25;
+      const scale = W < 220 ? 0.92 : 1.25;
       const fw = Math.round(fireImg.width * scale);
       const fh = Math.round(fireImg.height * scale);
 
@@ -2067,11 +2893,12 @@ export class Retro1982Renderer {
       // 4 Flying Black Pixel Wheels Launching Outward & Bouncing on Asphalt!
       const wheelPhase = ((nowSec * 18) | 0) & 1;
       const wheelImg = this._wheelSprites[wheelPhase];
+      const vxScale = W < 220 ? 0.72 : 1.0;
       const wheelTrajectories = [
-        { vx: -118, vy: -124, bounce: 0.60 },
-        { vx:  -54, vy: -162, bounce: 0.65 },
-        { vx:   58, vy: -154, bounce: 0.63 },
-        { vx:  124, vy: -118, bounce: 0.58 },
+        { vx: -118 * vxScale, vy: -124, bounce: 0.60 },
+        { vx:  -54 * vxScale, vy: -162, bounce: 0.65 },
+        { vx:   58 * vxScale, vy: -154, bounce: 0.63 },
+        { vx:  124 * vxScale, vy: -118, bounce: 0.58 },
       ];
       const gravity = 290;
       const groundWheelY = baseCarY - 4;
@@ -2079,7 +2906,6 @@ export class Retro1982Renderer {
       for (let i = 0; i < 4; i++) {
         const tr = wheelTrajectories[i];
         const wx = Math.round(baseCarX + tr.vx * t - wheelImg.width * 0.5);
-        // Parabolic launch + second bounce after tImpact = -2 * vy / g
         const tImpact1 = (-2.0 * tr.vy) / gravity;
         let yOff;
         if (t <= tImpact1) {
@@ -2097,7 +2923,6 @@ export class Retro1982Renderer {
         }
         const wy = Math.round(groundWheelY + yOff - wheelImg.height);
         if (wx > -20 && wx < W + 20) {
-          // Small wheel shadow on road
           ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
           ctx.fillRect(wx + 2, groundWheelY - 2, wheelImg.width - 4, 2);
           ctx.drawImage(wheelImg, wx, wy);
@@ -2117,23 +2942,59 @@ export class Retro1982Renderer {
     const tirePhase = speedKmh > 1.0 ? (Math.floor(distGame * 4.4) & 1) : 0;
     const carImg = this._playerSprites[steerFrameIdx][tirePhase];
 
-    // Scale Player #1 sprite cleanly for narrow portrait vs wide arcade/desktop
-    const carScale = W < 215 ? 1.0 : 1.18;
+    // Scale Player #1 sprite cleanly for square-pixel portrait (W=196) vs wide arcade/desktop
+    const carScale = W < 215 ? 0.90 : 1.18;
     const dstW = Math.round(carImg.width * carScale);
     const dstH = Math.round(carImg.height * carScale);
 
-    // Authentic 1982 Kerb / Grass Bounce & High-RPM Micro-Chatter
-    let bounceY = 0;
-    if (playerCar?.onCurb && speedKmh > 20) {
-      bounceY = (((nowSec * 42) | 0) & 1) ? -2 : 0;
-    } else if (playerCar?.onGrass && speedKmh > 15) {
-      bounceY = (((nowSec * 28) | 0) % 3 === 0) ? -2 : -1;
-    } else if (speedKmh > 250 && (((nowSec * 30) | 0) % 5 === 0)) {
-      bounceY = -1;
+    // Pit-Stop Hydraulic Jack Lift + Authentic 1982 Kerb / Grass Bounce
+    let pitProg = 0;
+    let pitSub = '';
+    let jackLiftPx = 0;
+    if (isPitServiceActive) {
+      const pitInfo = this._resolvePitProgressAndLabel(playerCar, pitServiceSubPhase, nowSec);
+      pitProg = pitInfo.prog;
+      pitSub = pitInfo.sub;
+      const rawJack = Number.isFinite(playerCar?.pitJackLift)
+        ? playerCar.pitJackLift
+        : (pitProg > 0.12 && pitProg < 0.86 ? 1.0 : 0.0);
+      jackLiftPx = Math.round(clamp(rawJack, 0, 1) * 4);
+    }
+
+    let bounceY = -jackLiftPx;
+    if (!isPitServiceActive) {
+      if (playerCar?.onCurb && speedKmh > 20) {
+        bounceY = (((nowSec * 42) | 0) & 1) ? -2 : 0;
+      } else if (playerCar?.onGrass && speedKmh > 15) {
+        bounceY = (((nowSec * 28) | 0) % 3 === 0) ? -2 : -1;
+      } else if (speedKmh > 250 && (((nowSec * 30) | 0) % 5 === 0)) {
+        bounceY = -1;
+      }
     }
 
     const dx = Math.round(baseCarX - dstW * 0.5);
     const dy = Math.round(baseCarY - dstH + bounceY);
+
+    // Crisp Pixel-Art Tire-Mark Streaks on Asphalt Under Hard Cornering (skidIntensity > 0.3)
+    const skidVal = playerCar?.skidIntensity || 0;
+    if (!isPitServiceActive && skidVal > 0.30 && speedKmh > 35 && !playerCar?.onGrass) {
+      const markL = dx + Math.round(dstW * 0.12);
+      const markR = dx + Math.round(dstW * 0.78);
+      const driftSkew = Math.round(clamp(combinedSteer * 5, -4, 4));
+      ctx.fillStyle = 'rgba(22, 24, 30, 0.72)';
+      for (let m = 0; m < 6; m++) {
+        const my = baseCarY - 1 + m;
+        if (my < H) {
+          ctx.fillRect(markL + Math.round((driftSkew * m) / 5), my, 5, 1);
+          ctx.fillRect(markR + Math.round((driftSkew * m) / 5), my, 5, 1);
+        }
+      }
+    }
+
+    // If Pit Stop Active, Draw Painted Pit-Stall Stop Box, Overhead Rig & Front Jack Man Behind Car First!
+    if (isPitServiceActive) {
+      this._renderPitStopCrewChase(W, H, dx, dy, dstW, dstH, baseCarX, baseCarY, pitProg, pitSub, playerCar, raceSystems, true, nowSec);
+    }
 
     // Crisp Pixel Contact Shadow Oval Under Wide Slicks
     ctx.fillStyle = 'rgba(0, 0, 0, 0.48)';
@@ -2143,16 +3004,58 @@ export class Retro1982Renderer {
     // Draw Player #1 1982 Red/White/Blue F1 Car Sprite
     ctx.drawImage(carImg, dx, dy, dstW, dstH);
 
-    // Twin Pixel Exhaust Shift-Cut / Downshift Backfire Flames!
-    if ((playerCar?.shiftCooldown > 0.04 || playerCar?.revBlipTimer > 0.02) && speedKmh > 75) {
+    // Live Pirelli Tire Compound Sidewall Color Stripes on Front & Rear Slicks (Swaps Live Mid-Pit-Stop!)
+    const activeCompName = (isPitServiceActive && pitProg >= 0.52 && raceSystems?.playerPitPlan?.nextCompound)
+      ? raceSystems.playerPitPlan.nextCompound
+      : (playerCar?.compound || 'SOFT');
+    const compHex = this._resolveCompoundColor(activeCompName);
+    const shiftX = (steerFrameIdx - 2) * Math.round(carScale * 2);
+    ctx.fillStyle = compHex;
+    const stripeOffY = tirePhase ? 1 : 0;
+    // Rear left & right slick sidewall compound bands
+    ctx.fillRect(dx + Math.round(5 * carScale), dy + Math.round((27 + stripeOffY) * carScale), Math.max(2, Math.round(2 * carScale)), Math.round(9 * carScale));
+    ctx.fillRect(dx + dstW - Math.round(7 * carScale), dy + Math.round((27 + (1 - stripeOffY)) * carScale), Math.max(2, Math.round(2 * carScale)), Math.round(9 * carScale));
+    // Front left & right slick sidewall compound dots
+    ctx.fillRect(dx + Math.round(13 * carScale) + shiftX, dy + Math.round(9 * carScale), Math.max(1, Math.round(2 * carScale)), Math.round(5 * carScale));
+    ctx.fillRect(dx + dstW - Math.round(15 * carScale) + shiftX, dy + Math.round(9 * carScale), Math.max(1, Math.round(2 * carScale)), Math.round(5 * carScale));
+
+    // Active DRS Open Rear-Wing Slot + Glowing Neon-Green Endplate Indicators!
+    if (playerCar?.drsActive) {
+      const wingX = dx + Math.round(dstW * 0.25);
+      const wingW = Math.round(dstW * 0.50);
+      const wingY = dy + Math.round(dstH * 0.55);
+      ctx.fillStyle = '#182438';
+      ctx.fillRect(wingX + 2, wingY, wingW - 4, 2);
+      ctx.fillStyle = '#00fc58';
+      ctx.fillRect(wingX, wingY - 1, 2, 4);
+      ctx.fillRect(wingX + wingW - 2, wingY - 1, 2, 4);
+    }
+
+    // Foreground 6-Man Pit Crew (4 Wheel Gunners + Pneumatic Sparks + Rear Jack Man + Lollipop Marshal)!
+    if (isPitServiceActive) {
+      this._renderPitStopCrewChase(W, H, dx, dy, dstW, dstH, baseCarX, baseCarY, pitProg, pitSub, playerCar, raceSystems, false, nowSec);
+      return;
+    }
+
+    // Twin Pixel Exhaust Shift-Cut Flames & Electric-Blue Hybrid ERS Plasma Arcs!
+    const ersOn = !!(playerCar?.ersDeploying || (playerCar?.drsActive && speedKmh > 235) || (playerCar?.throttleInput > 0.92 && speedKmh > 265));
+    if (((playerCar?.shiftCooldown > 0.04 || playerCar?.revBlipTimer > 0.02) && speedKmh > 75) || ersOn) {
       const fx = baseCarX + (steerFrameIdx - 2);
       const fy = dy + Math.round(dstH * 0.78);
-      ctx.fillStyle = '#fc8400';
-      ctx.fillRect(fx - 6, fy, 4, 4);
-      ctx.fillRect(fx + 2, fy, 4, 4);
-      ctx.fillStyle = '#54ecff';
-      ctx.fillRect(fx - 5, fy + 1, 2, 2);
-      ctx.fillRect(fx + 3, fy + 1, 2, 2);
+      if (ersOn && (((nowSec * 24) | 0) & 1) === 0) {
+        ctx.fillStyle = '#00e8ff';
+        ctx.fillRect(fx - 6, fy, 4, 3);
+        ctx.fillRect(fx + 2, fy, 4, 3);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(fx - 1, fy + 1, 2, 3);
+      } else {
+        ctx.fillStyle = '#fc8400';
+        ctx.fillRect(fx - 6, fy, 4, 4);
+        ctx.fillRect(fx + 2, fy, 4, 4);
+        ctx.fillStyle = '#54ecff';
+        ctx.fillRect(fx - 5, fy + 1, 2, 2);
+        ctx.fillRect(fx + 3, fy + 1, 2, 2);
+      }
     }
 
     // Pixel Tire Smoke, Wet Rooster-Tail Spray, Grass Dirt & Titanium Kerb Sparks!
@@ -2164,7 +3067,6 @@ export class Retro1982Renderer {
     const tick = (nowSec * 32) | 0;
 
     if (aquaplane || ((isRainy || puddlesActive) && speedKmh > 95 && (aquaplane || isRainy))) {
-      // Blue/Cyan Pixel Water Spray Plumes behind Rear Slicks
       for (let p = 0; p < 6; p++) {
         const ox = (((p * 11 + tick * 3) % 9) - 4);
         const oy = -((p * 5 + tick * 2) % 12);
@@ -2173,7 +3075,6 @@ export class Retro1982Renderer {
         ctx.fillRect(rightTireX + ox, tireBaseY + oy, 3, 2);
       }
     } else if (skid > 0.16 && speedKmh > 35) {
-      // White/Gray Arcade Tire-Limit Smoke Puffs
       const puffs = Math.min(8, Math.ceil(skid * 8));
       for (let p = 0; p < puffs; p++) {
         const ox = (((p * 13 + tick * 5) % 11) - 5);
@@ -2185,7 +3086,6 @@ export class Retro1982Renderer {
     }
 
     if (playerCar?.onGrass && speedKmh > 25) {
-      // Flying Green/Brown Turf Pixels
       for (let p = 0; p < 5; p++) {
         const ox = (((p * 9 + tick * 7) % 11) - 5);
         const oy = -2 - ((p * 5 + tick * 4) % 11);
@@ -2196,12 +3096,662 @@ export class Retro1982Renderer {
     }
 
     if ((playerCar?.onCurb && speedKmh > 90) || speedKmh > 282) {
-      // Bright Yellow/Orange Underbody Titanium Skid-Block Pixel Sparks!
       for (let p = 0; p < 5; p++) {
         const sx = baseCarX + (((p * 17 + tick * 9) % 28) - 14);
         const sy = tireBaseY - ((p * 7 + tick * 5) % 9);
         ctx.fillStyle = (p & 1) === 0 ? '#fcf400' : '#fc6800';
         ctx.fillRect(sx, sy, 2, 1);
+      }
+    }
+
+    // Dual Rear-Wingtip Aero Vortex Pixel Contrails + 1982 Slipstream/DRS Speed-Flash Badge!
+    if ((playerCar?.inSlipstream || playerCar?.drsActive) && speedKmh > 185) {
+      const wingY = dy + Math.round(dstH * 0.24);
+      const wingL = dx + Math.round(dstW * 0.22);
+      const wingR = dx + Math.round(dstW * 0.78);
+      for (let v = 0; v < 4; v++) {
+        const vy = wingY - v * 3 - (tick % 3);
+        ctx.fillStyle = (v & 1) === 0 ? '#54ecff' : '#f8f8f8';
+        ctx.fillRect(wingL - v, vy, 2, 2);
+        ctx.fillRect(wingR + v - 1, vy, 2, 2);
+      }
+      const flashCol = (((nowSec * 12) | 0) & 1) === 0 ? 'CYAN' : 'YELLOW';
+      const boostTxt = playerCar?.drsActive ? 'DRS BOOST!' : 'SLIPSTREAM!';
+      this._drawAtlasText(boostTxt, baseCarX, Math.max(48, dy - 11), flashCol, 1, 'center', 5);
+    }
+  }
+
+  _renderPitStopCrewChase(W, H, dx, dy, dstW, dstH, baseCarX, baseCarY, pitProg, pitSub, playerCar, raceSystems, isBackPass, nowSec) {
+    const ctx = this.ctx;
+    const rushIn = pitProg < 0.14 ? (1.0 - pitProg / 0.14) : (pitProg > 0.88 ? (pitProg - 0.88) / 0.12 : 0.0);
+    const rushPx = Math.round(clamp(rushIn, 0, 1) * 14);
+    const gunActive = pitProg >= 0.16 && pitProg <= 0.80;
+    const oldCompHex = this._resolveCompoundColor(playerCar?.compound || 'SOFT');
+    const newCompHex = this._resolveCompoundColor(raceSystems?.playerPitPlan?.nextCompound || playerCar?.compound || 'MEDIUM');
+
+    if (isBackPass) {
+      // Painted FIA Yellow/Red Pit Stop Stall Lines on Tarmac
+      ctx.fillStyle = '#fcf400';
+      ctx.fillRect(dx - 8, dy - 3, dstW + 16, 2);
+      ctx.fillRect(dx - 8, dy - 3, 2, dstH + 6);
+      ctx.fillRect(dx + dstW + 6, dy - 3, 2, dstH + 6);
+
+      // Overhead Pit-Gantry Boom Arm & Compressed Air Hoses Extending from Right Pit Wall
+      const boomY = Math.max(32, dy - 16);
+      ctx.fillStyle = '#dce4f2';
+      ctx.fillRect(baseCarX - 18, boomY, Math.max(24, W - (baseCarX - 18)), 3);
+      ctx.fillStyle = '#fc2818';
+      ctx.fillRect(baseCarX - 16, boomY + 3, 34, 2);
+      // Coiled overhead air-gun hoses dropping to FL/FR/RL/RR
+      ctx.fillStyle = '#fcf400';
+      ctx.fillRect(dx - 3, boomY + 3, 1, Math.max(4, dy + 8 - boomY));
+      ctx.fillRect(dx + dstW + 2, boomY + 3, 1, Math.max(4, dy + 8 - boomY));
+
+      // Crew #1: Front Jack Man (Ahead of Nosecone lifting front wing!)
+      const fjX = baseCarX - 4;
+      const fjY = dy - 14 - Math.round(rushPx * 0.5);
+      ctx.fillStyle = '#f8f8f8'; // White/Blue helmet
+      ctx.fillRect(fjX + 2, fjY, 5, 4);
+      ctx.fillStyle = '#1858f8';
+      ctx.fillRect(fjX + 2, fjY + 1, 5, 2);
+      ctx.fillStyle = '#e01818'; // Red fireproof suit
+      ctx.fillRect(fjX + 1, fjY + 4, 7, 8);
+      ctx.fillStyle = '#fc2818'; // Hydraulic front jack pole
+      ctx.fillRect(baseCarX - 1, fjY + 8, 2, Math.max(3, dy + 4 - (fjY + 8)));
+
+      // Lollipop Marshal with Live STOP / 1ST / GO! Pixel Signboard!
+      const lolX = Math.max(4, dx - 22);
+      const lolY = dy - 18;
+      ctx.fillStyle = '#fcf400'; // Marshal helmet
+      ctx.fillRect(lolX + 2, lolY + 6, 5, 4);
+      ctx.fillStyle = '#1858f8'; // Marshal suit
+      ctx.fillRect(lolX + 1, lolY + 10, 7, 10);
+      // Pole + Sign disc
+      const signX = baseCarX - 13;
+      const signY = dy - 14 - (pitProg > 0.90 ? 6 : 0);
+      ctx.fillStyle = '#dce4f2';
+      ctx.fillRect(lolX + 7, lolY + 10, Math.max(4, signX - (lolX + 7)), 2);
+      const isGo = pitProg > 0.88;
+      const isGear1 = !isGo && pitProg > 0.68;
+      ctx.fillStyle = '#0c1018';
+      ctx.fillRect(signX, signY, 26, 10);
+      ctx.fillStyle = isGo ? '#00fc58' : (isGear1 ? '#fcf400' : '#ff2020');
+      ctx.fillRect(signX + 1, signY + 1, 24, 8);
+      const lolTxt = isGo ? 'GO!' : (isGear1 ? '1ST' : 'STOP');
+      this._drawAtlasText(lolTxt, signX + 13, signY + 2, isGo || isGear1 ? 'WHITE' : 'YELLOW', 1, 'center', 5);
+      return;
+    }
+
+    // Foreground Pass — 4 Corner Wheel Gunners (FL, FR, RL, RR) + Crew #2 Rear Jack Man!
+    const wheelCorners = [
+      { side: -1, wy: dy + Math.round(dstH * 0.18) }, // FL
+      { side:  1, wy: dy + Math.round(dstH * 0.18) }, // FR
+      { side: -1, wy: dy + Math.round(dstH * 0.68) }, // RL
+      { side:  1, wy: dy + Math.round(dstH * 0.68) }, // RR
+    ];
+    const sparkTick = (nowSec * 36) | 0;
+    for (let c = 0; c < 4; c++) {
+      const wc = wheelCorners[c];
+      const outward = rushPx * wc.side;
+      const gx = wc.side < 0 ? (dx - 11 + outward) : (dx + dstW + 3 + outward);
+      const gy = wc.wy;
+      if (gx < -8 || gx > W + 8) continue;
+
+      // Spare / Removed Pirelli Wheel next to Mechanic
+      const spareX = wc.side < 0 ? gx - 6 : gx + 8;
+      ctx.fillStyle = '#14161c';
+      ctx.fillRect(spareX, gy + 2, 5, 8);
+      ctx.fillStyle = pitProg < 0.50 ? newCompHex : oldCompHex;
+      ctx.fillRect(spareX + 1, gy + 3, 3, 6);
+
+      // Kneeling Mechanic (White Helmet + Crimson Team Suit + Pneumatic Air Gun)
+      ctx.fillStyle = '#f8f8f8';
+      ctx.fillRect(gx + 1, gy - 3, 5, 4);
+      ctx.fillStyle = '#1858f8';
+      ctx.fillRect(gx + 1, gy - 2, 5, 1);
+      ctx.fillStyle = '#d8181c';
+      ctx.fillRect(gx, gy + 1, 7, 8);
+      ctx.fillStyle = '#202634';
+      ctx.fillRect(wc.side < 0 ? gx + 5 : gx - 3, gy + 3, 5, 2);
+
+      // Pneumatic Wheel-Gun High-RPM Cyan/Yellow Sparks!
+      if (gunActive && ((sparkTick + c) & 1) === 0) {
+        const spX = wc.side < 0 ? dx + 1 : dx + dstW - 3;
+        ctx.fillStyle = ((sparkTick + c) % 4 === 0) ? '#54ecff' : '#fcf400';
+        ctx.fillRect(spX, gy + 2, 3, 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(spX + (wc.side < 0 ? -2 : 2), gy + 4, 2, 1);
+      }
+    }
+
+    // Crew #2: Rear Jack Man behind Diffuser
+    const rjX = baseCarX - 4;
+    const rjY = Math.min(H - 12, baseCarY - 4 + Math.round(rushPx * 0.4));
+    ctx.fillStyle = '#fcf400';
+    ctx.fillRect(rjX + 2, rjY, 5, 4);
+    ctx.fillStyle = '#d8181c';
+    ctx.fillRect(rjX + 1, rjY + 4, 7, 6);
+    ctx.fillStyle = '#dce4f2';
+    ctx.fillRect(baseCarX - 1, baseCarY - 4, 2, 5);
+  }
+
+  // ==========================================================================
+  // CAMERA 1: 1982 OVERHEAD HALO T-CAM PIXEL FOREGROUND
+  // ==========================================================================
+  _renderTCamForeground(
+    W, H, horizonY, playerCar, speedKmh, steerInput, distGame, rollPanPx,
+    isRainy, puddlesActive, isPitServiceActive, pitServiceSubPhase, raceSystems, nowSec
+  ) {
+    const ctx = this.ctx;
+    const bottomY = H > 275 ? H - Math.round(H * 0.24) : H;
+    const cx = (W >> 1) + Math.round(rollPanPx * 0.5);
+    const steerPx = Math.round(clamp(steerInput, -1, 1) * 7);
+    const tirePhase = speedKmh > 1.0 ? (Math.floor(distGame * 4.6) & 1) : 0;
+    const compHex = this._resolveCompoundColor(playerCar?.compound || 'SOFT');
+    const wComp = Array.isArray(playerCar?.wheelCompression) ? playerCar.wheelCompression : null;
+    const curbJolt = (playerCar?.onCurb && speedKmh > 25 && (((nowSec * 40) | 0) & 1)) ? -2 : 0;
+    const flBounce = curbJolt - Math.round(clamp(wComp ? wComp[0] : 0, -0.5, 0.8) * 4);
+    const frBounce = -curbJolt - Math.round(clamp(wComp ? wComp[1] : 0, -0.5, 0.8) * 4);
+
+    const spanHalf = W < 220 ? 64 : 92;
+    const wheelW = W < 220 ? 18 : 24;
+    const wheelH = W < 220 ? 32 : 38;
+    const wheelBaseY = bottomY - wheelH - 6;
+
+    // Chrome Double-Wishbone Suspension Arms connecting Chassis to Front Uprights
+    ctx.fillStyle = '#9aa8bc';
+    ctx.fillRect(cx - spanHalf + wheelW - 2, wheelBaseY + 11 + flBounce, spanHalf - wheelW - 8, 2);
+    ctx.fillRect(cx - spanHalf + wheelW - 2, wheelBaseY + 22 + flBounce, spanHalf - wheelW - 6, 2);
+    ctx.fillRect(cx + 10, wheelBaseY + 11 + frBounce, spanHalf - wheelW - 8, 2);
+    ctx.fillRect(cx + 8, wheelBaseY + 22 + frBounce, spanHalf - wheelW - 6, 2);
+
+    // Left & Right Exposed Steering/Spinning Pixel Front Slicks + Brake Glow!
+    const brakingHot = (playerCar?.brakeInput || 0) > 0.18 && speedKmh > 65;
+    for (let s = -1; s <= 1; s += 2) {
+      const bY = s < 0 ? flBounce : frBounce;
+      const wx = (s < 0 ? cx - spanHalf : cx + spanHalf - wheelW) + steerPx;
+      const wy = wheelBaseY + bY;
+      ctx.fillStyle = '#12141a';
+      ctx.fillRect(wx, wy, wheelW, wheelH);
+      ctx.fillStyle = '#282e3a';
+      ctx.fillRect(wx + 2, wy + 2, wheelW - 4, wheelH - 4);
+      // Spinning tread highlight bars
+      const barOff = tirePhase ? 5 : 0;
+      ctx.fillStyle = '#5c667a';
+      for (let by = wy + 3 + barOff; by < wy + wheelH - 4; by += 10) {
+        ctx.fillRect(wx + 3, by, wheelW - 6, 2);
+      }
+      // Pirelli Compound Sidewall Stripe on Inner Edge
+      ctx.fillStyle = compHex;
+      ctx.fillRect(s < 0 ? wx + wheelW - 3 : wx + 1, wy + 4, 2, wheelH - 8);
+      // Glowing Orange/Red Carbon Brake Duct when Braking Hard!
+      if (brakingHot) {
+        ctx.fillStyle = '#ff4800';
+        ctx.fillRect(s < 0 ? wx + wheelW : wx - 2, wy + 9, 2, wheelH - 18);
+      }
+    }
+
+    // Sleek Tapered Crimson/White/Gold #1 Nosecone Pointing Forward from T-Cam!
+    const noseTopY = bottomY - (W < 220 ? 52 : 62);
+    for (let row = 0; row < bottomY - noseTopY; row++) {
+      const t = row / Math.max(1, bottomY - noseTopY);
+      const halfW = Math.round(5 + t * (W < 220 ? 15 : 21));
+      const ny = noseTopY + row;
+      const nx = cx + Math.round((1.0 - t) * steerPx * 0.4);
+      ctx.fillStyle = '#a40c14';
+      ctx.fillRect(nx - halfW, ny, halfW * 2, 1);
+      ctx.fillStyle = '#e81c24';
+      ctx.fillRect(nx - halfW + 2, ny, Math.max(2, (halfW - 2) * 2), 1);
+      if (t > 0.18 && t < 0.72) {
+        ctx.fillStyle = '#f8f8f8';
+        ctx.fillRect(nx - 3, ny, 6, 1);
+      }
+    }
+    this._drawAtlasText('1', cx, noseTopY + 18, 'RED', 1, 'center', 5);
+
+    // Titanium Halo Center Strut & Curved Top Hoop Arch + Driver Helmet Crown!
+    const haloY = bottomY - 22;
+    ctx.fillStyle = '#1c222e';
+    ctx.fillRect(cx - (W < 220 ? 28 : 38), haloY, (W < 220 ? 56 : 76), 5);
+    ctx.fillRect(cx - 2, noseTopY + 28, 4, Math.max(4, haloY - (noseTopY + 28)));
+    ctx.fillStyle = '#4c586e';
+    ctx.fillRect(cx - (W < 220 ? 24 : 34), haloY + 1, (W < 220 ? 48 : 68), 2);
+    // Driver White/Blue Helmet Crown under Halo
+    ctx.fillStyle = '#f8f8f8';
+    ctx.fillRect(cx - 8, bottomY - 15, 16, 12);
+    ctx.fillStyle = '#1858f8';
+    ctx.fillRect(cx - 8, bottomY - 12, 16, 3);
+
+    // Pit Crew Lollipop & Gunners Visible in T-Cam During Pit Stop!
+    if (isPitServiceActive) {
+      const pitInfo = this._resolvePitProgressAndLabel(playerCar, pitServiceSubPhase, nowSec);
+      const isGo = pitInfo.prog > 0.88;
+      ctx.fillStyle = isGo ? '#00fc58' : '#ff2020';
+      ctx.fillRect(cx - 14, noseTopY - 14, 28, 10);
+      this._drawAtlasText(isGo ? 'GO!' : 'PIT', cx, noseTopY - 12, 'WHITE', 1, 'center', 5);
+    }
+
+    if (H > 275 && bottomY < H) {
+      ctx.fillStyle = '#0c1018';
+      ctx.fillRect(0, bottomY, W, H - bottomY);
+    }
+  }
+
+  // ==========================================================================
+  // CAMERA 2: 1982 FIRST-PERSON PIXEL COCKPIT VIEW (LIVE MIRRORS + MOMO WHEEL!)
+  // ==========================================================================
+  _renderCockpitViewForeground(
+    W, H, horizonY, playerCar, allCars, pS, pLat, mPerGameM, speedKmh, steerInput, distGame, rollPanPx,
+    isRainy, puddlesActive, isPitServiceActive, pitServiceSubPhase, raceSystems, nowSec
+  ) {
+    const ctx = this.ctx;
+    // Anchor entire cockpit above bottom touch controls in portrait (H > 275)!
+    const bottomY = H > 275 ? H - Math.round(H * 0.23) : H;
+    const isNarrow = W < 225;
+    const cx = (W >> 1) + Math.round(rollPanPx * 0.6);
+    const steerPx = Math.round(clamp(steerInput, -1, 1) * (isNarrow ? 6 : 9));
+    const tirePhase = speedKmh > 1.0 ? (Math.floor(distGame * 4.8) & 1) : 0;
+
+    let pitProg = 0;
+    if (isPitServiceActive) {
+      pitProg = this._resolvePitProgressAndLabel(playerCar, pitServiceSubPhase, nowSec).prog;
+    }
+    const activeCompName = (isPitServiceActive && pitProg >= 0.52 && raceSystems?.playerPitPlan?.nextCompound)
+      ? raceSystems.playerPitPlan.nextCompound
+      : (playerCar?.compound || 'SOFT');
+    const compHex = this._resolveCompoundColor(activeCompName);
+
+    const wComp = Array.isArray(playerCar?.wheelCompression) ? playerCar.wheelCompression : null;
+    const curbShake = (playerCar?.onCurb && speedKmh > 20) ? ((((nowSec * 44) | 0) & 1) ? -2 : 1) : 0;
+    const flBounce = curbShake - Math.round(clamp(wComp ? wComp[0] : 0, -0.5, 0.8) * 5);
+    const frBounce = -curbShake - Math.round(clamp(wComp ? wComp[1] : 0, -0.5, 0.8) * 5);
+
+    // 1. Exposed Left & Right Open-Wheel Pixel Front Slicks + Chrome Double-Wishbones (Positioned Ahead of Mirrors & Cowling!)
+    const cowlTopY = bottomY - (isNarrow ? 44 : 50);
+    const wheelW = isNarrow ? 16 : 24;
+    const wheelH = isNarrow ? 28 : 34;
+    const wheelOutHalf = isNarrow ? 66 : Math.min(Math.round(W * 0.36), 116);
+    const wheelBaseY = cowlTopY - (isNarrow ? 26 : 32);
+    const brakingHot = (playerCar?.brakeInput || 0) > 0.18 && speedKmh > 65;
+
+    // Chrome suspension upper/lower wishbones + pushrod extending from nosecone to front uprights
+    ctx.fillStyle = '#acb8cc';
+    ctx.fillRect(cx - wheelOutHalf + wheelW - 1, wheelBaseY + 10 + flBounce, Math.max(6, wheelOutHalf - wheelW - 12), 2);
+    ctx.fillRect(cx - wheelOutHalf + wheelW - 1, wheelBaseY + 21 + flBounce, Math.max(6, wheelOutHalf - wheelW - 9), 2);
+    ctx.fillRect(cx + 13, wheelBaseY + 10 + frBounce, Math.max(6, wheelOutHalf - wheelW - 12), 2);
+    ctx.fillRect(cx + 10, wheelBaseY + 21 + frBounce, Math.max(6, wheelOutHalf - wheelW - 9), 2);
+
+    for (let side = -1; side <= 1; side += 2) {
+      const bY = side < 0 ? flBounce : frBounce;
+      const wx = (side < 0 ? cx - wheelOutHalf : cx + wheelOutHalf - wheelW) + steerPx;
+      const wy = wheelBaseY + bY;
+
+      // Vulcanized dark slick tire block + shoulder bevel
+      ctx.fillStyle = '#0e1016';
+      ctx.fillRect(wx, wy, wheelW, wheelH);
+      ctx.fillStyle = '#242a36';
+      ctx.fillRect(wx + 2, wy + 2, wheelW - 4, wheelH - 4);
+      // Spinning 1982 pixel tread highlight bars
+      const barShift = tirePhase ? 5 : 0;
+      ctx.fillStyle = '#68748a';
+      for (let ty = wy + 4 + barShift; ty < wy + wheelH - 4; ty += 9) {
+        ctx.fillRect(wx + 3, ty, wheelW - 6, 2);
+      }
+      // Live Pirelli Compound Sidewall Stripe!
+      ctx.fillStyle = compHex;
+      const stripeX = side < 0 ? wx + wheelW - 4 : wx + 2;
+      ctx.fillRect(stripeX, wy + 4, 2, wheelH - 8);
+      // Carbon brake disc thermal glow on heavy braking
+      if (brakingHot) {
+        ctx.fillStyle = '#ff3c00';
+        ctx.fillRect(side < 0 ? wx + wheelW : wx - 2, wy + 10, 2, wheelH - 20);
+      }
+      // Wet spray / kerb sparks off exposed front tires!
+      if ((isRainy || puddlesActive) && speedKmh > 80) {
+        ctx.fillStyle = '#8ce0ff';
+        ctx.fillRect(wx + (((nowSec * 33) | 0) % wheelW), wy - 3, 3, 2);
+      }
+    }
+
+    // 2. Riveted Crimson/White/Blue #1 Nosecone Extending Forward Toward Horizon!
+    const noseTipY = cowlTopY - (isNarrow ? 18 : 22);
+    for (let y = noseTipY; y <= cowlTopY; y++) {
+      const frac = (y - noseTipY) / Math.max(1, cowlTopY - noseTipY);
+      const halfW = Math.round((isNarrow ? 9 : 12) + frac * (isNarrow ? 26 : 38));
+      const rowCx = cx + Math.round((1.0 - frac) * steerPx * 0.35);
+      ctx.fillStyle = '#9c0c14';
+      ctx.fillRect(rowCx - halfW, y, halfW * 2, 1);
+      ctx.fillStyle = '#e41820';
+      ctx.fillRect(rowCx - halfW + 3, y, Math.max(2, (halfW - 3) * 2), 1);
+      // Center white championship stripe + twin blue pinstripes
+      const stripeHalf = Math.max(2, Math.round(2 + frac * 5));
+      ctx.fillStyle = '#f8f8f8';
+      ctx.fillRect(rowCx - stripeHalf, y, stripeHalf * 2, 1);
+      ctx.fillStyle = '#1858f8';
+      ctx.fillRect(rowCx - stripeHalf - 1, y, 1, 1);
+      ctx.fillRect(rowCx + stripeHalf, y, 1, 1);
+    }
+    // Riveted aluminum panel dots along aero cowling
+    ctx.fillStyle = '#dce4f2';
+    for (let r = -3; r <= 3; r++) {
+      if (r === 0) continue;
+      ctx.fillRect(cx + r * (isNarrow ? 7 : 10), cowlTopY - 3, 1, 1);
+    }
+    this._drawAtlasText('1', cx, cowlTopY - 12, 'RED', 1, 'center', 5);
+
+    // 3. Titanium Halo Center Pillar & Upper Halo Arch Framing the Track!
+    const haloArchY = Math.max(isNarrow ? 30 : 28, horizonY - (isNarrow ? 30 : 34));
+    ctx.fillStyle = '#181e2a';
+    // Curved upper Halo arch
+    ctx.fillRect(0, haloArchY, W, 3);
+    ctx.fillRect(cx - 24, haloArchY + 3, 48, 2);
+    // Slim Halo center pillar (2px wide so forward apex visibility stays crystal-clear!)
+    ctx.fillRect(cx - 1, haloArchY + 4, 3, Math.max(4, noseTipY - (haloArchY + 4)));
+    ctx.fillStyle = '#3c485e';
+    ctx.fillRect(cx, haloArchY + 4, 1, Math.max(4, noseTipY - (haloArchY + 4)));
+
+    // Pit Crew Visible Right Outside the Cockpit During Pit Service!
+    if (isPitServiceActive) {
+      const isGo = pitProg > 0.88;
+      const isGear1 = !isGo && pitProg > 0.68;
+      const signY = noseTipY - 16 - (isGo ? 5 : 0);
+      ctx.fillStyle = '#0c1018';
+      ctx.fillRect(cx - 16, signY, 32, 11);
+      ctx.fillStyle = isGo ? '#00fc58' : (isGear1 ? '#fcf400' : '#ff2020');
+      ctx.fillRect(cx - 15, signY + 1, 30, 9);
+      this._drawAtlasText(isGo ? 'GO!' : (isGear1 ? '1ST' : 'STOP'), cx, signY + 2, 'WHITE', 1, 'center', 5);
+      // FL & FR Wheel Gunners beside front slicks firing air-gun sparks
+      if (pitProg >= 0.16 && pitProg <= 0.80 && (((nowSec * 32) | 0) & 1) === 0) {
+        ctx.fillStyle = '#54ecff';
+        ctx.fillRect(cx - wheelOutHalf + wheelW + 1, wheelBaseY + 14, 4, 3);
+        ctx.fillRect(cx + wheelOutHalf - wheelW - 5, wheelBaseY + 14, 4, 3);
+      }
+    }
+
+    // 4. Live Left & Right Pixel Wing Mirrors (Dynamically Rendering Trailing Rivals 0 < deltaS_behind < 65m!)
+    this._renderCockpitWingMirrors(W, cx, cowlTopY, horizonY, allCars, pS, pLat, mPerGameM, isNarrow, nowSec);
+
+    // 5. Molded Carbon Cockpit Surround, Windscreen Lip & Digital F1 LED Dashboard!
+    // Windscreen smoked polycarbonate lip
+    ctx.fillStyle = 'rgba(24, 44, 76, 0.55)';
+    ctx.fillRect(cx - (isNarrow ? 36 : 48), cowlTopY - 4, isNarrow ? 72 : 96, 4);
+    // Dark carbon cockpit coaming & side bolsters
+    ctx.fillStyle = '#121620';
+    ctx.fillRect(0, cowlTopY, W, bottomY - cowlTopY);
+    ctx.fillStyle = '#c8141c';
+    ctx.fillRect(0, cowlTopY, W, 2);
+    ctx.fillStyle = '#242c3c';
+    ctx.fillRect(cx - (isNarrow ? 44 : 58), cowlTopY + 2, isNarrow ? 88 : 116, bottomY - cowlTopY - 2);
+
+    // Digital Dashboard Binnacle (10-LED RPM Shift Strip, Gear, KM/H, ERS Bar & DRS Lamp — 100% Unobstructed!)
+    const dashW = isNarrow ? 82 : 102;
+    const dashH = 21;
+    const dashX = cx - (dashW >> 1);
+    const dashY = cowlTopY + 1;
+    ctx.fillStyle = '#060810';
+    ctx.fillRect(dashX, dashY, dashW, dashH);
+    ctx.fillStyle = '#485670';
+    ctx.fillRect(dashX, dashY, dashW, 1);
+
+    // 10-LED F1 Shift-Light Strip (Green -> Red -> Flashing Blue Strobe >= 11,400 RPM!)
+    const rpm = playerCar?.rpm || 4000;
+    const rpmFrac = clamp((rpm - 4200) / (12000 - 4200), 0, 1);
+    const ledsLit = Math.round(rpmFrac * 10);
+    const blueStrobe = rpm >= 11450 && (((nowSec * 24) | 0) & 1) === 0;
+    const ledStart = dashX + Math.round((dashW - 40) * 0.5);
+    for (let l = 0; l < 10; l++) {
+      let lCol = '#1c2230';
+      if (l < ledsLit) {
+        if (blueStrobe) lCol = '#38d8ff';
+        else if (l < 4) lCol = '#00fc58';
+        else if (l < 7) lCol = '#fcf400';
+        else lCol = '#ff2020';
+      }
+      ctx.fillStyle = lCol;
+      ctx.fillRect(ledStart + l * 4, dashY + 2, 3, 3);
+    }
+
+    // Dashboard Digital Readouts: Gear (center), KM/H (left), DRS + ERS Bar (right)
+    const is2Spd = (playerCar?.gearboxMode || '') === 'CLASSIC_2SPD';
+    const gStr = is2Spd ? ((playerCar?.gear || 1) > 1 ? 'H' : 'L') : `G${playerCar?.gear || 1}`;
+    this._drawAtlasText(String(Math.round(speedKmh)).padStart(3, ' '), dashX + 3, dashY + 7, 'CYAN', 1, 'left', 5);
+    this._drawAtlasText(gStr, cx, dashY + 7, 'YELLOW', 1, 'center', 5);
+    const drsOn = !!playerCar?.drsActive;
+    ctx.fillStyle = drsOn ? '#00fc58' : '#1e2834';
+    ctx.fillRect(dashX + dashW - 20, dashY + 7, 17, 6);
+    if (drsOn) {
+      this._drawAtlasText('DRS', dashX + dashW - 11, dashY + 7, 'WHITE', 1, 'center', 5);
+    }
+    // Electric-Blue ERS Charge Bar along bottom of dashboard
+    const ersVal = clamp(
+      Number.isFinite(playerCar?.ersCharge) ? playerCar.ersCharge : (1.0 - (playerCar?.throttleInput || 0) * 0.18),
+      0,
+      1
+    );
+    ctx.fillStyle = '#182234';
+    ctx.fillRect(dashX + 4, dashY + 16, dashW - 8, 3);
+    ctx.fillStyle = playerCar?.ersDeploying ? '#ffffff' : '#00e4ff';
+    ctx.fillRect(dashX + 4, dashY + 16, Math.round((dashW - 8) * ersVal), 3);
+
+    // 6. Animated 9-Angle 3-Spoke MOMO Leather Pixel Steering Wheel + Red/White Nomex Gloves!
+    const wheelAngleIdx = clamp(Math.round(clamp(steerInput, -1, 1) * 4) + 4, 0, 8);
+    const wheelSprite = this._momoWheelSprites[wheelAngleIdx];
+    if (wheelSprite) {
+      const wScale = isNarrow ? 0.80 : 0.92;
+      const sw = Math.round(wheelSprite.width * wScale);
+      const sh = Math.round(wheelSprite.height * wScale);
+      const vibY = (speedKmh > 220 && (((nowSec * 35) | 0) & 1)) ? -1 : 0;
+      ctx.drawImage(wheelSprite, Math.round(cx - sw * 0.5), bottomY - sh + 15 + vibY, sw, sh);
+    }
+
+    // Portrait bottom tub apron so no background leaks behind lower touch controls
+    if (H > 275 && bottomY < H) {
+      ctx.fillStyle = '#0a0d14';
+      ctx.fillRect(0, bottomY, W, H - bottomY);
+      ctx.fillStyle = '#1c2434';
+      ctx.fillRect(0, bottomY, W, 2);
+    }
+  }
+
+  _renderCockpitWingMirrors(W, cx, cowlTopY, horizonY, allCars, pS, pLat, mPerGameM, isNarrow, nowSec) {
+    const ctx = this.ctx;
+    const mirrorW = isNarrow ? 28 : 40;
+    const mirrorH = isNarrow ? 14 : 18;
+    const mirrorY = cowlTopY - mirrorH - (isNarrow ? 4 : 6);
+    const leftMirrorX = isNarrow ? 4 : Math.max(8, cx - 108);
+    const rightMirrorX = isNarrow ? (W - mirrorW - 4) : Math.min(W - mirrorW - 8, cx + 108 - mirrorW);
+
+    // Select up to 3 closest trailing rival cars (0.6m < dBehind < 65.0m) in Zero-Allocation Scalar Slots!
+    let d0 = 999, lat0 = 0, pal0 = 0;
+    let d1 = 999, lat1 = 0, pal1 = 0;
+    let d2 = 999, lat2 = 0, pal2 = 0;
+    if (Array.isArray(allCars)) {
+      for (let i = 0; i < allCars.length; i++) {
+        const c = allCars[i];
+        if (!c || c.isPlayer || c.exploded) continue;
+        // Trailing distance behind player: forwardDeltaS(c.s, pS) is how far c must travel forward to reach pS!
+        const behindGame = forwardDeltaS(c.s || 0, pS);
+        const behindReal = behindGame * mPerGameM;
+        if (behindReal <= 0.6 || behindReal >= 65.0) continue;
+        const rLat = (c.lateralOffset || 0) - pLat;
+        const pIdx = Math.abs((c.carNum || i) + i) % RIVAL_PALETTES_1982.length;
+        if (behindReal < d0) {
+          d2 = d1; lat2 = lat1; pal2 = pal1;
+          d1 = d0; lat1 = lat0; pal1 = pal0;
+          d0 = behindReal; lat0 = rLat; pal0 = pIdx;
+        } else if (behindReal < d1) {
+          d2 = d1; lat2 = lat1; pal2 = pal1;
+          d1 = behindReal; lat1 = rLat; pal1 = pIdx;
+        } else if (behindReal < d2) {
+          d2 = behindReal; lat2 = rLat; pal2 = pIdx;
+        }
+      }
+    }
+
+    for (let m = 0; m < 2; m++) {
+      const isLeft = m === 0;
+      const mx = isLeft ? leftMirrorX : rightMirrorX;
+      // Carbon stalk connecting mirror housing to cockpit coaming
+      ctx.fillStyle = '#202634';
+      ctx.fillRect(isLeft ? mx + mirrorW - 6 : mx + 2, mirrorY + mirrorH, 4, cowlTopY - (mirrorY + mirrorH) + 2);
+      // Crimson aerodynamic outer shell + dark bezel
+      ctx.fillStyle = '#c8141c';
+      ctx.fillRect(mx - 2, mirrorY - 2, mirrorW + 4, mirrorH + 4);
+      ctx.fillStyle = '#0c1018';
+      ctx.fillRect(mx - 1, mirrorY - 1, mirrorW + 2, mirrorH + 2);
+
+      // Mirror Glass Interior: Reflected Sky + Green Verge + Rear Tarmac + Curbs!
+      const midMy = mirrorY + (mirrorH >> 1);
+      ctx.fillStyle = '#4894fc';
+      ctx.fillRect(mx, mirrorY, mirrorW, mirrorH >> 1);
+      ctx.fillStyle = '#00a820';
+      ctx.fillRect(mx, midMy, mirrorW, mirrorH - (mirrorH >> 1));
+      ctx.fillStyle = '#60646e';
+      ctx.fillRect(mx + 3, midMy, mirrorW - 6, mirrorH - (mirrorH >> 1));
+      ctx.fillStyle = (((nowSec * 14) | 0) & 1) === 0 ? '#fc2818' : '#f8f8f8';
+      ctx.fillRect(mx + 2, midMy, 1, mirrorH - (mirrorH >> 1));
+      ctx.fillRect(mx + mirrorW - 3, midMy, 1, mirrorH - (mirrorH >> 1));
+
+      // Draw up to 3 trailing rivals back-to-front (d2 -> d1 -> d0) inside mirror glass!
+      let closeAlert = false;
+      for (let slot = 2; slot >= 0; slot--) {
+        const dist = slot === 2 ? d2 : (slot === 1 ? d1 : d0);
+        if (dist >= 65.0) continue;
+        const rLat = slot === 2 ? lat2 : (slot === 1 ? lat1 : lat0);
+        const pal = RIVAL_PALETTES_1982[slot === 2 ? pal2 : (slot === 1 ? pal1 : pal0)];
+        // Left mirror frames left/center (-9m..+3.5m); Right mirror frames center/right (-3.5m..+9m)
+        if (isLeft && rLat > 4.2) continue;
+        if (!isLeft && rLat < -4.2) continue;
+        if (dist < 14.0) closeAlert = true;
+
+        const mScale = clamp(12.0 / (dist + 4.0), 0.18, 0.95);
+        const carW = Math.max(3, Math.round((mirrorW * 0.52) * mScale));
+        const carH = Math.max(2, Math.round(carW * 0.52));
+        const biasLat = isLeft ? (rLat + 2.2) : (rLat - 2.2);
+        const carCx = Math.round(mx + mirrorW * 0.5 + (biasLat / 7.5) * (mirrorW * 0.42));
+        const carBottom = Math.round(midMy + 2 + mScale * ((mirrorH >> 1) - 2));
+        const cx0 = clamp(carCx - (carW >> 1), mx + 1, mx + mirrorW - carW - 1);
+        const cy0 = clamp(carBottom - carH, mirrorY + 1, mirrorY + mirrorH - carH - 1);
+
+        // Mini pixel F1 rival silhouette: black front slicks + vibrant team nose/wings + helmet dot!
+        ctx.fillStyle = '#101218';
+        ctx.fillRect(cx0, cy0 + 1, Math.max(1, carW >> 2), carH - 1);
+        ctx.fillRect(cx0 + carW - Math.max(1, carW >> 2), cy0 + 1, Math.max(1, carW >> 2), carH - 1);
+        ctx.fillStyle = pal.body;
+        ctx.fillRect(cx0 + 1, cy0, Math.max(1, carW - 2), carH);
+        ctx.fillStyle = pal.wing;
+        ctx.fillRect(cx0, cy0 + carH - 1, carW, 1);
+      }
+
+      // Flashing Amber/Red Proximity Warning LED on Mirror Bezel when Rival < 14m Behind!
+      if (closeAlert && (((nowSec * 16) | 0) & 1) === 0) {
+        ctx.fillStyle = '#fcf400';
+        ctx.fillRect(isLeft ? mx : mx + mirrorW - 3, mirrorY, 3, 3);
+      }
+    }
+  }
+
+  // ==========================================================================
+  // CAMERA 3: 1982 LOW ASPHALT NOSE / FRONT-WING PIXEL CAM
+  // ==========================================================================
+  _renderNoseCamForeground(
+    W, H, horizonY, playerCar, speedKmh, steerInput, distGame, rollPanPx,
+    isRainy, puddlesActive, isPitServiceActive, pitServiceSubPhase, raceSystems, nowSec
+  ) {
+    const ctx = this.ctx;
+    const bottomY = H > 275 ? H - Math.round(H * 0.24) : H;
+    const isNarrow = W < 225;
+    const steerPx = Math.round(clamp(steerInput, -1, 1) * 5);
+    const tirePhase = speedKmh > 1.0 ? (Math.floor(distGame * 5.0) & 1) : 0;
+    const compHex = this._resolveCompoundColor(playerCar?.compound || 'SOFT');
+    const wingH = isNarrow ? 20 : 26;
+    const wingW = isNarrow ? 48 : 74;
+
+    // Left & Right Multi-Element Cascade Front-Wing Flaps, Endplates & Inner Spinning Slicks!
+    for (let side = -1; side <= 1; side += 2) {
+      const innerWheelW = isNarrow ? 12 : 16;
+      const innerWheelH = isNarrow ? 28 : 34;
+      const wx = side < 0 ? steerPx : (W - innerWheelW + steerPx);
+      const wy = bottomY - innerWheelH - 4;
+      ctx.fillStyle = '#101218';
+      ctx.fillRect(wx, wy, innerWheelW, innerWheelH);
+      ctx.fillStyle = compHex;
+      ctx.fillRect(side < 0 ? wx + innerWheelW - 2 : wx, wy + 3, 2, innerWheelH - 6);
+      if (tirePhase) {
+        ctx.fillStyle = '#606c82';
+        ctx.fillRect(wx + 2, wy + 8, innerWheelW - 4, 2);
+        ctx.fillRect(wx + 2, wy + 20, innerWheelW - 4, 2);
+      }
+
+      // Multi-plane Crimson & White Front Wing Cascade Flaps + Endplate Diveplane
+      const fx = side < 0 ? innerWheelW + steerPx : W - innerWheelW - wingW + steerPx;
+      const fy = bottomY - wingH;
+      ctx.fillStyle = '#c8141c';
+      ctx.fillRect(fx, fy + 6, wingW, wingH - 6);
+      ctx.fillStyle = '#f8f8f8';
+      ctx.fillRect(fx + 2, fy + 9, wingW - 4, 3);
+      ctx.fillRect(fx + 4, fy + 15, wingW - 8, 3);
+      // Tall Endplate Fence
+      const epX = side < 0 ? fx : fx + wingW - 4;
+      ctx.fillStyle = '#e81c24';
+      ctx.fillRect(epX, fy, 4, wingH);
+      ctx.fillStyle = '#fcf400';
+      ctx.fillRect(epX, fy, 4, 3);
+    }
+
+    // Center Nose Tip Lip + Titanium Kerb Sparks at Ground Level!
+    const cx = (W >> 1) + Math.round(rollPanPx * 0.5);
+    ctx.fillStyle = '#e41820';
+    ctx.fillRect(cx - 14, bottomY - 7, 28, 7);
+    ctx.fillStyle = '#f8f8f8';
+    ctx.fillRect(cx - 5, bottomY - 7, 10, 7);
+
+    if ((playerCar?.onCurb && speedKmh > 80) || speedKmh > 285) {
+      const tick = (nowSec * 36) | 0;
+      for (let s = 0; s < 6; s++) {
+        ctx.fillStyle = (s & 1) === 0 ? '#fcf400' : '#ff6800';
+        ctx.fillRect(cx + (((s * 19 + tick * 7) % 60) - 30), bottomY - 4 - ((s * 5 + tick * 3) % 10), 2, 1);
+      }
+    }
+
+    if (isPitServiceActive) {
+      const pitInfo = this._resolvePitProgressAndLabel(playerCar, pitServiceSubPhase, nowSec);
+      const isGo = pitInfo.prog > 0.88;
+      ctx.fillStyle = isGo ? '#00fc58' : '#ff2020';
+      ctx.fillRect(cx - 16, bottomY - 36, 32, 10);
+      this._drawAtlasText(isGo ? 'GO!' : 'STOP', cx, bottomY - 34, 'WHITE', 1, 'center', 5);
+    }
+
+    if (H > 275 && bottomY < H) {
+      ctx.fillStyle = '#0a0d14';
+      ctx.fillRect(0, bottomY, W, H - bottomY);
+    }
+  }
+
+  _renderVisorRaindrops(W, H, speedKmh, isMonsoon, nowSec) {
+    const ctx = this.ctx;
+    const maxVisorY = H > 275 ? H - Math.round(H * 0.25) : H - 18;
+    const dropCount = isMonsoon ? 22 : 12;
+    const cx = W >> 1;
+    const cy = Math.round(maxVisorY * 0.45);
+    const streakBoost = clamp(speedKmh / 280, 0, 1);
+
+    for (let i = 0; i < dropCount; i++) {
+      const life = ((nowSec * (1.2 + streakBoost * 2.2) + i * 0.37) % 1.0);
+      const baseAng = (i * 2.39996) % (Math.PI * 2);
+      const rad = (10 + (i % 7) * 14) + life * (16 + streakBoost * 42);
+      const dx = Math.round(cx + Math.cos(baseAng) * rad * 1.35);
+      const dy = Math.round(cy + Math.sin(baseAng) * rad * 0.75);
+      if (dx < 3 || dx >= W - 3 || dy < 28 || dy >= maxVisorY) continue;
+      ctx.fillStyle = '#88dcff';
+      ctx.fillRect(dx, dy, 2, 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(dx, dy, 1, 1);
+      if (streakBoost > 0.35) {
+        const sx = Math.round(Math.cos(baseAng) * 3);
+        const sy = Math.round(Math.sin(baseAng) * 2);
+        ctx.fillStyle = 'rgba(168, 228, 255, 0.75)';
+        ctx.fillRect(dx - sx, dy - sy, 1, 1);
       }
     }
   }
@@ -2241,6 +3791,75 @@ export class Retro1982Renderer {
     return `${n}TH`;
   }
 
+  _resolveTirePixelColor(tireObj, tempOverrideC, nowSec) {
+    if (tireObj?.punctured) {
+      return (((nowSec * 12) | 0) & 1) === 0 ? '#ff1818' : '#200808';
+    }
+    const life = Number.isFinite(tireObj?.life) ? tireObj.life : 1.0;
+    const temp = Number.isFinite(tempOverrideC) ? tempOverrideC : (Number.isFinite(tireObj?.temp) ? tireObj.temp : 88);
+    if (life < 0.25 || temp > 114) return '#ff2418';
+    if (life < 0.52 || temp > 103) return '#fcf400';
+    if (temp < 64) return '#48d4ff';
+    return '#00fc58';
+  }
+
+  _renderTelemetryArcadeWidget(W, wy, playerCar, drsActive, nowSec) {
+    const ctx = this.ctx;
+    const wx = 4;
+    // Compact 28x24 translucent dark arcade telemetry pod (4-Tire Thermal/Wear + Wing Damage + ERS + DRS)
+    ctx.fillStyle = 'rgba(4, 8, 22, 0.58)';
+    ctx.fillRect(wx, wy, 30, 25);
+
+    const dmg = playerCar?.damage || null;
+    const fwHealth = clamp(1.0 - (dmg?.frontWing || 0), 0, 1);
+    const rwHealth = clamp(1.0 - (dmg?.rearWing || 0), 0, 1);
+
+    // Front Wing Damage Bar
+    ctx.fillStyle = fwHealth > 0.7 ? '#00fc58' : (fwHealth > 0.35 ? '#fcf400' : '#ff2020');
+    ctx.fillRect(wx + 5, wy + 2, 12, 2);
+
+    // Mini Chassis Spine
+    ctx.fillStyle = '#c8141c';
+    ctx.fillRect(wx + 9, wy + 4, 4, 14);
+
+    // 4 Corner Tire Thermal / Wear Blocks (FL, FR, RL, RR)
+    const tires = playerCar?.tires || null;
+    const tempsArr = Array.isArray(playerCar?.tireTempsC) ? playerCar.tireTempsC : null;
+    ctx.fillStyle = this._resolveTirePixelColor(tires?.FL, tempsArr ? tempsArr[0] : undefined, nowSec);
+    ctx.fillRect(wx + 3, wy + 5, 4, 5);
+    ctx.fillStyle = this._resolveTirePixelColor(tires?.FR, tempsArr ? tempsArr[1] : undefined, nowSec);
+    ctx.fillRect(wx + 15, wy + 5, 4, 5);
+    ctx.fillStyle = this._resolveTirePixelColor(tires?.RL, tempsArr ? tempsArr[2] : undefined, nowSec);
+    ctx.fillRect(wx + 3, wy + 12, 4, 6);
+    ctx.fillStyle = this._resolveTirePixelColor(tires?.RR, tempsArr ? tempsArr[3] : undefined, nowSec);
+    ctx.fillRect(wx + 15, wy + 12, 4, 6);
+
+    // Rear Wing / Active DRS Bar
+    ctx.fillStyle = drsActive ? '#54ecff' : (rwHealth > 0.7 ? '#00fc58' : (rwHealth > 0.35 ? '#fcf400' : '#ff2020'));
+    ctx.fillRect(wx + 5, wy + 19, 12, 2);
+
+    // Vertical Electric-Blue Hybrid ERS Charge Bar on Right Edge of Pod + Compound Letter!
+    const ersVal = clamp(
+      Number.isFinite(playerCar?.ersCharge) ? playerCar.ersCharge : (1.0 - (playerCar?.throttleInput || 0) * 0.16),
+      0,
+      1
+    );
+    const barH = Math.round(18 * ersVal);
+    ctx.fillStyle = '#182438';
+    ctx.fillRect(wx + 23, wy + 3, 4, 18);
+    ctx.fillStyle = playerCar?.ersDeploying ? '#ffffff' : '#00e4ff';
+    ctx.fillRect(wx + 23, wy + 3 + (18 - barH), 4, barH);
+
+    // Compound 1-letter pill (S/M/H/I/W)
+    const compName = String(playerCar?.compound || 'SOFT');
+    const compChar = compName.charAt(0) || 'S';
+    const compPalette = compChar === 'S' ? 'RED' : (compChar === 'M' ? 'YELLOW' : (compChar === 'I' ? 'GREEN' : (compChar === 'F' || compChar === 'W' ? 'CYAN' : 'WHITE')));
+    this._drawAtlasText(compChar === 'F' ? 'W' : compChar, wx + 2, wy + 23, compPalette, 1, 'left', 5);
+    if (drsActive) {
+      this._drawAtlasText('DRS', wx + 10, wy + 23, 'GREEN', 1, 'left', 5);
+    }
+  }
+
   _renderArcadeTopHUD(W, H, hud) {
     const ctx = this.ctx;
     const scoreStr = String(Math.max(0, Math.floor(hud.score || 0))).padStart(6, '0');
@@ -2257,63 +3876,111 @@ export class Retro1982Renderer {
       : (hud.gear >= 7 ? 'CYAN' : 'YELLOW');
     const posStr = `${this._ordinal(hud.playerPos)}/${hud.totalCars}`;
 
+    const isPortraitHud = H > 275 || W < 275;
+    const topY = H > 275 ? 5 : 3;
+
     // Subtle top translucent scanline header shade so bitmap glyphs pop on every circuit
-    ctx.fillStyle = 'rgba(0, 4, 20, 0.36)';
-    ctx.fillRect(0, 0, W, W < 275 ? 25 : 27);
+    ctx.fillStyle = 'rgba(0, 4, 20, 0.42)';
+    ctx.fillRect(0, 0, W, isPortraitHud ? topY + 23 : 27);
 
-    if (W >= 275) {
-      // Full Classic 1982 Namco 5-Column Arcade Header (4:3, 16:9 Desktop, Mobile Landscape)
-      // Col 1: TOP (Red #ff2020) & SCORE (Yellow #fcf400)
-      this._drawAtlasText('TOP', 4, 3, 'RED', 1, 'left');
-      this._drawAtlasText(topStr, 26, 3, 'WHITE', 1, 'left');
-      this._drawAtlasText('SCORE', 4, 14, 'YELLOW', 1, 'left');
-      this._drawAtlasText(scoreStr, 38, 14, 'YELLOW', 1, 'left');
+    if (!isPortraitHud) {
+      // Full Classic 1982 Namco 5-Column Arcade Header (4:3, 16:9 Desktop, 20:9 Pixel 11 Pro Landscape)
+      const step = W < 320 ? 5 : 6;
+      this._drawAtlasText('TOP', 4, 3, 'RED', 1, 'left', step);
+      this._drawAtlasText(topStr, 4 + step * 4, 3, 'WHITE', 1, 'left', step);
+      this._drawAtlasText('SCORE', 4, 14, 'YELLOW', 1, 'left', step);
+      this._drawAtlasText(scoreStr, 4 + step * 6, 14, 'YELLOW', 1, 'left', step);
 
-      // Col 2: LAP Timer (Neon Green #00fc58)
-      const col2X = Math.round(W * 0.30);
-      this._drawAtlasText(`LAP ${hud.currentLap}/${hud.totalLaps}`, col2X, 3, 'GREEN', 1, 'left');
-      this._drawAtlasText(lapTimeStr, col2X, 14, 'GREEN', 1, 'left');
+      const col2X = Math.max(4 + step * 13, Math.round(W * 0.28));
+      this._drawAtlasText(`LAP ${hud.currentLap}/${hud.totalLaps}`, col2X, 3, 'GREEN', 1, 'left', step);
+      this._drawAtlasText(lapTimeStr, col2X, 14, 'GREEN', 1, 'left', step);
 
-      // Col 3: Big Center TIME Countdown in Yellow (#fcf400, flashing Red <= 10s)
       const midX = W >> 1;
-      this._drawAtlasText('TIME', midX, 2, 'RED', 1, 'center');
+      this._drawAtlasText('TIME', midX, 2, 'RED', 1, 'center', step);
       this._drawAtlasText(timeStr, midX, 10, timeLowFlash ? 'RED' : 'YELLOW', 2, 'center', 11);
 
-      // Col 4: POS (P1..P8)
       if (W >= 340) {
         const col4X = Math.round(W * 0.66);
-        this._drawAtlasText('POS', col4X, 3, 'CYAN', 1, 'left');
-        this._drawAtlasText(posStr, col4X, 14, hud.playerPos === 1 ? 'YELLOW' : 'WHITE', 1, 'left');
+        this._drawAtlasText('POS', col4X, 3, 'CYAN', 1, 'left', step);
+        this._drawAtlasText(posStr, col4X, 14, hud.playerPos === 1 ? 'YELLOW' : 'WHITE', 1, 'left', step);
       }
 
-      // Col 5: SPEED km/h & LOW/HIGH or G1-G8 Gear Badge (Right-aligned)
-      this._drawAtlasText(`${spdStr}KM/H`, W - 4, 3, 'WHITE', 1, 'right');
-      this._drawAtlasText(gearTxt, W - 4, 14, gearColor, 1, 'right');
+      this._drawAtlasText(`${spdStr}KM/H`, W - 4, 3, 'WHITE', 1, 'right', step);
+      this._drawAtlasText(gearTxt, W - 4, 14, gearColor, 1, 'right', step);
       if (W < 340) {
-        this._drawAtlasText(`P${hud.playerPos}`, W - 36, 14, 'CYAN', 1, 'right');
+        this._drawAtlasText(`P${hud.playerPos}`, W - 36, 14, 'CYAN', 1, 'right', step);
       }
     } else {
-      // Compact Zero-Overlap 2-Row Arcade Header for Narrow Mobile Portrait (173..274px)
-      this._drawAtlasText(`TOP ${topStr}`, 2, 2, 'RED', 1, 'left', 5);
-      this._drawAtlasText(timeStr, W >> 1, 2, timeLowFlash ? 'RED' : 'YELLOW', 1, 'center', 6);
-      this._drawAtlasText(`${Math.round(hud.speedKmh)}K ${gearTxt}`, W - 2, 2, gearColor, 1, 'right', 5);
+      // Square-Pixel Portrait 2-Row Arcade Header (W = 196): >=26px clear column gaps + top safe padding!
+      this._drawAtlasText(`TOP ${topStr}`, 4, topY, 'RED', 1, 'left', 5);
+      this._drawAtlasText(`TIME ${timeStr}`, W >> 1, topY, timeLowFlash ? 'RED' : 'YELLOW', 1, 'center', 5);
+      this._drawAtlasText(`${Math.round(hud.speedKmh)}K ${gearTxt}`, W - 4, topY, gearColor, 1, 'right', 5);
 
-      this._drawAtlasText(`SCR ${scoreStr}`, 2, 13, 'YELLOW', 1, 'left', 5);
-      this._drawAtlasText(lapTimeStr, W >> 1, 13, 'GREEN', 1, 'center', 5);
-      this._drawAtlasText(`P${hud.playerPos}/${hud.totalCars}`, W - 2, 13, 'CYAN', 1, 'right', 5);
+      const row2Y = topY + 11;
+      this._drawAtlasText(`SCR ${scoreStr}`, 4, row2Y, 'YELLOW', 1, 'left', 5);
+      this._drawAtlasText(lapTimeStr, W >> 1, row2Y, 'GREEN', 1, 'center', 5);
+      this._drawAtlasText(`P${hud.playerPos}/${hud.totalCars} L${hud.currentLap}`, W - 4, row2Y, 'CYAN', 1, 'right', 5);
     }
 
-    // Classic 1982 Arcade Center Banner ("PREPARE TO QUALIFY", "EXTENDED PLAY!", etc.)
+    // Compact 4-Tire Thermal/Wear + Wing Damage + ERS/DRS Arcade Widget at Upper-Left!
+    this._renderTelemetryArcadeWidget(W, isPortraitHud ? topY + 25 : 29, hud.playerCar, hud.drsActive, hud.nowSec);
+
+    // Camera Mode Switch Toast ("CAM: 1ST-PERSON COCKPIT", etc.)
+    if (this._camBannerTimer > 0) {
+      const camLabel = CAMERA_MODE_LABELS_1982[hud.camIdx] || CAMERA_MODE_LABELS_1982[0];
+      this._drawAtlasText(camLabel, W - 4, isPortraitHud ? topY + 26 : 30, 'CYAN', 1, 'right', 5);
+    }
+
+    // Sector Split Delta Popup ("S1 -0.24S" Green / "+0.15S" Red)
+    let sectorTxt = '';
+    let sectorGreen = true;
+    if (typeof hud.sectorDeltaPopup === 'string' && hud.sectorDeltaPopup.trim()) {
+      sectorTxt = hud.sectorDeltaPopup.replace(/[^\x20-\x7E]/g, '').trim().toUpperCase();
+      sectorGreen = !sectorTxt.includes('+');
+    } else if (hud.sectorDeltaPopup && typeof hud.sectorDeltaPopup === 'object') {
+      const rawLbl = String(hud.sectorDeltaPopup.text || hud.sectorDeltaPopup.label || '').replace(/[^\x20-\x7E]/g, '').trim().toUpperCase();
+      if (rawLbl) {
+        sectorTxt = rawLbl;
+        sectorGreen = hud.sectorDeltaPopup.improved !== undefined ? !!hud.sectorDeltaPopup.improved : !rawLbl.includes('+');
+      } else if (Number.isFinite(hud.sectorDeltaPopup.deltaSec)) {
+        const d = hud.sectorDeltaPopup.deltaSec;
+        const secNum = hud.sectorDeltaPopup.sector || 1;
+        sectorTxt = `S${secNum} ${d <= 0 ? '' : '+'}${d.toFixed(2)}S`;
+        sectorGreen = d <= 0.001;
+      }
+    } else if (this._autoSectorTimer > 0 && this._autoSectorPopup) {
+      sectorTxt = this._autoSectorPopup;
+      sectorGreen = this._autoSectorGreen;
+    }
+    if (sectorTxt) {
+      const sy = isPortraitHud ? topY + 37 : 40;
+      this._drawAtlasText(sectorTxt, W - 4, sy, sectorGreen ? 'GREEN' : 'RED', 1, 'right', 5);
+    }
+
+    // Overtake Excitement Surge Badge ("CROWD ROAR!")
+    if (this._crowdRoarTimer > 0 && (((hud.nowSec * 10) | 0) & 1) === 0) {
+      this._drawAtlasText('CROWD ROAR!', W >> 1, isPortraitHud ? topY + 48 : 50, 'YELLOW', 1, 'center', 5);
+    }
+
+    // Live 6-Man Pit Service Banner when Pitting!
     let bannerText = '';
     if (typeof hud.centerCallout === 'string') {
       bannerText = hud.centerCallout.trim();
     } else if (hud.centerCallout && typeof hud.centerCallout === 'object') {
       bannerText = String(hud.centerCallout.text || hud.centerCallout.message || '').trim();
     }
-    // Strip non-ASCII emojis from callout strings so bitmap font prints pure crisp letters
+    if (!bannerText && hud.isPitServiceActive) {
+      const pitInfo = this._resolvePitProgressAndLabel(hud.playerCar, hud.pitServiceSubPhase, hud.nowSec);
+      bannerText = `PIT CREW: ${pitInfo.sub} ${pitInfo.remSec.toFixed(1)}S`;
+    } else if (!bannerText && (hud.raceSystems?.vscActive || hud.playerCar?.vscActive)) {
+      bannerText = 'VIRTUAL SAFETY CAR - SLOW';
+    }
     if (bannerText) {
       bannerText = bannerText.replace(/[^\x20-\x7E]/g, '').replace(/\s+/g, ' ').trim();
     }
+
+    // On portrait phones (H > 275), place callout banner cleanly below quick-action pills & above Mt. Fuji
+    const bannerBaseY = H > 275 ? Math.min(Math.round(H * 0.22), 90) : 33;
 
     if (bannerText) {
       const charStep = W < 240 ? 5 : 6;
@@ -2321,7 +3988,7 @@ export class Retro1982Renderer {
       const clipped = bannerText.length > maxChars ? bannerText.slice(0, maxChars) : bannerText;
       const boxW = clipped.length * charStep + 12;
       const boxX = (W - boxW) >> 1;
-      const boxY = 33;
+      const boxY = bannerBaseY;
 
       ctx.fillStyle = '#080c24';
       ctx.fillRect(boxX, boxY, boxW, 15);
@@ -2340,7 +4007,22 @@ export class Retro1982Renderer {
     } else if (hud.state === GAME_STATES.QUALIFYING && hud.sessionLabel) {
       const cleanSession = String(hud.sessionLabel).replace(/[^\x20-\x7E]/g, '').trim();
       if (cleanSession) {
-        this._drawAtlasText(cleanSession, W >> 1, 30, 'CYAN', 1, 'center', W < 240 ? 5 : 6);
+        this._drawAtlasText(cleanSession, W >> 1, bannerBaseY, 'CYAN', 1, 'center', W < 240 ? 5 : 6);
+      }
+    }
+
+    // 1982 Checkered-Flag Pixel Border Flash on Final-Lap Start/Finish Crossing or Podium!
+    const onFinishZone = hud.playerS >= 972 || hud.playerS <= 24;
+    const showCheckeredBorder =
+      hud.state === GAME_STATES.PODIUM ||
+      (hud.state === GAME_STATES.RACING && hud.currentLap >= hud.totalLaps && onFinishZone);
+    if (showCheckeredBorder) {
+      const parity = ((hud.nowSec * 10) | 0) & 1;
+      const cell = 6;
+      const cols = Math.ceil(W / cell);
+      for (let c = 0; c < cols; c++) {
+        ctx.fillStyle = ((c + parity) & 1) === 0 ? '#f8f8f8' : '#101010';
+        ctx.fillRect(c * cell, 0, cell, 2);
       }
     }
   }

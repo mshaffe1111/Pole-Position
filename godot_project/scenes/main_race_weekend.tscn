@@ -1,0 +1,292 @@
+[gd_scene load_steps=7 format=3 uid="uid://cmainracewknd2026"]
+
+[ext_resource type="Script" path="res://scripts/main_race_coordinator.gd" id="1_coord"]
+[ext_resource type="PackedScene" uid="uid://c8trackenv2026f1" path="res://scenes/track_environment.tscn" id="2_track_env"]
+[ext_resource type="PackedScene" uid="uid://cpitcrewrig2026f1" path="res://scenes/pit_crew_rig.tscn" id="3_pit_rig"]
+[ext_resource type="Script" path="res://scripts/weather_and_vfx_manager.gd" id="4_weather_vfx"]
+[ext_resource type="PackedScene" uid="uid://cf1car2026aaarig" path="res://scenes/f1_car_2026.tscn" id="5_f1_car"]
+[ext_resource type="Script" path="res://scripts/retro_1982_mode.gd" id="6_retro_mode"]
+
+[node name="MainRaceWeekend" type="Node3D"]
+script = ExtResource("1_coord")
+active_circuit_id = "FUJI_1982"
+weather_preset = "RANDOM"
+total_laps = 5
+player_gearbox_mode = "AUTO_8SPD"
+
+[node name="TrackEnvironment3D" parent="." instance=ExtResource("2_track_env")]
+
+[node name="PitCrewRig" parent="." instance=ExtResource("3_pit_rig")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 20.0, 0.0, 15.2)
+
+[node name="WeatherAndVFXManager" type="Node3D" parent="."]
+script = ExtResource("4_weather_vfx")
+
+[node name="StartingGrid" type="Node3D" parent="."]
+
+[node name="PlayerF1Car" parent="StartingGrid" instance=ExtResource("5_f1_car")]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, -12.0, 0.42, -2.85)
+
+[node name="AIRival_1" parent="StartingGrid" instance=ExtResource("5_f1_car")]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, -16.5, 0.42, 2.85)
+
+[node name="AIRival_2" parent="StartingGrid" instance=ExtResource("5_f1_car")]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, -21.0, 0.42, -2.85)
+
+[node name="AIRival_3" parent="StartingGrid" instance=ExtResource("5_f1_car")]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, -25.5, 0.42, 2.85)
+
+[node name="AIRival_4" parent="StartingGrid" instance=ExtResource("5_f1_car")]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, -30.0, 0.42, -2.85)
+
+[node name="AIRival_5" parent="StartingGrid" instance=ExtResource("5_f1_car")]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, -34.5, 0.42, 2.85)
+
+[node name="AIRival_6" parent="StartingGrid" instance=ExtResource("5_f1_car")]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, -39.0, 0.42, -2.85)
+
+[node name="AIRival_7" parent="StartingGrid" instance=ExtResource("5_f1_car")]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, -43.5, 0.42, 2.85)
+
+[node name="Retro1982Layer" type="CanvasLayer" parent="."]
+script = ExtResource("6_retro_mode")
+allow_keyboard_toggle_v = false
+player_vehicle_path = NodePath("../StartingGrid/PlayerF1Car")
+camera_rig_path = NodePath("../StartingGrid/PlayerF1Car/CameraAndTouchRig")
+weather_manager_path = NodePath("../WeatherAndVFXManager")
+
+[node name="BroadcastHUDLayer" type="CanvasLayer" parent="."]
+layer = 12
+
+[node name="HUDRoot" type="Control" parent="BroadcastHUDLayer"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="TopTelemetryBar" type="HBoxContainer" parent="BroadcastHUDLayer/HUDRoot"]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+offset_left = 18.0
+offset_top = 12.0
+offset_right = -18.0
+offset_bottom = 58.0
+grow_horizontal = 2
+theme_override_constants/separation = 16
+
+[node name="PositionBadgeLabel" type="Label" parent="BroadcastHUDLayer/HUDRoot/TopTelemetryBar"]
+layout_mode = 2
+text = "P1/8"
+
+[node name="LapCounterLabel" type="Label" parent="BroadcastHUDLayer/HUDRoot/TopTelemetryBar"]
+layout_mode = 2
+text = "LAP 1/5"
+
+[node name="SectorIntervalLabel" type="Label" parent="BroadcastHUDLayer/HUDRoot/TopTelemetryBar"]
+layout_mode = 2
+text = "S1 • LEAD +0.0s"
+
+[node name="GearBadgeLabel" type="Label" parent="BroadcastHUDLayer/HUDRoot/TopTelemetryBar"]
+layout_mode = 2
+text = "G1"
+
+[node name="SpeedValueLabel" type="Label" parent="BroadcastHUDLayer/HUDRoot/TopTelemetryBar"]
+layout_mode = 2
+text = "000"
+
+[node name="RPMProgressBar" type="ProgressBar" parent="BroadcastHUDLayer/HUDRoot/TopTelemetryBar"]
+custom_minimum_size = Vector2(160, 22)
+layout_mode = 2
+size_flags_vertical = 4
+value = 0.0
+show_percentage = false
+
+[node name="DRSBadgeLabel" type="Label" parent="BroadcastHUDLayer/HUDRoot/TopTelemetryBar"]
+visible = false
+layout_mode = 2
+text = "⚡ DRS OPEN"
+
+[node name="CameraModeBadgeLabel" type="Label" parent="BroadcastHUDLayer/HUDRoot/TopTelemetryBar"]
+layout_mode = 2
+text = "🎥 CHASE CAM"
+
+[node name="QuickActionButtons" type="HBoxContainer" parent="BroadcastHUDLayer/HUDRoot"]
+layout_mode = 1
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -520.0
+offset_top = 64.0
+offset_right = -18.0
+offset_bottom = 104.0
+grow_horizontal = 0
+alignment = 2
+theme_override_constants/separation = 8
+
+[node name="BtnCameraCycle" type="Button" parent="BroadcastHUDLayer/HUDRoot/QuickActionButtons"]
+layout_mode = 2
+text = "🎥 CAM (C)"
+
+[node name="BtnRetro1982Toggle" type="Button" parent="BroadcastHUDLayer/HUDRoot/QuickActionButtons"]
+layout_mode = 2
+text = "2026 3D ULTRA"
+
+[node name="BtnPitBoxThisLap" type="Button" parent="BroadcastHUDLayer/HUDRoot/QuickActionButtons"]
+layout_mode = 2
+text = "🔧 BOX THIS LAP"
+
+[node name="BtnNextCircuit" type="Button" parent="BroadcastHUDLayer/HUDRoot/QuickActionButtons"]
+layout_mode = 2
+text = "🗺️ NEXT TRACK"
+
+[node name="GantryCountdownBanner" type="Label" parent="BroadcastHUDLayer/HUDRoot"]
+layout_mode = 1
+anchors_preset = 5
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -220.0
+offset_top = 112.0
+offset_right = 220.0
+offset_bottom = 154.0
+grow_horizontal = 2
+horizontal_alignment = 1
+text = "● ● ● ● ●"
+
+[node name="SectorDeltaPopupLabel" type="Label" parent="BroadcastHUDLayer/HUDRoot"]
+visible = false
+layout_mode = 1
+anchors_preset = 5
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -180.0
+offset_top = 156.0
+offset_right = 180.0
+offset_bottom = 190.0
+grow_horizontal = 2
+horizontal_alignment = 1
+text = "🟣 S1 -0.24s"
+
+[node name="EngineerRadioLabel" type="Label" parent="BroadcastHUDLayer/HUDRoot"]
+visible = false
+layout_mode = 1
+anchors_preset = 5
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -320.0
+offset_top = 194.0
+offset_right = 320.0
+offset_bottom = 228.0
+grow_horizontal = 2
+horizontal_alignment = 1
+text = "📻 ENGINEER RADIO"
+
+[node name="PitCrewStatusLabel" type="Label" parent="BroadcastHUDLayer/HUDRoot"]
+visible = false
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -220.0
+offset_top = -36.0
+offset_right = 220.0
+offset_bottom = 4.0
+grow_horizontal = 2
+grow_vertical = 2
+horizontal_alignment = 1
+text = "JACKS UP • SWAPPING 4 TIRES"
+
+[node name="ClutchReleaseSlider" type="HSlider" parent="BroadcastHUDLayer/HUDRoot"]
+visible = false
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -150.0
+offset_top = 12.0
+offset_right = 150.0
+offset_bottom = 36.0
+grow_horizontal = 2
+grow_vertical = 2
+editable = false
+
+[node name="TouchWheelZone" type="Control" parent="BroadcastHUDLayer/HUDRoot"]
+layout_mode = 1
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 20.0
+offset_top = -230.0
+offset_right = 260.0
+offset_bottom = -20.0
+grow_vertical = 0
+
+[node name="WheelHubTelemetryLabel" type="Label" parent="BroadcastHUDLayer/HUDRoot/TouchWheelZone"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -56.0
+offset_top = -14.0
+offset_right = 56.0
+offset_bottom = 14.0
+grow_horizontal = 2
+grow_vertical = 2
+horizontal_alignment = 1
+text = "G1 • 0°"
+
+[node name="TouchArrowZone" type="Control" parent="BroadcastHUDLayer/HUDRoot"]
+visible = false
+layout_mode = 1
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 20.0
+offset_top = -180.0
+offset_right = 260.0
+offset_bottom = -20.0
+grow_vertical = 0
+
+[node name="TouchPedalZone" type="Control" parent="BroadcastHUDLayer/HUDRoot"]
+layout_mode = 1
+anchors_preset = 3
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -250.0
+offset_top = -230.0
+offset_right = -20.0
+offset_bottom = -20.0
+grow_horizontal = 0
+grow_vertical = 0
+
+[node name="PodiumCeremonyModal" type="PanelContainer" parent="BroadcastHUDLayer/HUDRoot"]
+visible = false
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -240.0
+offset_top = -95.0
+offset_right = 240.0
+offset_bottom = 95.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="PodiumSummaryLabel" type="Label" parent="BroadcastHUDLayer/HUDRoot/PodiumCeremonyModal"]
+layout_mode = 2
+horizontal_alignment = 1
+vertical_alignment = 1
+text = "🏆 GRAND PRIX PODIUM CEREMONY"

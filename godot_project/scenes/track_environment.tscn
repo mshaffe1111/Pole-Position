@@ -1,0 +1,111 @@
+[gd_scene load_steps=13 format=3 uid="uid://c8trackenv2026f1"]
+
+[ext_resource type="Script" path="res://scripts/multimesh_environment_scatter.gd" id="1_scatter"]
+[ext_resource type="Shader" path="res://shaders/asphalt_wet_pbr.gdshader" id="2_asphalt_shd"]
+[ext_resource type="Shader" path="res://shaders/foliage_wind_and_crowd_vat.gdshader" id="3_foliage_shd"]
+[ext_resource type="PackedScene" path="res://assets/models/track_ribbon_sample.glb" id="4_track_ribbon_glb"]
+[ext_resource type="PackedScene" path="res://assets/models/env_signs_gantries_billboards.glb" id="5_signs_gantries_glb"]
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_Asphalt"]
+shader = ExtResource("2_asphalt_shd")
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_FoliageAndCrowd"]
+shader = ExtResource("3_foliage_shd")
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_MainStraightAsphalt"]
+size = Vector3(920.0, 0.2, 16.8)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_SawtoothCurb"]
+size = Vector3(920.0, 0.14, 1.25)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_GravelRunoff"]
+size = Vector3(920.0, 0.2, 6.4)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_GrassVerge"]
+size = Vector3(4200.0, 0.2, 4200.0)
+
+[sub_resource type="Curve3D" id="Curve3D_Fuji1982"]
+_data = {
+"points": PackedVector3Array(0, 0, 0, 0, 0, 0, -260, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 620, 0, 0, 0, 0, 0, 0, 0, 0, 855, 5, 295, 0, 0, 0, 0, 0, 0, 460, 9, 330, 0, 0, 0, 0, 0, 0, -185, 13, 665, 0, 0, 0, 0, 0, 0, -485, 5, 240, 0, 0, 0, 0, 0, 0, -260, 0, 0),
+"tilts": PackedFloat32Array(0, 0, 0, 0.14, -0.11, 0.16, 0.09, 0)
+}
+point_count = 8
+
+[node name="TrackEnvironment3D" type="Node3D"]
+
+[node name="CircuitCenterlinePath3D" type="Path3D" parent="."]
+curve = SubResource("Curve3D_Fuji1982")
+
+[node name="BlenderTrackRibbonSuite" parent="." instance=ExtResource("4_track_ribbon_glb")]
+
+[node name="BlenderStartGantryAndSignsSuite" parent="." instance=ExtResource("5_signs_gantries_glb")]
+
+[node name="Track_Asphalt_Ribbon-col" type="StaticBody3D" parent="." groups=["surface_asphalt"]]
+metadata/surface_grip = 1.0
+metadata/wet_grip_mult = 0.65
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Track_Asphalt_Ribbon-col"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 180, -0.1, 0)
+shape = SubResource("BoxShape3D_MainStraightAsphalt")
+
+[node name="Track_Curb_Sawtooth_L-col" type="StaticBody3D" parent="." groups=["surface_curb"]]
+metadata/surface_grip = 0.85
+metadata/wet_grip_mult = 0.52
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Track_Curb_Sawtooth_L-col"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 180, 0.03, -9.025)
+shape = SubResource("BoxShape3D_SawtoothCurb")
+
+[node name="Track_Curb_Sawtooth_R-col" type="StaticBody3D" parent="." groups=["surface_curb"]]
+metadata/surface_grip = 0.85
+metadata/wet_grip_mult = 0.52
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Track_Curb_Sawtooth_R-col"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 180, 0.03, 9.025)
+shape = SubResource("BoxShape3D_SawtoothCurb")
+
+[node name="Track_Runoff_Gravel-col" type="StaticBody3D" parent="." groups=["surface_gravel"]]
+metadata/surface_grip = 0.25
+metadata/wet_grip_mult = 0.22
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Track_Runoff_Gravel-col"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 180, -0.12, -12.85)
+shape = SubResource("BoxShape3D_GravelRunoff")
+
+[node name="Track_Verge_Grass-col" type="StaticBody3D" parent="." groups=["surface_grass"]]
+metadata/surface_grip = 0.35
+metadata/wet_grip_mult = 0.24
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Track_Verge_Grass-col"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.25, 0)
+shape = SubResource("BoxShape3D_GrassVerge")
+
+[node name="StartGantry3D" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+
+[node name="StartLight_Pod_1" type="MeshInstance3D" parent="StartGantry3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.72, 6.32, -3.56)
+
+[node name="StartLight_Pod_2" type="MeshInstance3D" parent="StartGantry3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.72, 6.32, -1.78)
+
+[node name="StartLight_Pod_3" type="MeshInstance3D" parent="StartGantry3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.72, 6.32, 0.0)
+
+[node name="StartLight_Pod_4" type="MeshInstance3D" parent="StartGantry3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.72, 6.32, 1.78)
+
+[node name="StartLight_Pod_5" type="MeshInstance3D" parent="StartGantry3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.72, 6.32, 3.56)
+
+[node name="MultiMeshEnvironmentScatter" type="Node3D" parent="."]
+script = ExtResource("1_scatter")
+circuit_id = "FUJI_1982"
+road_half_width = 8.4
+curb_width = 1.25
+deciduous_tree_count = 280
+pine_tree_count = 190
+palm_tree_count = 150
+grandstand_spectator_count = 1080
+flag_waver_count = 54
+confetti_count = 220

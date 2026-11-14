@@ -1,7 +1,7 @@
 // ============================================================================
 // RACE PHANATIC F1 — POLE POSITION 2026: RETRO GRAND PRIX
 // World Championship Career Mode, 6 Works Constructor Teams, 5-Branch Car R&D
-// Engineering Garage, Telemetry Setup & Chief Race Engineer Strategy System
+// Engineering Garage, Sponsor Objectives & Team Principal Strategy System
 // ============================================================================
 
 import {
@@ -22,6 +22,45 @@ export const FIA_POINTS_SYSTEM = {
   pole: 2,
   fastestLap: 1,
 };
+
+// Dynamic Weekend Sponsor Bonus Objectives evaluated in `recordRaceWeekendResult`
+export const SPONSOR_OBJECTIVES_CATALOG = [
+  {
+    id: 'PODIUM_SWEEP',
+    title: 'Podium Sweep',
+    shortLabel: 'PODIUM TOP-3',
+    desc: 'Finish on the Grand Prix Podium (P1–P3)',
+    bonus: 20000,
+  },
+  {
+    id: 'CLEAN_CHASSIS',
+    title: 'Clean Chassis Bonus',
+    shortLabel: 'CLEAN CHASSIS',
+    desc: 'Bring the car home cleanly in the points without heavy damage',
+    bonus: 18000,
+  },
+  {
+    id: 'OVERTAKE_HUNTER',
+    title: 'Overtake Hunter (3+ Passes)',
+    shortLabel: '3+ OVERTAKES',
+    desc: 'Complete 3 or more on-track passes during the Grand Prix',
+    bonus: 15000,
+  },
+  {
+    id: 'FASTEST_LAP_BOUNTY',
+    title: 'Fastest Lap Bounty',
+    shortLabel: 'FASTEST LAP',
+    desc: 'Clock the purple Fastest Lap of the race weekend',
+    bonus: 15000,
+  },
+  {
+    id: 'FRONT_ROW_QUALIFIER',
+    title: 'Front-Row Qualifier (P1–P2)',
+    shortLabel: 'FRONT ROW P1–P2',
+    desc: 'Start on the Front Row of the grid (P1 or P2)',
+    bonus: 12000,
+  },
+];
 
 function clamp(val, min, max) {
   if (!Number.isFinite(val)) return min;
@@ -73,7 +112,7 @@ export const TEAM_CATALOG = {
       rim: 0xd8dee9,
     },
     perk: 'Balanced Heritage Works',
-    perkSummary: '+1.5% All-Round Power, Aero Downforce, Carbon Braking & -4% Pit Time',
+    perkSummary: '+2.0 km/h Top Speed, +1.5% Aero/Braking & -4% Pit Stop Time',
     description:
       'Flagship factory tribute blending iconic 1982 Fuji crimson-and-white colours with a rock-solid all-circuit engineering baseline.',
     modifiers: {
@@ -157,7 +196,7 @@ export const TEAM_CATALOG = {
       rim: 0x9aa6b5,
     },
     perk: 'Tire Thermal Whisperer',
-    perkSummary: '-10% Tire Degradation Rate, Wider Carcass Temp Window & +1.8% Aero Balance',
+    perkSummary: '-10% Tire Deg Rate, Wider Carcass Temp Window & +1.8% Aero Balance',
     description:
       'Precision German-British works contender famed for extending Soft and Medium tire life deep into overcut territory.',
     modifiers: {
@@ -199,7 +238,7 @@ export const TEAM_CATALOG = {
       rim: 0xd0daf0,
     },
     perk: 'High-Downforce Cornering Bite',
-    perkSummary: '+4.0% Lateral Aero Grip & +2.5% High-Speed Sweeper Stability',
+    perkSummary: '+4.0% Lateral Aero Grip, -2.5m High-Speed Braking & Apex Stability',
     description:
       'Sculpted Venturi underfloor tunnels plant the front nose on rails through Monte Carlo hairpins and high-G S-curves.',
     modifiers: {
@@ -241,7 +280,7 @@ export const TEAM_CATALOG = {
       rim: 0xd4af37,
     },
     perk: 'Featherweight Chassis Agility',
-    perkSummary: '+4.0% Carbon Braking Power, +4.5% Turn-In Rotation & -5% Tire Wear',
+    perkSummary: '-3.6m Braking Distance (+4.0% Decel), +4.5% Turn-In & -5% Tire Deg',
     description:
       'Minimum-mass black-and-gold icon engineered for late-braking lunges, razor-sharp chicane direction changes, and nimble kerb riding.',
     modifiers: {
@@ -283,7 +322,7 @@ export const TEAM_CATALOG = {
       rim: 0x22302c,
     },
     perk: 'Rapid Pit Crew & Wet Mastery',
-    perkSummary: '-9% Stationary Pit Stop Duration, +3.5% Clutch Window & Wet-Weather Bite',
+    perkSummary: '-9% Pit Stop Time (-0.23s), +3.5% Clutch Sweet-Spot & Wet Grip',
     description:
       'Championship pit-wall choreography and all-weather mechanical grip turn undercut stops and sudden rainstorms into podiums.',
     modifiers: {
@@ -301,7 +340,7 @@ export const TEAM_CATALOG = {
 };
 
 // ============================================================================
-// 2. 5 UPGRADABLE F1 ENGINEERING SUBSYSTEMS (LEVELS 1 TO 5)
+// 2. 5 UPGRADABLE F1 ENGINEERING SUBSYSTEMS (LEVELS 1 TO 5 WITH TELEMETRY DELTAS)
 // ============================================================================
 export const CAR_PARTS_CATALOG = {
   powertrain: {
@@ -311,7 +350,7 @@ export const CAR_PARTS_CATALOG = {
     shortLabel: 'POWER',
     icon: '⚡',
     maxLevel: 5,
-    description: 'Boosts V6 ICE + MGU-K acceleration torque and straight-line top speed.',
+    description: 'Boosts V6 ICE + MGU-K acceleration torque and straight-line top speed (+km/h).',
     levels: [
       {
         level: 1,
@@ -320,6 +359,7 @@ export const CAR_PARTS_CATALOG = {
         cost: 0,
         powerMult: 1.000,
         topSpeedBonusKmh: 0.0,
+        telemetryDelta: '+0.0 km/h Vmax • +0.0% Power',
         summary: '+0.0% Power • +0.0 km/h Top Speed',
       },
       {
@@ -329,7 +369,8 @@ export const CAR_PARTS_CATALOG = {
         cost: 110000,
         powerMult: 1.016,
         topSpeedBonusKmh: 2.2,
-        summary: '+1.6% Power • +2.2 km/h Top Speed',
+        telemetryDelta: '+2.2 km/h Vmax • +1.6% Torque • -0.08s 0–200',
+        summary: '+2.2 km/h Top Speed • +1.6% Power • -0.08s 0–200',
       },
       {
         level: 3,
@@ -338,7 +379,8 @@ export const CAR_PARTS_CATALOG = {
         cost: 210000,
         powerMult: 1.032,
         topSpeedBonusKmh: 4.5,
-        summary: '+3.2% Power • +4.5 km/h Top Speed',
+        telemetryDelta: '+4.5 km/h Vmax • +3.2% Torque • -0.16s 0–200',
+        summary: '+4.5 km/h Top Speed • +3.2% Power • -0.16s 0–200',
       },
       {
         level: 4,
@@ -347,7 +389,8 @@ export const CAR_PARTS_CATALOG = {
         cost: 340000,
         powerMult: 1.048,
         topSpeedBonusKmh: 6.8,
-        summary: '+4.8% Power • +6.8 km/h Top Speed',
+        telemetryDelta: '+6.8 km/h Vmax • +4.8% Torque • -0.24s 0–200',
+        summary: '+6.8 km/h Top Speed • +4.8% Power • -0.24s 0–200',
       },
       {
         level: 5,
@@ -356,7 +399,8 @@ export const CAR_PARTS_CATALOG = {
         cost: 500000,
         powerMult: 1.065,
         topSpeedBonusKmh: 9.0,
-        summary: '+6.5% Power • +9.0 km/h Top Speed',
+        telemetryDelta: '+9.0 km/h Vmax • +6.5% Torque • -0.32s 0–200',
+        summary: '+9.0 km/h Top Speed • +6.5% Power • -0.32s 0–200',
       },
     ],
   },
@@ -368,7 +412,7 @@ export const CAR_PARTS_CATALOG = {
     shortLabel: 'AERO',
     icon: '🌬️',
     maxLevel: 5,
-    description: 'Increases Venturi underfloor suction, lateral cornering grip, and DRS slipstream efficiency.',
+    description: 'Increases Venturi underfloor suction (+% cornering grip), DRS tow (+km/h), and high-speed braking stability (-m).',
     levels: [
       {
         level: 1,
@@ -377,6 +421,7 @@ export const CAR_PARTS_CATALOG = {
         cost: 0,
         aeroGripMult: 1.000,
         drsBonusKmh: 0.0,
+        telemetryDelta: '+0.0% Cornering Grip • +0.0 km/h DRS',
         summary: '+0.0% Lateral Aero Grip',
       },
       {
@@ -386,7 +431,8 @@ export const CAR_PARTS_CATALOG = {
         cost: 105000,
         aeroGripMult: 1.022,
         drsBonusKmh: 0.8,
-        summary: '+2.2% Aero Grip • Clean Tire Wake',
+        telemetryDelta: '+2.2% Aero Grip • +0.8 km/h DRS • -1.1m Aero Braking',
+        summary: '+2.2% Aero Grip • +0.8 km/h DRS Tow • -1.1m Braking',
       },
       {
         level: 3,
@@ -395,7 +441,8 @@ export const CAR_PARTS_CATALOG = {
         cost: 205000,
         aeroGripMult: 1.045,
         drsBonusKmh: 1.6,
-        summary: '+4.5% Aero Grip • Venturi Edge Seal',
+        telemetryDelta: '+4.5% Aero Grip • +1.6 km/h DRS • -2.3m Aero Braking',
+        summary: '+4.5% Aero Grip • +1.6 km/h DRS Tow • -2.3m Braking',
       },
       {
         level: 4,
@@ -404,7 +451,8 @@ export const CAR_PARTS_CATALOG = {
         cost: 335000,
         aeroGripMult: 1.068,
         drsBonusKmh: 2.5,
-        summary: '+6.8% Aero Grip • High-Ratio DRS Tow',
+        telemetryDelta: '+6.8% Aero Grip • +2.5 km/h DRS • -3.4m Aero Braking',
+        summary: '+6.8% Aero Grip • +2.5 km/h DRS Tow • -3.4m Braking',
       },
       {
         level: 5,
@@ -413,7 +461,8 @@ export const CAR_PARTS_CATALOG = {
         cost: 495000,
         aeroGripMult: 1.090,
         drsBonusKmh: 3.5,
-        summary: '+9.0% Lateral Cornering Grip • Max DRS',
+        telemetryDelta: '+9.0% Aero Grip • +3.5 km/h DRS • -4.5m Aero Braking',
+        summary: '+9.0% Aero Grip • +3.5 km/h DRS Tow • -4.5m Braking',
       },
     ],
   },
@@ -425,7 +474,7 @@ export const CAR_PARTS_CATALOG = {
     shortLabel: 'CHASSIS',
     icon: '🛞',
     maxLevel: 5,
-    description: 'Sharpens front-axle turn-in response, FIA kerb compliance, and 5G carbon stopping power.',
+    description: 'Shortens 300-to-100 km/h braking distance (-m) and sharpens front-axle turn-in agility (+%).',
     levels: [
       {
         level: 1,
@@ -434,6 +483,8 @@ export const CAR_PARTS_CATALOG = {
         cost: 0,
         brakeMult: 1.000,
         agilityMult: 1.000,
+        brakingDistDeltaM: 0.0,
+        telemetryDelta: '-0.0m Braking • +0.0% Turn-In Agility',
         summary: '+0.0% Braking Decel & Agility',
       },
       {
@@ -443,7 +494,9 @@ export const CAR_PARTS_CATALOG = {
         cost: 100000,
         brakeMult: 1.020,
         agilityMult: 1.020,
-        summary: '+2.0% Braking & Kerb Stability',
+        brakingDistDeltaM: -1.8,
+        telemetryDelta: '-1.8m Braking • +2.0% Braking & Kerb Agility',
+        summary: '-1.8m Braking Dist • +2.0% Braking & Kerb Agility',
       },
       {
         level: 3,
@@ -452,7 +505,9 @@ export const CAR_PARTS_CATALOG = {
         cost: 195000,
         brakeMult: 1.040,
         agilityMult: 1.040,
-        summary: '+4.0% Braking Decel & Apex Bite',
+        brakingDistDeltaM: -3.6,
+        telemetryDelta: '-3.6m Braking • +4.0% Braking Decel & Apex Bite',
+        summary: '-3.6m Braking Dist • +4.0% Braking & Apex Bite',
       },
       {
         level: 4,
@@ -461,7 +516,9 @@ export const CAR_PARTS_CATALOG = {
         cost: 320000,
         brakeMult: 1.060,
         agilityMult: 1.060,
-        summary: '+6.0% Braking & Trail-Brake Rotation',
+        brakingDistDeltaM: -5.4,
+        telemetryDelta: '-5.4m Braking • +6.0% Braking & Trail-Brake Rotation',
+        summary: '-5.4m Braking Dist • +6.0% Braking & Trail-Brake',
       },
       {
         level: 5,
@@ -470,7 +527,9 @@ export const CAR_PARTS_CATALOG = {
         cost: 480000,
         brakeMult: 1.080,
         agilityMult: 1.080,
-        summary: '+8.0% Braking Decel & Razor Agility',
+        brakingDistDeltaM: -7.2,
+        telemetryDelta: '-7.2m Braking • +8.0% Braking Decel & Razor Agility',
+        summary: '-7.2m Braking Dist • +8.0% Braking & Razor Agility',
       },
     ],
   },
@@ -482,7 +541,7 @@ export const CAR_PARTS_CATALOG = {
     shortLabel: 'TIRES',
     icon: '🔥',
     maxLevel: 5,
-    description: 'Reduces tread degradation per lap and widens the optimal Pirelli carcass grip window.',
+    description: 'Cuts Pirelli tread degradation rate (-tire deg %) and widens the optimal thermal grip window (+°C).',
     levels: [
       {
         level: 1,
@@ -490,8 +549,10 @@ export const CAR_PARTS_CATALOG = {
         partName: 'Standard Alloy Rim Blankets',
         cost: 0,
         tireWearMult: 1.00,
+        tireDegReductionPct: 0,
         thermalWindowBonusC: 0,
-        summary: '1.00x Tire Wear • Baseline Temp Window',
+        telemetryDelta: '-0% Tire Deg • Baseline Thermal Window',
+        summary: '1.00x Tire Wear (-0% Deg) • Baseline Temp Window',
       },
       {
         level: 2,
@@ -499,8 +560,10 @@ export const CAR_PARTS_CATALOG = {
         partName: 'Internal Drum Infrared Telemetry',
         cost: 95000,
         tireWearMult: 0.94,
+        tireDegReductionPct: 6,
         thermalWindowBonusC: 2,
-        summary: '0.94x Tire Wear • +2°C Grip Window',
+        telemetryDelta: '-6% Tire Deg/Lap • +2°C Grip Window',
+        summary: '-6% Tire Deg (0.94x Wear) • +2°C Grip Window',
       },
       {
         level: 3,
@@ -508,8 +571,10 @@ export const CAR_PARTS_CATALOG = {
         partName: 'Forged Magnesium Finned Wheel Rims',
         cost: 185000,
         tireWearMult: 0.88,
+        tireDegReductionPct: 12,
         thermalWindowBonusC: 4,
-        summary: '0.88x Tire Wear • +4°C Grip Window',
+        telemetryDelta: '-12% Tire Deg/Lap • +4°C Grip Window',
+        summary: '-12% Tire Deg (0.88x Wear) • +4°C Grip Window',
       },
       {
         level: 4,
@@ -517,8 +582,10 @@ export const CAR_PARTS_CATALOG = {
         partName: 'Dual-Stage Carbon Brake-Duct Diverters',
         cost: 300000,
         tireWearMult: 0.82,
+        tireDegReductionPct: 18,
         thermalWindowBonusC: 6,
-        summary: '0.82x Tire Wear • +6°C Grip Window',
+        telemetryDelta: '-18% Tire Deg/Lap • +6°C Grip Window',
+        summary: '-18% Tire Deg (0.82x Wear) • +6°C Grip Window',
       },
       {
         level: 5,
@@ -526,8 +593,10 @@ export const CAR_PARTS_CATALOG = {
         partName: 'Phase-Change Carcass Thermal Matrix',
         cost: 460000,
         tireWearMult: 0.76,
+        tireDegReductionPct: 24,
         thermalWindowBonusC: 8,
-        summary: '0.76x Tire Wear • +8°C Optimal Window',
+        telemetryDelta: '-24% Tire Deg/Lap • +8°C Optimal Grip Window',
+        summary: '-24% Tire Deg (0.76x Wear) • +8°C Optimal Window',
       },
     ],
   },
@@ -539,7 +608,7 @@ export const CAR_PARTS_CATALOG = {
     shortLabel: 'PIT CREW',
     icon: '🔧',
     maxLevel: 5,
-    description: 'Cuts stationary pit box tire-change time and widens the green clutch launch sweet-spot.',
+    description: 'Shaves stationary pit-stop duration (-s / -%) and widens the green clutch launch sweet-spot.',
     levels: [
       {
         level: 1,
@@ -549,6 +618,7 @@ export const CAR_PARTS_CATALOG = {
         pitStopDurationMult: 1.00,
         clutchZoneBonus: 0.00,
         errorProbMult: 1.00,
+        telemetryDelta: '-0.00s Pit Stop • Standard Clutch Window',
         summary: '1.00x Stop Duration • Standard Clutch Zone',
       },
       {
@@ -559,7 +629,8 @@ export const CAR_PARTS_CATALOG = {
         pitStopDurationMult: 0.94,
         clutchZoneBonus: 0.02,
         errorProbMult: 0.85,
-        summary: '0.94x Stop Duration • +2% Clutch Window',
+        telemetryDelta: '-0.15s Stop (0.94x) • +2% Clutch Sweet-Spot',
+        summary: '-0.15s Pit Time (0.94x) • +2% Clutch Window',
       },
       {
         level: 3,
@@ -569,7 +640,8 @@ export const CAR_PARTS_CATALOG = {
         pitStopDurationMult: 0.88,
         clutchZoneBonus: 0.04,
         errorProbMult: 0.70,
-        summary: '0.88x Stop Duration • +4% Clutch Window',
+        telemetryDelta: '-0.30s Stop (0.88x) • +4% Clutch Sweet-Spot',
+        summary: '-0.30s Pit Time (0.88x) • +4% Clutch Window',
       },
       {
         level: 4,
@@ -579,7 +651,8 @@ export const CAR_PARTS_CATALOG = {
         pitStopDurationMult: 0.81,
         clutchZoneBonus: 0.06,
         errorProbMult: 0.52,
-        summary: '0.81x Stop Duration • +6% Clutch Window',
+        telemetryDelta: '-0.48s Stop (0.81x) • +6% Clutch Sweet-Spot',
+        summary: '-0.48s Pit Time (0.81x) • +6% Clutch Window',
       },
       {
         level: 5,
@@ -589,7 +662,8 @@ export const CAR_PARTS_CATALOG = {
         pitStopDurationMult: 0.75,
         clutchZoneBonus: 0.08,
         errorProbMult: 0.35,
-        summary: '0.75x Stop Duration • +8% Optimal Clutch',
+        telemetryDelta: '-0.63s Stop (0.75x) • +8% Optimal Clutch Window',
+        summary: '-0.63s Pit Time (0.75x) • +8% Optimal Clutch',
       },
     ],
   },
@@ -601,7 +675,7 @@ for (const branch of Object.values(CAR_PARTS_CATALOG)) {
 }
 
 // ============================================================================
-// 3. 6-ROUND WORLD CHAMPIONSHIP CALENDAR (WITH AUTOMATIC TRACK FALLBACK)
+// 3. 6-ROUND WORLD CHAMPIONSHIP CALENDAR (WITH VIVID ENGINEER METADATA)
 // ============================================================================
 const TRACK_FALLBACK_MAP = {
   FUJI_1982: 'FUJI_1982',
@@ -632,6 +706,10 @@ export const CHAMPIONSHIP_CALENDAR = [
     country: '🇯🇵 JAPAN',
     recommendedWing: 'BALANCED',
     tireStress: 'MEDIUM',
+    brakingSeverity: 'HIGH (Turn 1 Daiichi 315→115 km/h)',
+    keyCorner: '100R Sweeper & Panorama Curve',
+    engineerNote:
+      'Alpine air boosts turbo density on the 1.5 km straight, while sweeping 100R loads the front-left carcass.',
     prestigePurseBonus: 0,
     get resolvedTrackId() {
       return resolveCalendarTrackId(this.trackId);
@@ -648,6 +726,10 @@ export const CHAMPIONSHIP_CALENDAR = [
     country: '🇲🇨 MONACO',
     recommendedWing: 'HIGH_DOWNFORCE',
     tireStress: 'LOW',
+    brakingSeverity: 'EXTREME (Nouvelle Chicane after Tunnel)',
+    keyCorner: 'Casino Descent, Tunnel & Swimming Pool',
+    engineerNote:
+      'Zero Armco margin in Monte Carlo — qualify on the front row and execute a crisp pit-lane undercut.',
     prestigePurseBonus: 25000,
     get resolvedTrackId() {
       return resolveCalendarTrackId(this.trackId);
@@ -664,6 +746,10 @@ export const CHAMPIONSHIP_CALENDAR = [
     country: '🇯🇵 PACIFIC',
     recommendedWing: 'HIGH_DOWNFORCE',
     tireStress: 'HIGH',
+    brakingSeverity: 'MEDIUM-HIGH (Casio Triangle & Hairpin)',
+    keyCorner: 'S-Curves, Degner & 305 km/h 130R',
+    engineerNote:
+      'Suzuka Figure-8 crossovers demand rhythmic steering precision and high Venturi downforce through the Esses.',
     prestigePurseBonus: 10000,
     get resolvedTrackId() {
       return resolveCalendarTrackId(this.trackId);
@@ -680,6 +766,10 @@ export const CHAMPIONSHIP_CALENDAR = [
     country: '🇮🇹 ITALY',
     recommendedWing: 'LOW_DRAG',
     tireStress: 'LOW',
+    brakingSeverity: 'SEVERE (4.9G Rettifilo Chicane)',
+    keyCorner: 'Variante Ascari & Curva Parabolica',
+    engineerNote:
+      'Full-throttle slipstream temple: trim out wing drag (+5 km/h) and harvest DRS tow past 330+ km/h.',
     prestigePurseBonus: 15000,
     get resolvedTrackId() {
       return resolveCalendarTrackId(this.trackId);
@@ -696,6 +786,10 @@ export const CHAMPIONSHIP_CALENDAR = [
     country: '🇬🇧 GREAT BRITAIN',
     recommendedWing: 'BALANCED',
     tireStress: 'HIGH',
+    brakingSeverity: 'MEDIUM (Brooklands & Vale Complex)',
+    keyCorner: 'Maggotts-Becketts-Chapel Complex',
+    engineerNote:
+      'Sustained 4.5G lateral sweeps punish worn rubber — box before the 25% Pirelli grip cliff.',
     prestigePurseBonus: 15000,
     get resolvedTrackId() {
       return resolveCalendarTrackId(this.trackId);
@@ -712,6 +806,10 @@ export const CHAMPIONSHIP_CALENDAR = [
     country: '🇺🇸 USA (NIGHT)',
     recommendedWing: 'LOW_DRAG',
     tireStress: 'MEDIUM',
+    brakingSeverity: 'HIGH (Sphere Turn 1 & Strip Hairpin)',
+    keyCorner: 'Neon Strip Straight & Sphere Carousel',
+    engineerNote:
+      'World Championship Night Finale under floodlights — cool desert tarmac extends Soft stints for late-race lunges!',
     prestigePurseBonus: 35000,
     get resolvedTrackId() {
       return resolveCalendarTrackId(this.trackId);
@@ -830,7 +928,7 @@ export const CAR_SETUP_OPTIONS = {
   },
 };
 
-// Circuit-specific engineering telemetry notes for `getStrategyBriefing`
+// Circuit-specific engineering telemetry notes for `getStrategyBriefing` / `getStrategyRecommendation`
 const CIRCUIT_STRATEGY_PROFILES = {
   FUJI_1982: {
     wing: 'BALANCED',
@@ -920,6 +1018,30 @@ const ARCHETYPE_PACE_WEIGHT = {
   LATE_BRAKER: 0.99,
   ROOKIE_WILDCARD: 0.92,
 };
+
+function createSponsorBonusItem(def) {
+  const formattedBonus = `+${formatCredits(def.bonus)}`;
+  const shortCash = `+$${Math.round(def.bonus / 1000)}K`;
+  return {
+    id: def.id,
+    title: def.title,
+    name: def.title,
+    label: def.title,
+    shortLabel: def.shortLabel,
+    chipText: `${def.shortLabel} ${shortCash}`,
+    desc: def.desc,
+    bonus: def.bonus,
+    payout: def.bonus,
+    cash: def.bonus,
+    amount: def.bonus,
+    reward: def.bonus,
+    formattedBonus,
+    achieved: true,
+    toString() {
+      return `${def.title} ${formattedBonus}`;
+    },
+  };
+}
 
 function createFreshDriverPointsMap() {
   const map = { PLAYER: 0 };
@@ -1181,12 +1303,50 @@ export class CareerManager {
       roundIndex: idx,
       resolvedTrackId,
       usedFallbackTrack: resolvedTrackId !== entry.trackId,
+      sponsorObjectives: this.getWeekendSponsorObjectives(),
     };
   }
 
+  getWeekendSponsorObjectives() {
+    return SPONSOR_OBJECTIVES_CATALOG.map((o) => ({
+      ...o,
+      formattedBonus: `+${formatCredits(o.bonus)}`,
+    }));
+  }
+
   // --------------------------------------------------------------------------
-  // CAR PARTS R&D GARAGE (LEVELS 1 TO 5)
+  // CAR PARTS R&D GARAGE (LEVELS 1 TO 5 WITH CONCRETE TELEMETRY DELTAS)
   // --------------------------------------------------------------------------
+  _computeStepDeltaText(branchId, curPart, nextPart) {
+    if (!nextPart) return 'MAX WORKS HOMOLOGATION SPEC';
+    if (branchId === 'powertrain') {
+      const dSpd = (nextPart.topSpeedBonusKmh - curPart.topSpeedBonusKmh).toFixed(1);
+      const dPwr = ((nextPart.powerMult - curPart.powerMult) * 100).toFixed(1);
+      return `${nextPart.name}: +${dSpd} km/h Vmax • +${dPwr}% Power (${nextPart.telemetryDelta})`;
+    }
+    if (branchId === 'aero') {
+      const dGrip = ((nextPart.aeroGripMult - curPart.aeroGripMult) * 100).toFixed(1);
+      const dDrs = (nextPart.drsBonusKmh - curPart.drsBonusKmh).toFixed(1);
+      return `${nextPart.name}: +${dGrip}% Cornering Grip • +${dDrs} km/h DRS (${nextPart.telemetryDelta})`;
+    }
+    if (branchId === 'chassis') {
+      const dBrkM = Math.abs((nextPart.brakingDistDeltaM || 0) - (curPart.brakingDistDeltaM || 0)).toFixed(1);
+      const dAgil = ((nextPart.agilityMult - curPart.agilityMult) * 100).toFixed(1);
+      return `${nextPart.name}: -${dBrkM}m Braking Dist • +${dAgil}% Agility (${nextPart.telemetryDelta})`;
+    }
+    if (branchId === 'tires') {
+      const dDeg = Math.round((curPart.tireWearMult - nextPart.tireWearMult) * 100);
+      const dTemp = nextPart.thermalWindowBonusC - curPart.thermalWindowBonusC;
+      return `${nextPart.name}: -${dDeg}% Tire Deg/Lap • +${dTemp}°C Window (${nextPart.telemetryDelta})`;
+    }
+    if (branchId === 'pitCrew') {
+      const dStopPct = Math.round((curPart.pitStopDurationMult - nextPart.pitStopDurationMult) * 100);
+      const dClutch = Math.round((nextPart.clutchZoneBonus - curPart.clutchZoneBonus) * 100);
+      return `${nextPart.name}: -${dStopPct}% Pit Stop Time • +${dClutch}% Clutch (${nextPart.telemetryDelta})`;
+    }
+    return nextPart.summary;
+  }
+
   getUpgradeInfo(branchId) {
     const branch = CAR_PARTS_CATALOG[branchId];
     if (!branch) return null;
@@ -1198,6 +1358,7 @@ export class CareerManager {
     const nextPart = isMaxed ? null : branch.levels[currentLevel];
     const nextCost = nextPart ? nextPart.cost : 0;
     const canAfford = !isMaxed && this.state.credits >= nextCost;
+    const telemetryDelta = this._computeStepDeltaText(branchId, currentPart, nextPart);
 
     return {
       branchId: branch.id,
@@ -1215,10 +1376,13 @@ export class CareerManager {
       currentPart: { ...currentPart },
       currentPartName: currentPart.name,
       currentSummary: currentPart.summary,
+      currentDelta: currentPart.telemetryDelta || currentPart.summary,
       nextLevel: isMaxed ? null : currentLevel + 1,
       nextPart: nextPart ? { ...nextPart } : null,
       nextPartName: nextPart ? nextPart.name : 'WORKS HOMOLOGATION MAX',
-      nextSummary: nextPart ? nextPart.summary : currentPart.summary,
+      nextSummary: nextPart ? `${nextPart.name} (${nextPart.telemetryDelta || nextPart.summary})` : currentPart.summary,
+      nextDelta: nextPart ? (nextPart.telemetryDelta || nextPart.summary) : 'MAX LEVEL',
+      telemetryDelta,
       cost: nextCost,
       nextCost,
       canAfford,
@@ -1283,7 +1447,8 @@ export class CareerManager {
       newLevel,
       part: { ...unlockedPart },
       partName: unlockedPart.name,
-      summary: unlockedPart.summary,
+      summary: unlockedPart.telemetryDelta || unlockedPart.summary,
+      telemetryDelta: unlockedPart.telemetryDelta || unlockedPart.summary,
       costPaid: info.nextCost,
       credits: this.state.credits,
       remainingCredits: this.state.credits,
@@ -1377,6 +1542,8 @@ export class CareerManager {
       fuelLoadMult,
       // Additional integrated engineering parameters
       drsBonusKmh: Number(aeroSpec.drsBonusKmh.toFixed(2)),
+      brakingDistDeltaM: Number((chasSpec.brakingDistDeltaM || 0).toFixed(1)),
+      tireDegReductionPct: Math.round((1.0 - tireWearMult) * 100),
       thermalWindowBonusC: tireSpec.thermalWindowBonusC,
       pitErrorProbMult: Number(pitSpec.errorProbMult.toFixed(3)),
       wetGripBonus: Number((tm.wetGripBonus || 0).toFixed(3)),
@@ -1425,8 +1592,35 @@ export class CareerManager {
   }
 
   // --------------------------------------------------------------------------
-  // CHIEF RACE ENGINEER STRATEGY BRIEFING CARD
+  // TEAM PRINCIPAL PRE-RACE STRATEGY & NEMESIS BRIEFING
   // --------------------------------------------------------------------------
+  _buildNemesisBriefing() {
+    const standings = this.getChampionshipStandings();
+    const playerRow = standings.find((r) => r.isPlayer) || standings[0];
+    const nemesisRow = standings.find((r) => !r.isPlayer) || standings[1] || playerRow;
+    const deltaPts = playerRow.points - nemesisRow.points;
+
+    let summary;
+    if (playerRow.points === 0 && nemesisRow.points === 0) {
+      summary = `Championship Opener vs Rival ${nemesisRow.driverName}: P1 + Pole + Fastest Lap banks a 28-pt lead!`;
+    } else if (deltaPts > 0) {
+      summary = `Championship Leader (P1, +${deltaPts} pts ahead of #2 Nemesis ${nemesisRow.driverName}) — cover their pit stop to protect the crown!`;
+    } else if (deltaPts < 0) {
+      summary = `Chasing Leader ${nemesisRow.driverName} (-${Math.abs(deltaPts)} pts gap from P${playerRow.rank}) — attack with an undercut & Fastest Lap (+1 pt)!`;
+    } else {
+      summary = `Tied on ${playerRow.points} pts with Nemesis ${nemesisRow.driverName} — finish ahead on track to seize solo P1!`;
+    }
+
+    return {
+      playerRank: playerRow.rank,
+      playerPoints: playerRow.points,
+      nemesisName: nemesisRow.driverName,
+      nemesisPoints: nemesisRow.points,
+      pointsDelta: deltaPts,
+      summary,
+    };
+  }
+
   getStrategyBriefing(trackId, totalLaps = PRO_2026_LENGTHS.SHORT.laps, weatherId = 'HOT_SUNNY') {
     const currentRound = this.getCurrentRound();
     const rawTrackId = trackId || currentRound.trackId;
@@ -1478,7 +1672,10 @@ export class CareerManager {
       optimalStartingTire = 'SOFT';
       nextPitCompound = 'SOFT';
       expectedStops = 2;
-    } else if (userStint.id === 'ONE_STOP_MH' || (laps >= 12 && calEntry.tireStress === 'HIGH' && mods.tireWearMult > 0.90)) {
+    } else if (
+      userStint.id === 'ONE_STOP_MH' ||
+      (laps >= 12 && calEntry.tireStress === 'HIGH' && mods.tireWearMult > 0.90)
+    ) {
       optimalStartingTire = 'MEDIUM';
       nextPitCompound = laps >= 18 ? 'HARD' : 'SOFT';
     } else {
@@ -1515,7 +1712,8 @@ export class CareerManager {
         ? `LAP ${targetPitWindowLap} SPRINT BOX`
         : `LAP ${targetPitWindowLap} (WINDOW L${windowStart}–L${windowEnd})`;
 
-    const wingOpt = CAR_SETUP_OPTIONS.wingTrim[wingRecommendation] || CAR_SETUP_OPTIONS.wingTrim.BALANCED;
+    const wingOpt =
+      CAR_SETUP_OPTIONS.wingTrim[wingRecommendation] || CAR_SETUP_OPTIONS.wingTrim.BALANCED;
     const startTireDef = TIRE_COMPOUNDS[optimalStartingTire] || TIRE_COMPOUNDS.SOFT;
     const nextTireDef = TIRE_COMPOUNDS[nextPitCompound] || TIRE_COMPOUNDS.MEDIUM;
 
@@ -1526,27 +1724,42 @@ export class CareerManager {
     const crewModeDef = PIT_CREW_MODES[crewModeKey] || PIT_CREW_MODES.BALANCED;
     const estStopSec = Number((crewModeDef.baseTireSec * mods.pitStopDurationMult).toFixed(2));
 
-    let undercutAdvice = profile.undercutNote;
+    // Team Principal Nemesis & Telemetry Delta Briefing
+    const nemesis = this._buildNemesisBriefing();
+
+    let baseAdvice = profile.undercutNote;
     if (isHeavyWet) {
-      undercutAdvice =
+      baseAdvice =
         'Standing water active! Launch on Full Wet (Blue) tread to prevent >192 km/h hydroplaning and pit under VSC if wing damage occurs.';
     } else if (isLightRain) {
-      undercutAdvice =
+      baseAdvice =
         'Damp 34% groove favours Green Intermediates (+6% wet bite). Box onto fresh Inters at mid-distance or immediately under a Virtual Safety Car.';
     } else if (isRandomWeather) {
-      undercutAdvice = `${profile.undercutNote} (Weather set to RANDOM — Pit Wall will auto-fit Inters/Wets on the grid if rain rolls!)`;
+      baseAdvice = `${profile.undercutNote} ( Pit Wall auto-fits Inters/Wets on the grid if RANDOM weather rolls rain!)`;
     }
+
+    const undercutAdvice = `${baseAdvice} • 🏆 ${nemesis.summary}`;
 
     const wingReason = isHeavyWet
       ? 'Monsoon standing water overrides low-drag setups — run High Downforce (+6.5% grip) to keep the rear planted.'
       : profile.wingReason;
 
+    const watchoutsWithNemesis = [
+      nemesis.summary,
+      ...profile.watchouts.slice(0, 2),
+    ];
+
     return {
       trackId: rawTrackId,
       resolvedTrackId,
       circuitName: calEntry.fullLabel || trackDef.name,
+      engineerNote: calEntry.engineerNote || profile.wingReason,
+      keyCorner: calEntry.keyCorner || '',
+      brakingSeverity: calEntry.brakingSeverity || '',
       weatherId: isRandomWeather ? 'RANDOM' : effectiveWeatherId,
-      weatherLabel: isRandomWeather ? 'RANDOM RACE FORECAST' : `${weatherDef.icon} ${weatherDef.label}`,
+      weatherLabel: isRandomWeather
+        ? 'RANDOM RACE FORECAST'
+        : `${weatherDef.icon} ${weatherDef.label}`,
       isWetRace,
       totalLaps: laps,
       // Core Engineer Strategy Fields
@@ -1562,16 +1775,24 @@ export class CareerManager {
       wingRecommendationLabel: `${wingOpt.shortLabel} (${wingOpt.desc})`,
       wingReason,
       undercutAdvice,
+      nemesisBriefing: nemesis.summary,
+      nemesisAnalysis: nemesis,
+      sponsorObjectives: this.getWeekendSponsorObjectives(),
       recommendedFuelLoad: laps <= 5 ? 'LIGHT' : (laps >= 20 ? 'HEAVY' : 'STANDARD'),
       recommendedCrewMode: crewModeKey,
       estimatedPitStopSec: estStopSec,
       headline: `BOX LAP ${targetPitWindowLap} • START ${startTireDef.name} • ${wingOpt.shortLabel} WING`,
-      keyWatchouts: [...profile.watchouts],
+      keyWatchouts: watchoutsWithNemesis,
     };
   }
 
+  // Alias `getStrategyRecommendation` -> `getStrategyBriefing`
+  getStrategyRecommendation(trackId, totalLaps = PRO_2026_LENGTHS.SHORT.laps, weatherId = 'HOT_SUNNY') {
+    return this.getStrategyBriefing(trackId, totalLaps, weatherId);
+  }
+
   // --------------------------------------------------------------------------
-  // CHAMPIONSHIP STANDINGS & RACE WEEKEND SCORING / SEASON PROGRESSION
+  // CHAMPIONSHIP STANDINGS & RACE WEEKEND SCORING / SPONSOR PAYOUTS
   // --------------------------------------------------------------------------
   _matchRosterDriver(entry) {
     if (!entry) return null;
@@ -1658,6 +1879,43 @@ export class CareerManager {
     });
   }
 
+  _evaluateSponsorBonuses({ finishPos, gridPos, gotFastestLap, overtakes, cleanRace, damage }) {
+    const bonuses = [];
+
+    // 1. Podium Sweep (+$20,000)
+    if (finishPos <= 3) {
+      bonuses.push(createSponsorBonusItem(SPONSOR_OBJECTIVES_CATALOG[0]));
+    }
+
+    // 2. Clean Chassis Bonus (+$18,000)
+    const isClean =
+      cleanRace !== undefined
+        ? !!cleanRace
+        : (damage !== undefined && Number.isFinite(Number(damage))
+          ? Number(damage) <= 0.20
+          : finishPos <= 8);
+    if (isClean) {
+      bonuses.push(createSponsorBonusItem(SPONSOR_OBJECTIVES_CATALOG[1]));
+    }
+
+    // 3. Overtake Hunter 3+ Passes (+$15,000)
+    if (overtakes >= 3) {
+      bonuses.push(createSponsorBonusItem(SPONSOR_OBJECTIVES_CATALOG[2]));
+    }
+
+    // 4. Fastest Lap Bounty (+$15,000)
+    if (gotFastestLap) {
+      bonuses.push(createSponsorBonusItem(SPONSOR_OBJECTIVES_CATALOG[3]));
+    }
+
+    // 5. Front-Row Qualifier P1–P2 (+$12,000)
+    if (gridPos <= 2) {
+      bonuses.push(createSponsorBonusItem(SPONSOR_OBJECTIVES_CATALOG[4]));
+    }
+
+    return bonuses;
+  }
+
   recordRaceWeekendResult(result = {}) {
     const {
       trackId,
@@ -1667,6 +1925,8 @@ export class CareerManager {
       overtakes = 0,
       arcadeScore = 0,
       standings = null,
+      cleanRace,
+      damage,
     } = result || {};
 
     const roundIdxBefore = clamp(
@@ -1775,7 +2035,7 @@ export class CareerManager {
         Math.max(0, finiteOr(this.state.driverPoints[flAi], 0)) + FIA_POINTS_SYSTEM.fastestLap;
     }
 
-    // 3. Calculate Weekend Prize Purse ($120,000 – $650,000 based on finish + overtakes + pole + FL)
+    // 3. Calculate Weekend Prize Purse ($120,000 – $650,000) + Dynamic Sponsor Bonuses
     const FINISH_PURSE_TABLE = [
       480000, // P1
       370000, // P2
@@ -1804,6 +2064,16 @@ export class CareerManager {
       650000
     );
 
+    const sponsorBonuses = this._evaluateSponsorBonuses({
+      finishPos: pos,
+      gridPos: grid,
+      gotFastestLap,
+      overtakes: passes,
+      cleanRace,
+      damage,
+    });
+    const sponsorBonusTotal = sponsorBonuses.reduce((sum, b) => sum + b.bonus, 0);
+
     // 4. Update Lifetime Career Stats & Season Round History
     const completedSeasonNumber = this.state.seasonNumber;
     this.state.stats.races += 1;
@@ -1828,6 +2098,7 @@ export class CareerManager {
       overtakes: passes,
       pointsEarned: playerPointsEarned,
       prizeMoney: racePrizeMoney,
+      sponsorBonusTotal,
       arcadeScore: score,
     };
     this.state.roundHistory.push(roundRecord);
@@ -1888,7 +2159,7 @@ export class CareerManager {
       this.state.currentRoundIdx = roundIdxBefore + 1;
     }
 
-    const totalPayout = racePrizeMoney + trophyBonus;
+    const totalPayout = racePrizeMoney + sponsorBonusTotal + trophyBonus;
     this.state.credits += totalPayout;
     this.state.stats.totalEarnings += totalPayout;
     this._save();
@@ -1916,6 +2187,8 @@ export class CareerManager {
         total: playerPointsEarned,
       },
       prizeMoney: racePrizeMoney,
+      sponsorBonuses,
+      sponsorBonusTotal,
       trophyBonus,
       totalPayout,
       payoutBreakdown: {
@@ -1925,6 +2198,7 @@ export class CareerManager {
         overtakeBonus: passPurse,
         prestigeBonus: racePrizeMoney - (finishPurse + polePurse + flPurse + passPurse),
         racePrizeMoney,
+        sponsorBonusTotal,
         trophyBonus,
         totalPayout,
       },

@@ -1,7 +1,11 @@
 // ============================================================================
 // RACE PHANATIC F1 — POLE POSITION 2026: RETRO GRAND PRIX
-// Autonomous Spatial AI Engine: Multi-Circuit Kinematic Braking, Curvature
-// Feedforward Steering, 15-Ray Radar, Clean Slingshot Racecraft & 5 Personalities
+// Autonomous Spatial AI Engine (A+ Edition):
+// - Zero-Cheat 240Hz Physics Parity & Multi-Car Slipstream DRS Trains
+// - Coordinated Inside Late-Braking Lunges & Over-Under Exit Switchbacks
+// - Strict FIA 1-Move Defensive Rule & >=1.25x Car-Width Chicane Corridors
+// - Continuous car.aiPressureMeter (0..1) -> Inside-Front Lockup Smoke & 1.0–1.6m Wide Apex Drift
+// - Real-Time Undercut / Overcut Clean-Air Solver & W > 0.28 Wet Pit Transitions
 // ============================================================================
 
 import {
@@ -21,7 +25,7 @@ const FORWARD_RAY_LANES = [
   -7.2, -6.0, -4.8, -3.6, -2.4, -1.2, 0.0, 1.2, 2.4, 3.6, 4.8, 6.0, 7.2,
 ];
 
-// Multi-horizon spline lookahead distances in real meters (covers tight chicanes -> 325 km/h heavy braking zones)
+// Multi-horizon spline lookahead distances in real meters (covers tight chicanes -> 331 km/h heavy braking zones)
 const KINEMATIC_LOOKAHEAD_M = [15.0, 30.0, 45.0, 68.0, 95.0, 118.0, 140.0];
 
 // Manual gearbox fallback shift points (mirrors physics.js 8-speed & 6-speed ratios with clean hysteresis)
@@ -29,6 +33,15 @@ const MANUAL_8_UPSHIFT = [102, 141, 176, 208, 237, 263, 287];
 const MANUAL_8_DOWNSHIFT = [82, 118, 152, 182, 210, 236, 260];
 const MANUAL_6_UPSHIFT = [110, 155, 196, 234, 268];
 const MANUAL_6_DOWNSHIFT = [88, 128, 166, 202, 236];
+
+// Personality composure & pressure susceptibility profiles
+const PRESSURE_SUSCEPTIBILITY = {
+  ROOKIE_WILDCARD: 1.68,
+  LATE_BRAKER: 1.26,
+  DEFENSIVE_WALL: 0.56,
+  TIRE_WHISPERER: 0.50,
+  APEX_TACTICIAN: 0.44,
+};
 
 function clamp(v, lo, hi) {
   return v < lo ? lo : (v > hi ? hi : v);
@@ -67,14 +80,29 @@ export class SpatialAIController {
     car.aiDecisionTimer = (index * 0.011) % 0.045;
     car.aiLapBrakeJitter = 0.0;
     car.aiLastJitterKey = -1;
-    car.aiPressureTimer = 0.0;
-    car.aiMistakeTimer = 0.0;
-    car.aiMistakeLatBias = 0.0;
 
-    // Persistent overtake commitment to eliminate left/right oscillation behind slower traffic
+    // Continuous 0..1 Human Pressure Telemetry & Apex Lockup Excursion State
+    car.aiPressureMeter = 0.0;
+    car.aiPressureTimer = 0.0;
+    car.aiPressureCooldown = 0.0;
+    car.aiMistakeTimer = 0.0;
+    car.aiMistakeDuration = 1.35;
+    car.aiMistakeLatBias = 0.0;
+    car.aiMistakePeakLat = 0.0;
+    car.aiLockupPuffTimer = 0.0;
+    car.aiLockupCooldown = (index * 0.7) % 2.5;
+
+    // Multi-Car Slipstream Train, Switchback Cutback & FIA 1-Move Defense State
+    car.aiInDraftTrain = false;
+    car.aiDraftTrainCount = 0;
     car.aiPassSide = index % 2 === 0 ? -1 : 1;
     car.aiPassLockTimer = 0.0;
+    car.aiSwitchbackTimer = 0.0;
+    car.aiSwitchbackSign = 0;
     car.aiDefenseLat = null;
+    car.aiDefenseMovesUsed = 0;
+    car.aiDefenseCommittedSide = 0;
+    car.aiWasInCorner = false;
 
     // Realistic grid reaction stagger & subtle driver championship tier spread
     const baseReact = 0.05 + ((index * 37) % 17) * 0.009;
@@ -84,9 +112,16 @@ export class SpatialAIController {
     car.aiLaunchDelaySec = Math.max(0.02, baseReact + archReact);
     car.aiSkillTierOffset = clamp(0.010 - index * 0.0021, -0.018, 0.010);
 
+    // Real-Time Undercut / Overcut & Wet Transition Pit Strategy State
     car.aiWantsToPit = false;
     car.aiPitPlan = null;
+    car.aiPitReason = 'NONE';
+    car.aiDirtyAirStuckTimer = 0.0;
+    car.aiCleanAirTimer = 0.0;
+    car.aiOutLapPushTimer = 0.0;
+    car.aiOvercutActive = false;
     car._aiLastPitLap = 0;
+    car._aiPrevPitPhase = 'NONE';
     car._aiTargetSpeedKmh = 315.0;
     car._aiBrakeAggression = 1.0;
   }
@@ -94,6 +129,14 @@ export class SpatialAIController {
   updateAI(car, allCars, playerCar, dt, ctx) {
     const { mode, isQualifying, controlsLocked, totalLaps = 5, callbacks = {} } = ctx;
     if (car.exploded || car.pitPhase === 'STOPPED') return;
+
+    // Detect fresh pit-exit out-lap so undercut strategy unleashes maximum fresh-rubber pace!
+    if (car._aiPrevPitPhase === 'STOPPED' && car.pitPhase === 'EXIT') {
+      car.aiOutLapPushTimer = 38.0;
+      car.aiDirtyAirStuckTimer = 0.0;
+      car.aiOvercutActive = false;
+    }
+    car._aiPrevPitPhase = car.pitPhase;
 
     // Pre-start grid hold: stage throttle cleanly for F1 launch without creeping
     if (controlsLocked) {
@@ -115,12 +158,13 @@ export class SpatialAIController {
       Math.abs(playerCar.s - 993.5) < 0.6
     );
 
-    if (car.aiPassLockTimer > 0) {
-      car.aiPassLockTimer = Math.max(0, car.aiPassLockTimer - dt);
-    }
-    if (car.aiMistakeTimer > 0) {
-      car.aiMistakeTimer = Math.max(0, car.aiMistakeTimer - dt);
-    }
+    if (car.aiPassLockTimer > 0) car.aiPassLockTimer = Math.max(0, car.aiPassLockTimer - dt);
+    if (car.aiSwitchbackTimer > 0) car.aiSwitchbackTimer = Math.max(0, car.aiSwitchbackTimer - dt);
+    if (car.aiMistakeTimer > 0) car.aiMistakeTimer = Math.max(0, car.aiMistakeTimer - dt);
+    if (car.aiLockupPuffTimer > 0) car.aiLockupPuffTimer = Math.max(0, car.aiLockupPuffTimer - dt);
+    if (car.aiLockupCooldown > 0) car.aiLockupCooldown = Math.max(0, car.aiLockupCooldown - dt);
+    if (car.aiPressureCooldown > 0) car.aiPressureCooldown = Math.max(0, car.aiPressureCooldown - dt);
+    if (car.aiOutLapPushTimer > 0) car.aiOutLapPushTimer = Math.max(0, car.aiOutLapPushTimer - dt);
 
     // Brief human reaction delay right off the starting grid
     if (!isShowroomDemo && !isQualifying && car.lap === 1 && car.currentLapTime < (car.aiLaunchDelaySec || 0)) {
@@ -130,7 +174,39 @@ export class SpatialAIController {
       return;
     }
 
-    // 25Hz Spatial Radar & Multi-Circuit Kinematic Speed Planner
+    // ------------------------------------------------------------------------
+    // CONTINUOUS 240Hz HUMAN PRESSURE TELEMETRY (car.aiPressureMeter in 0..1)
+    // ------------------------------------------------------------------------
+    const curK = car.inPitLane ? 0.0 : this.track.getPhysicsCurvature(car.s);
+    const absCurK = Math.abs(curK);
+    const speedMps = car.speedKmh / 3.6;
+
+    // Reset FIA 1-Move Defensive Counter upon completing each corner onto a new straight!
+    if (absCurK > 0.22) {
+      car.aiWasInCorner = true;
+    } else if (car.aiWasInCorner && absCurK < 0.10) {
+      car.aiWasInCorner = false;
+      car.aiDefenseMovesUsed = 0;
+      car.aiDefenseCommittedSide = 0;
+      car.aiDefenseLat = null;
+    }
+
+    this._updateHumanPressureAndMistakes(
+      car,
+      allCars,
+      playerCar,
+      curK,
+      absCurK,
+      speedMps,
+      mPerGameM,
+      isClassic,
+      isQualifying,
+      isShowroomDemo,
+      arch,
+      dt
+    );
+
+    // 25Hz 15-Ray Spatial Radar, Multi-Car Slipstream Train & Kinematic Speed Planner
     car.aiDecisionTimer -= dt;
     if (car.aiDecisionTimer <= 0) {
       car.aiDecisionTimer = 0.04;
@@ -151,7 +227,7 @@ export class SpatialAIController {
     // ------------------------------------------------------------------------
     let desiredLat = car.aiTargetLat;
 
-    // Smooth peel-off toward right-hand Pit Entry split (s in [865..930]) when boxing in 2026 mode
+    // Smooth peel-off toward right-hand Pit Entry split (s in [860..932]) when boxing in 2026 mode
     if (!isClassic && !isShowroomDemo && car.aiWantsToPit && !car.inPitLane) {
       if (car.s >= 860 && car.s < 898) {
         const blend = (car.s - 860) / 38.0;
@@ -161,13 +237,57 @@ export class SpatialAIController {
       }
     }
 
-    // Apply wide lock-up drift if Rookie Wildcard is mid-excursion
+    // Apply smooth 1.0m–1.6m wide apex lockup drift envelope when pressure triggers a mistake!
     if (car.aiMistakeTimer > 0) {
-      desiredLat = clamp(desiredLat + car.aiMistakeLatBias, -ROAD_HALF_WIDTH + 0.9, ROAD_HALF_WIDTH - 0.9);
+      const dur = Math.max(0.35, car.aiMistakeDuration || 1.35);
+      const phase = 1.0 - clamp(car.aiMistakeTimer / dur, 0.0, 1.0);
+      const bell = Math.sin(Math.PI * phase);
+      car.aiMistakeLatBias = (car.aiMistakePeakLat || 0.0) * bell;
+      desiredLat = clamp(
+        desiredLat + car.aiMistakeLatBias,
+        -ROAD_HALF_WIDTH + 1.05,
+        ROAD_HALF_WIDTH - 1.05
+      );
+    } else {
+      car.aiMistakeLatBias = 0.0;
     }
 
-    // Real-time 240Hz Sidepod Respect Guard (1.25x+ car width) so AI never squeezes an overlapping car
+    // 240Hz Emergency Lateral Evasion when directly behind a braking/slower Player in braking zones
+    let emergencyBrakeBehindPlayer = 0.0;
+    if (!car.inPitLane && !isShowroomDemo && playerCar && !playerCar.exploded && !playerCar.inPitLane) {
+      const playerAheadM = forwardDistGameM(car.s, playerCar.s) * mPerGameM;
+      if (playerAheadM > 1.2 && playerAheadM < 34.0) {
+        const latToPlayer = Math.abs(car.lateralOffset - playerCar.lateralOffset);
+        const closingOnPlayer = car.speedKmh - playerCar.speedKmh;
+        if (latToPlayer < CAR_WIDTH * 1.36 && (playerCar.brakeInput > 0.15 || closingOnPlayer > 7.5)) {
+          const roomLeft = playerCar.lateralOffset - (-ROAD_HALF_WIDTH + 1.35);
+          const roomRight = (ROAD_HALF_WIDTH - 1.35) - playerCar.lateralOffset;
+          let evadeSide = car.aiPassSide || 1;
+          if (evadeSide < 0 && roomLeft < CAR_WIDTH * 1.35) evadeSide = 1;
+          else if (evadeSide > 0 && roomRight < CAR_WIDTH * 1.35) evadeSide = -1;
+          const evadeLat = clamp(
+            playerCar.lateralOffset + evadeSide * (CAR_WIDTH * 1.56),
+            -ROAD_HALF_WIDTH + 1.15,
+            ROAD_HALF_WIDTH - 1.15
+          );
+          const urgencyBlend = clamp((34.0 - playerAheadM) / 22.0, 0.35, 1.0);
+          desiredLat = desiredLat + (evadeLat - desiredLat) * urgencyBlend;
+
+          if (playerAheadM < 20.0 && latToPlayer < CAR_WIDTH * 1.12) {
+            emergencyBrakeBehindPlayer = clamp(
+              (closingOnPlayer + (playerCar.brakeInput > 0.2 ? 16.0 : 8.0)) / 34.0,
+              playerCar.brakeInput * 0.85,
+              1.0
+            );
+          }
+        }
+      }
+    }
+
+    // Real-time 240Hz Sidepod Respect Guard (>= 1.25x car width, widened slightly in chicanes!)
     if (!car.inPitLane) {
+      const lookK20 = this.track.getPhysicsCurvature(car.s + 20.0 / mPerGameM);
+      const inRealtimeChicane = (curK * lookK20 < -0.025) || (absCurK > 0.28 && Math.abs(lookK20) > 0.28);
       let rtLeftMin = -ROAD_HALF_WIDTH + 1.05;
       let rtRightMax = ROAD_HALF_WIDTH - 1.05;
       for (let i = 0; i < allCars.length; i++) {
@@ -175,9 +295,9 @@ export class SpatialAIController {
         if (other === car || other.exploded || other.inPitLane) continue;
         if (isShowroomDemo && other.isPlayer) continue;
         const dsReal = Math.abs(signedDeltaGameM(other.s, car.s)) * mPerGameM;
-        const overlapZoneM = other.isPlayer ? CAR_LENGTH * 1.24 : CAR_LENGTH * 1.12;
+        const overlapZoneM = (other.isPlayer ? CAR_LENGTH * 1.30 : CAR_LENGTH * 1.18) + (inRealtimeChicane ? 1.4 : 0.0);
         if (dsReal < overlapZoneM) {
-          const corridor = CAR_WIDTH * (other.isPlayer ? 1.28 : 1.25);
+          const corridor = CAR_WIDTH * (other.isPlayer ? 1.30 : (inRealtimeChicane ? 1.28 : 1.25));
           if (other.lateralOffset <= car.lateralOffset) {
             rtLeftMin = Math.max(rtLeftMin, other.lateralOffset + corridor);
           } else {
@@ -192,18 +312,21 @@ export class SpatialAIController {
       }
     }
 
-    const curK = car.inPitLane ? 0.0 : this.track.getPhysicsCurvature(car.s);
-    const speedMps = car.speedKmh / 3.6;
-
-    // Sync articulated DRS Rear Wing Flap state for 2026 3D car rigs & 60Hz Instant Replay
-    car.drsActive = !isClassic && !car.inPitLane && Math.abs(curK) < 0.075 &&
+    // Sync articulated DRS Rear Wing Flap & MGU-K ERS Overtake state for 2026 3D rigs & 60Hz Replay
+    car.drsActive = !isClassic && !car.inPitLane && absCurK < 0.075 &&
       (car.inSlipstream || (car.speedKmh > 238.0 && car.brakeInput < 0.02));
+    car.ersOvertakeRequested = !isClassic && !car.inPitLane && (car.ersCharge ?? 1.0) > 0.18 &&
+      car.brakeInput < 0.02 && absCurK < 0.22 &&
+      (car.aiPassLockTimer > 0 || car.aiSwitchbackTimer > 0 || car.aiOutLapPushTimer > 0 || car.aiDefenseMovesUsed > 0);
+    if (car.ersOvertakeRequested && car.throttleInput > 0.78) {
+      car.ersDeploying = true;
+    }
 
     // Exact inverse-physics curvature feedforward: cancels centrifugalPush (-k * v^2 * 0.00315)
     // so AI carves tight Monaco hairpins & fast Monza sweepers without steady-state wide washout,
     // while remaining strictly 0.0 on straights (curK === 0)!
     let ffSteer = 0.0;
-    if (!car.inPitLane && Math.abs(curK) > 0.005 && speedMps > 2.5) {
+    if (!car.inPitLane && absCurK > 0.005 && speedMps > 2.5) {
       const kvFactor = 1.0 + 0.00015 * speedMps * speedMps;
       const frontAeroEff = isClassic
         ? 1.0
@@ -226,19 +349,19 @@ export class SpatialAIController {
     // ------------------------------------------------------------------------
     const targetSpeedKmh = car._aiTargetSpeedKmh ?? 315.0;
     const speedDiff = targetSpeedKmh - car.speedKmh;
-    const absCurK = Math.abs(curK);
 
     if (car.inPitLane && car.pitPhase === 'EXIT' && car.s >= PIT_LANE_CONFIG.mergeStartS && car.s <= PIT_LANE_CONFIG.mergeEndS) {
       car.throttleInput = 1.0;
       car.brakeInput = 0.0;
     } else if (speedDiff > 2.2) {
-      // Progressive corner-exit traction modulation (especially silky for TIRE_WHISPERER)
-      // while staying 100% full throttle on straightaways & fast chutes!
+      // Progressive corner-exit traction modulation (especially silky for TIRE_WHISPERER;
+      // sharper launch on switchback exit cutbacks!)
       let tractionCap = 1.0;
       if (absCurK > 0.32) {
         const wetW = isClassic ? 0.0 : this.weather.grooveMoisture;
-        const cornerExitMod = arch.id === 'TIRE_WHISPERER' ? 0.84 : (arch.id === 'ROOKIE_WILDCARD' ? 1.0 : 0.93);
-        tractionCap = clamp(cornerExitMod - wetW * 0.14, 0.62, 1.0);
+        const switchbackBoost = car.aiSwitchbackTimer > 0 ? 0.05 : 0.0;
+        const cornerExitMod = arch.id === 'TIRE_WHISPERER' ? 0.85 : (arch.id === 'ROOKIE_WILDCARD' ? 1.0 : 0.93);
+        tractionCap = clamp(cornerExitMod + switchbackBoost - wetW * 0.14, 0.62, 1.0);
       }
       car.throttleInput = clamp(0.38 + speedDiff * 0.055, 0.28, tractionCap);
       car.brakeInput = 0.0;
@@ -257,8 +380,34 @@ export class SpatialAIController {
       }
     } else {
       // Maintain speed with >0.22 throttle so AUTO_8SPD seamless upshifts stay active
-      car.throttleInput = absCurK < 0.08 ? 0.92 : 0.52;
+      car.throttleInput = absCurK < 0.08 ? 0.94 : 0.52;
       car.brakeInput = 0.0;
+    }
+
+    // Override with 240Hz anti-rear-end braking respect when directly behind a braking Player
+    if (emergencyBrakeBehindPlayer > 0.05) {
+      car.throttleInput = 0.0;
+      car.brakeInput = Math.max(car.brakeInput, emergencyBrakeBehindPlayer);
+    }
+
+    // Inside-front tire-smoke lockup puffs when diving deep into heavy braking zones or under high pressure!
+    if (!car.inPitLane && !isShowroomDemo && car.brakeInput > 0.44 && car.speedKmh > 110.0) {
+      if (car.aiLockupPuffTimer <= 0 && car.aiLockupCooldown <= 0) {
+        const underBattlePressure = (car.aiPressureMeter || 0) > 0.42 || car.inSlipstream || car.aiInDraftTrain;
+        const pressureBonus = (car.aiPressureMeter || 0) * 0.35;
+        const lockupChance = (arch.id === 'LATE_BRAKER'
+          ? 0.40
+          : (arch.id === 'ROOKIE_WILDCARD' ? 0.46 : (underBattlePressure ? 0.20 : 0.08))) + pressureBonus;
+        if (underBattlePressure && Math.random() < lockupChance) {
+          car.aiLockupPuffTimer = 0.28 + Math.random() * 0.26;
+          car.aiLockupCooldown = 3.0 + Math.random() * 2.4;
+        } else {
+          car.aiLockupCooldown = 0.85;
+        }
+      }
+    }
+    if (car.aiLockupPuffTimer > 0 && (car.brakeInput > 0.18 || car.aiMistakeTimer > 0)) {
+      car.skidIntensity = Math.max(car.skidIntensity || 0, 0.90);
     }
 
     // ------------------------------------------------------------------------
@@ -296,40 +445,111 @@ export class SpatialAIController {
         }
       }
     }
+  }
 
-    // ------------------------------------------------------------------------
-    // ROOKIE_WILDCARD MIRROR PRESSURE & WIDE LOCK-UP EXCURSIONS
-    // ------------------------------------------------------------------------
-    if (!isClassic && !isShowroomDemo && !isQualifying && arch.id === 'ROOKIE_WILDCARD' && !car.inPitLane && playerCar && !playerCar.exploded) {
-      const gapAheadOfPlayerM = signedDeltaGameM(car.s, playerCar.s) * mPerGameM;
-      // Rookie feels intense mirror pressure when directly ahead of Player within 4m..26m
-      if (gapAheadOfPlayerM > 4.0 && gapAheadOfPlayerM < 26.0) {
-        car.aiPressureTimer += dt * (absCurK > 0.25 ? 1.35 : 0.85);
-        if (car.aiPressureTimer > 6.2 && absCurK > 0.34) {
-          car.aiPressureTimer = -14.0; // Cooldown before another pressure mistake
-          // Lock up front inside tire and drift wide toward outside kerb — giving Player a clean switchback pass
-          // without triggering an unfair instant Yellow Flag right in front of the overtaking Player!
-          const outsideDir = -Math.sign(curK || 1);
-          car.aiMistakeTimer = 1.45;
-          car.aiMistakeLatBias = outsideDir * 2.8;
-          car.lateralVel += outsideDir * 4.2;
-          car.speedKmh *= 0.84;
-          car.skidIntensity = 1.0;
+  // ==========================================================================
+  // HUMAN MISTAKES UNDER PRESSURE (car.aiPressureMeter in 0..1 -> Lockup & 1.0–1.6m Wide)
+  // ==========================================================================
+  _updateHumanPressureAndMistakes(
+    car,
+    allCars,
+    playerCar,
+    curK,
+    absCurK,
+    speedMps,
+    mPerGameM,
+    isClassic,
+    isQualifying,
+    isShowroomDemo,
+    arch,
+    dt
+  ) {
+    if (isShowroomDemo || isQualifying || car.inPitLane) {
+      car.aiPressureMeter = Math.max(0, (car.aiPressureMeter || 0) - dt * 0.35);
+      return;
+    }
+
+    // Find closest stalking attacker behind within < 14.0m OR < 0.45s time gap!
+    let minStalkDistM = 999.0;
+    let minStalkSec = 99.0;
+    let stalkerIsPlayer = false;
+    let stalkerClosingKmh = 0.0;
+
+    for (let i = 0; i < allCars.length; i++) {
+      const other = allCars[i];
+      if (other === car || other.exploded || other.inPitLane) continue;
+      const behindM = signedDeltaGameM(car.s, other.s) * mPerGameM;
+      if (behindM > 1.8 && behindM < 22.0) {
+        const refMps = Math.max(18.0, speedMps);
+        const gapSec = behindM / refMps;
+        if (behindM < minStalkDistM) {
+          minStalkDistM = behindM;
+          minStalkSec = gapSec;
+          stalkerIsPlayer = !!other.isPlayer;
+          stalkerClosingKmh = other.speedKmh - car.speedKmh;
         }
-      } else {
-        car.aiPressureTimer = Math.max(0, car.aiPressureTimer - dt * 0.45);
       }
+    }
+
+    const isStalkedClosely = (minStalkDistM < 14.0 || minStalkSec < 0.45) && stalkerClosingKmh > -14.0;
+    const suscept = PRESSURE_SUSCEPTIBILITY[arch.id] || 0.75;
+
+    if (isStalkedClosely && car.aiPressureCooldown <= 0) {
+      const proximityMult = minStalkDistM < 8.5 || minStalkSec < 0.26 ? 1.42 : 1.0;
+      const cornerLoadMult = absCurK > 0.24 ? 1.38 : 0.78;
+      const playerHeroMult = stalkerIsPlayer ? 1.18 : 0.92;
+      const buildRate = 0.145 * suscept * proximityMult * cornerLoadMult * playerHeroMult;
+      car.aiPressureMeter = clamp((car.aiPressureMeter || 0) + dt * buildRate, 0.0, 1.0);
+      car.aiPressureTimer = (car.aiPressureTimer || 0) + dt;
+    } else {
+      const decayRate = car.aiPressureCooldown > 0 ? 0.28 : 0.13;
+      car.aiPressureMeter = clamp((car.aiPressureMeter || 0) - dt * decayRate, 0.0, 1.0);
+      if (!isStalkedClosely) {
+        car.aiPressureTimer = Math.max(0, (car.aiPressureTimer || 0) - dt * 0.5);
+      }
+    }
+
+    // Trigger inside-front lockup smoke + 1.0m–1.6m wide apex drift when pressure boils over in a corner!
+    const triggerThreshold = arch.id === 'ROOKIE_WILDCARD'
+      ? 0.82
+      : (arch.id === 'LATE_BRAKER' ? 0.88 : 0.96);
+
+    if (
+      !isClassic &&
+      car.aiMistakeTimer <= 0 &&
+      car.aiPressureCooldown <= 0 &&
+      car.aiPressureMeter >= triggerThreshold &&
+      absCurK > 0.28 &&
+      car.speedKmh > 92.0
+    ) {
+      // Outside direction of current corner: +curK bends Right (+lat is inside), so -sign(curK) is outside!
+      const outsideDir = -Math.sign(curK || 1);
+      // Deterministic-feeling organic wide excursion strictly within 1.0m..1.6m!
+      const wideMeters = 1.02 + Math.random() * 0.56; // [1.02m .. 1.58m]
+      car.aiMistakeDuration = 1.32;
+      car.aiMistakeTimer = car.aiMistakeDuration;
+      car.aiMistakePeakLat = outsideDir * wideMeters;
+      car.aiLockupPuffTimer = 0.48 + Math.random() * 0.20;
+      car.lateralVel += outsideDir * 2.35;
+      car.speedKmh *= 0.925;
+      car.skidIntensity = 0.96;
+
+      // Reset pressure meter & set recovery cooldown so mistakes feel authentic & earned
+      car.aiPressureMeter = 0.18;
+      car.aiPressureTimer = 0.0;
+      car.aiPressureCooldown = arch.id === 'ROOKIE_WILDCARD' ? 11.5 : 15.5;
     }
   }
 
   // ==========================================================================
-  // 25HZ 15-RAY SPATIAL RADAR, MULTI-CIRCUIT RACING LINE & KINEMATIC BRAKING
+  // 25HZ 15-RAY SPATIAL RADAR, SLIPSTREAM TRAINS, SWITCHBACKS & KINEMATIC BRAKING
   // ==========================================================================
   _run15RaySpatialPlanner(car, allCars, playerCar, isClassic, isQualifying, isShowroomDemo, totalLaps, callbacks) {
     const arch = car.archetype || AI_ARCHETYPES.APEX_TACTICIAN;
     const mPerGameM = this.track.realMetersPerGameMeter || REAL_METERS_PER_GAME_METER;
     const s = car.s;
     const curSec = this.track.getSector(s);
+    const plannerDt = 0.04;
 
     // ------------------------------------------------------------------------
     // 0. PIT LANE INTERNAL SPEED & MERGE EXECUTION
@@ -347,7 +567,7 @@ export class SpatialAIController {
         }
       } else if (car.pitPhase === 'EXIT') {
         if (s >= PIT_LANE_CONFIG.mergeStartS && s <= PIT_LANE_CONFIG.mergeEndS) {
-          car._aiTargetSpeedKmh = 315.0;
+          car._aiTargetSpeedKmh = 320.0;
           car.aiTargetLat = ROAD_HALF_WIDTH * 0.56;
         } else {
           car._aiTargetSpeedKmh = PIT_LANE_CONFIG.speedLimitKmh - 1.5;
@@ -366,7 +586,7 @@ export class SpatialAIController {
     const lookK95 = this.track.getPhysicsCurvature(s + 95.0 / mPerGameM);
     const lookK140 = this.track.getPhysicsCurvature(s + 140.0 / mPerGameM);
 
-    // Dynamically detect next meaningful corner curvature on ANY circuit (Fuji, Monaco, Vegas, Monza)
+    // Dynamically detect next meaningful corner curvature on ANY of the 6 circuits
     let upcomingCornerK = 0.0;
     const horizonSamples = [curK, lookK15, lookK45, lookK95, lookK140];
     for (let i = 0; i < horizonSamples.length; i++) {
@@ -376,31 +596,67 @@ export class SpatialAIController {
       }
     }
 
-    // Detect S-bend / Chicane rapid direction flip (Nouvelle Chicane, Swimming Pool, Neon Chicane, Ascari, Rettifilo)
+    // Detect S-bend / Chicane rapid direction flip (Nouvelle, Neon, Rettifilo, Ascari, Maggotts-Becketts, Casio)
     const isChicaneFlip =
       (curK * lookK15 < -0.025) ||
       (lookK15 * lookK45 < -0.035) ||
       (curK * lookK45 < -0.045 && Math.abs(curK) > 0.22 && Math.abs(lookK45) > 0.22);
 
     // ------------------------------------------------------------------------
-    // 2. 2026 PIT STRATEGY MONITOR
+    // 2. TRAFFIC / CLEAN-AIR TELEMETRY & 2026 UNDERCUT/OVERCUT/WET PIT STRATEGY
     // ------------------------------------------------------------------------
+    let nearestAheadCar = null;
+    let nearestAheadM = 999.0;
+    let carsInWakeCone = 0;
+
+    for (let i = 0; i < allCars.length; i++) {
+      const other = allCars[i];
+      if (other === car || other.exploded || other.inPitLane) continue;
+      if (isShowroomDemo && other.isPlayer) continue;
+      const aheadM = forwardDistGameM(s, other.s) * mPerGameM;
+      if (aheadM > 1.5 && aheadM < 48.0) {
+        if (Math.abs(other.lateralOffset - car.lateralOffset) < CAR_WIDTH * 1.65) {
+          carsInWakeCone++;
+        }
+        if (aheadM < nearestAheadM) {
+          nearestAheadM = aheadM;
+          nearestAheadCar = other;
+        }
+      }
+    }
+
+    car.aiDraftTrainCount = carsInWakeCone;
+    car.aiInDraftTrain = carsInWakeCone >= 1 && nearestAheadM < 42.0;
+
+    // Track dirty-air bottle-necking vs clean-air lightweight stint running for Undercut / Overcut calls
+    if (nearestAheadCar && nearestAheadM < 17.5 && car.speedKmh >= nearestAheadCar.speedKmh - 4.0) {
+      car.aiDirtyAirStuckTimer = (car.aiDirtyAirStuckTimer || 0) + plannerDt;
+      car.aiCleanAirTimer = 0.0;
+    } else if (nearestAheadM > 46.0) {
+      car.aiCleanAirTimer = (car.aiCleanAirTimer || 0) + plannerDt;
+      car.aiDirtyAirStuckTimer = Math.max(0, (car.aiDirtyAirStuckTimer || 0) - plannerDt * 1.4);
+    } else {
+      car.aiDirtyAirStuckTimer = Math.max(0, (car.aiDirtyAirStuckTimer || 0) - plannerDt * 0.5);
+    }
+
     if (!isClassic && !isQualifying && !isShowroomDemo) {
-      if (car.lap >= totalLaps) {
-        // Never pit on the final lap unless car has an active tire puncture before pit entry
-        if (!car.damage.hasPuncture) car.aiWantsToPit = false;
+      const W = this.weather.grooveMoisture;
+      const onDrySlicksInRain = (car.compound !== 'INTERMEDIATE' && car.compound !== 'FULL_WET') && W > 0.28;
+      if (car.lap >= totalLaps && !car.damage.hasPuncture && !onDrySlicksInRain) {
+        car.aiWantsToPit = false;
       } else {
-        this._evaluateAIPitStrategy(car, arch, totalLaps);
+        this._evaluateAIPitStrategy(car, allCars, arch, totalLaps, mPerGameM);
       }
     } else {
       car.aiWantsToPit = false;
     }
 
     // ------------------------------------------------------------------------
-    // 3. SIDEPOD RAYS #14 & #15: WHEEL-TO-WHEEL CORNER RIGHTS (1.25x CAR WIDTH)
+    // 3. SIDEPOD RAYS #14 & #15: WHEEL-TO-WHEEL & CHICANE CORRIDORS (>= 1.25x WIDTH)
     // ------------------------------------------------------------------------
     let blockedLeftMax = -ROAD_HALF_WIDTH + 1.1;
     let blockedRightMin = (s >= 946 || s <= 78) ? (ROAD_HALF_WIDTH - 1.45) : (ROAD_HALF_WIDTH - 1.1);
+    let sideBySideInChicane = false;
 
     for (let i = 0; i < allCars.length; i++) {
       const other = allCars[i];
@@ -408,9 +664,10 @@ export class SpatialAIController {
       if (isShowroomDemo && other.isPlayer) continue;
 
       const dsReal = Math.abs(signedDeltaGameM(other.s, s)) * mPerGameM;
-      const sideOverlapWindowM = other.isPlayer ? 6.4 : 5.6;
+      const sideOverlapWindowM = (other.isPlayer ? 6.6 : 5.8) + (isChicaneFlip ? 1.8 : 0.0);
       if (dsReal < sideOverlapWindowM) {
-        const minCorridor = CAR_WIDTH * (other.isPlayer ? 1.28 : 1.25); // >= 2.45m..2.51m fair sidepod room!
+        if (isChicaneFlip) sideBySideInChicane = true;
+        const minCorridor = CAR_WIDTH * (other.isPlayer ? 1.30 : (isChicaneFlip ? 1.28 : 1.25));
         if (other.lateralOffset <= car.lateralOffset) {
           blockedLeftMax = Math.max(blockedLeftMax, other.lateralOffset + minCorridor);
         } else {
@@ -420,7 +677,7 @@ export class SpatialAIController {
     }
 
     // ------------------------------------------------------------------------
-    // 4. MULTI-CIRCUIT IDEAL RACING LINE, PERSONALITIES & SLIPSTREAM SLINGSHOT
+    // 4. RACING LINE, FIA 1-MOVE DEFENSE, SLIPSTREAM TRAINS & EXIT SWITCHBACKS
     // ------------------------------------------------------------------------
     const nextSec = this.track.getSector(s + 30.0 / mPerGameM);
     const inYellow = !isShowroomDemo && (
@@ -437,40 +694,48 @@ export class SpatialAIController {
       : (Math.abs(lookK45) > Math.abs(curK) * 1.25 && Math.abs(curK) < 0.14 ? lookK45 : curK);
 
     if (Math.abs(cornerFocusK) > 0.13) {
-      // Inside apex target (+k bends Right -> +lat; -k bends Left -> -lat)
       let apexDepth = 4.75;
-      if (arch.id === 'APEX_TACTICIAN') apexDepth = 5.45; // Clips deep late apex
-      else if (arch.id === 'TIRE_WHISPERER') apexDepth = 4.95; // Smooth wide-radius arc
-      else if (arch.id === 'LATE_BRAKER') apexDepth = 4.45; // Slightly deeper entry V-line
+      if (arch.id === 'APEX_TACTICIAN') apexDepth = 5.45;
+      else if (arch.id === 'TIRE_WHISPERER') apexDepth = 4.95;
+      else if (arch.id === 'LATE_BRAKER') apexDepth = 4.45;
       else if (arch.id === 'ROOKIE_WILDCARD') apexDepth = 4.35;
 
       if (isChicaneFlip) {
-        // Moderate first apex depth so car is poised to flick cleanly through second chicane apex
-        apexDepth = Math.min(apexDepth, 4.05);
+        // When 2-wide in a chicane, hold clean parallel left/right lanes instead of cutting across rival's nose!
+        apexDepth = sideBySideInChicane ? 3.25 : Math.min(apexDepth, 4.05);
       }
       preferredLat = Math.sign(cornerFocusK) * apexDepth;
     } else if (Math.abs(lookK95) > 0.22 || Math.abs(lookK140) > 0.30) {
-      // Straightaway corner-entry setup: move cleanly to outside tarmac before turn-in!
       const entryCornerK = Math.abs(lookK95) >= Math.abs(lookK140) * 0.75 ? lookK95 : lookK140;
       const entryWidth = arch.id === 'APEX_TACTICIAN' ? 5.1 : (arch.id === 'TIRE_WHISPERER' ? 4.8 : 4.3);
       preferredLat = -Math.sign(entryCornerK) * entryWidth;
     } else {
-      // Pure straightaway cruise: slight natural stagger off centerline
       preferredLat = (car.carNum % 2 === 0 ? 1 : -1) * 1.8;
     }
 
-    // DEFENSIVE_WALL (Senna / Mansell / Alonso): Cover inside line on ANY circuit when pursuer closes in!
-    if (!isQualifying && !isShowroomDemo && !inYellow && !vscActive && arch.id === 'DEFENSIVE_WALL' && Math.abs(curK) < 0.15) {
-      let closestThreat = null;
-      let closestBehindM = arch.defensiveRangeM;
+    // Active Over-Under Exit Switchback execution!
+    if (car.aiSwitchbackTimer > 0 && car.aiSwitchbackSign !== 0 && !inYellow && !vscActive) {
+      preferredLat = clamp(car.aiSwitchbackSign * 4.35, -ROAD_HALF_WIDTH + 1.35, ROAD_HALF_WIDTH - 1.35);
+    }
 
-      // Prioritize defending against a charging Player, or any close rival behind
+    // STRICT FIA 1-MOVE DEFENSIVE RULE ON STRAIGHTS (Zero reactive weaving or late braking blocks!)
+    const canDefendOnStraight = !isQualifying && !isShowroomDemo && !inYellow && !vscActive &&
+      Math.abs(curK) < 0.14 && car.brakeInput < 0.08;
+
+    if (canDefendOnStraight && (arch.id === 'DEFENSIVE_WALL' || arch.id === 'LATE_BRAKER' || arch.id === 'APEX_TACTICIAN')) {
+      const defRange = arch.id === 'DEFENSIVE_WALL'
+        ? arch.defensiveRangeM + 4.0
+        : arch.defensiveRangeM * 0.72;
+
+      let closestThreat = null;
+      let closestBehindM = defRange;
+
       for (let i = 0; i < allCars.length; i++) {
         const other = allCars[i];
         if (other === car || other.exploded || other.inPitLane) continue;
         const behindM = signedDeltaGameM(s, other.s) * mPerGameM;
-        const rangeLimit = other.isPlayer ? arch.defensiveRangeM + 4.0 : arch.defensiveRangeM * 0.8;
-        if (behindM > 5.8 && behindM <= rangeLimit && other.speedKmh > car.speedKmh - 12.0) {
+        // Must be behind front-wing overlap zone (> CAR_LENGTH * 1.12) to legally initiate defensive block
+        if (behindM > CAR_LENGTH * 1.12 && behindM <= defRange && other.speedKmh > car.speedKmh - 10.0) {
           if (!closestThreat || other.isPlayer || behindM < closestBehindM) {
             closestThreat = other;
             closestBehindM = behindM;
@@ -480,76 +745,117 @@ export class SpatialAIController {
       }
 
       if (closestThreat) {
-        const insideSign = Math.abs(upcomingCornerK) > 0.12
-          ? Math.sign(upcomingCornerK)
-          : (closestThreat.lateralOffset >= 0 ? 1 : -1);
-        const targetDefLat = clamp(
-          insideSign * 4.25 + (closestThreat.lateralOffset - insideSign * 4.25) * 0.32,
-          -ROAD_HALF_WIDTH + 1.6,
-          ROAD_HALF_WIDTH - 1.6
-        );
-        // Smooth FIA single-move defense (no erratic weaving!)
-        car.aiDefenseLat = car.aiDefenseLat === null
-          ? targetDefLat
-          : car.aiDefenseLat + (targetDefLat - car.aiDefenseLat) * 0.28;
-        preferredLat = car.aiDefenseLat;
-      } else {
-        car.aiDefenseLat = null;
+        if (car.aiDefenseMovesUsed === 0) {
+          // Commit ONE legal defensive move toward the inside of the upcoming corner!
+          const insideSign = Math.abs(upcomingCornerK) > 0.12
+            ? Math.sign(upcomingCornerK)
+            : (closestThreat.lateralOffset >= 0 ? 1 : -1);
+          car.aiDefenseCommittedSide = insideSign;
+          car.aiDefenseMovesUsed = 1;
+          car.aiDefenseLat = clamp(
+            insideSign * 4.20 + (closestThreat.lateralOffset - insideSign * 4.20) * 0.25,
+            -ROAD_HALF_WIDTH + 1.65,
+            ROAD_HALF_WIDTH - 1.65
+          );
+        }
+
+        if (car.aiDefenseLat !== null) {
+          // FIA Art 33.4: if approaching turn-in and drifting back toward outside racing line,
+          // MUST leave >= 1.25x car width to the track edge if attacker is on that outside flank!
+          let legalDefLat = car.aiDefenseLat;
+          if (closestBehindM < 14.0) {
+            const minEdgeBuffer = 1.15 + CAR_WIDTH * 1.28;
+            if (closestThreat.lateralOffset < car.lateralOffset - CAR_WIDTH * 0.55) {
+              legalDefLat = Math.max(legalDefLat, -ROAD_HALF_WIDTH + minEdgeBuffer);
+            } else if (closestThreat.lateralOffset > car.lateralOffset + CAR_WIDTH * 0.55) {
+              legalDefLat = Math.min(legalDefLat, ROAD_HALF_WIDTH - minEdgeBuffer);
+            }
+          }
+          preferredLat = legalDefLat;
+        }
       }
-    } else {
-      car.aiDefenseLat = null;
     }
 
-    // SLIPSTREAM TOW HARVEST & COMMITTED SLINGSHOT PULL-OUT (Works on ALL 4 Circuits!)
+    // MULTI-CAR SLIPSTREAM TRAINS, COORDINATED LATE-BRAKING LUNGES & OVER-UNDER SWITCHBACKS
     const onFastSection = Math.abs(curK) < 0.14 && Math.abs(lookK15) < 0.18;
     const approachingBrakingZone = Math.abs(lookK95) > 0.28 || Math.abs(lookK140) > 0.42;
     let activeSlingshotTarget = null;
 
-    if (!isQualifying && !isShowroomDemo && !inYellow && !vscActive) {
-      let leadCandidate = null;
-      let leadDistM = 44.0;
+    if (!isQualifying && !isShowroomDemo && !inYellow && !vscActive && nearestAheadCar && nearestAheadM < 46.0) {
+      const leadCandidate = nearestAheadCar;
+      const leadDistM = nearestAheadM;
+      const closingMps = Math.max(0, (car.speedKmh - leadCandidate.speedKmh) / 3.6);
+      const ttcSec = closingMps > 0.4 ? leadDistM / closingMps : 99.0;
+      const pulloutDistM = arch.id === 'LATE_BRAKER' ? 23.5 : (arch.id === 'ROOKIE_WILDCARD' ? 21.5 : 19.5);
 
+      // Check if leadCandidate is ITSELF already side-by-side overtaking a 3rd car right ahead (avoid 3-wide crash!)
+      let leaderAlready2Wide = false;
       for (let i = 0; i < allCars.length; i++) {
-        const other = allCars[i];
-        if (other === car || other.exploded || other.inPitLane) continue;
-        const aheadM = forwardDistGameM(s, other.s) * mPerGameM;
-        if (aheadM > 4.8 && aheadM < leadDistM) {
-          leadDistM = aheadM;
-          leadCandidate = other;
+        const third = allCars[i];
+        if (third === car || third === leadCandidate || third.exploded || third.inPitLane) continue;
+        const aheadOfLeaderM = forwardDistGameM(leadCandidate.s, third.s) * mPerGameM;
+        if (aheadOfLeaderM > -4.0 && aheadOfLeaderM < 14.0 && Math.abs(leadCandidate.lateralOffset - third.lateralOffset) > CAR_WIDTH * 0.95) {
+          leaderAlready2Wide = true;
+          break;
         }
       }
 
-      if (leadCandidate) {
-        const closingMps = Math.max(0, (car.speedKmh - leadCandidate.speedKmh) / 3.6);
-        const ttcSec = closingMps > 0.4 ? leadDistM / closingMps : 99.0;
-        const pulloutDistM = arch.id === 'LATE_BRAKER' ? 23.0 : (arch.id === 'ROOKIE_WILDCARD' ? 21.0 : 19.5);
+      const insideSign = Math.abs(upcomingCornerK) > 0.16 ? Math.sign(upcomingCornerK) : 0;
+      const leaderDefendingTightInside = insideSign !== 0 && (leadCandidate.lateralOffset * insideSign > 3.15);
+      const leaderLockedUpWide = (leadCandidate.aiMistakeTimer || 0) > 0 || (insideSign !== 0 && Math.abs(curK) > 0.25 && (leadCandidate.lateralOffset * insideSign < 1.2));
 
-        if (onFastSection && leadDistM >= pulloutDistM && ttcSec > 2.2 && !approachingBrakingZone && leadCandidate.speedKmh > 150) {
-          // Stage 1: Tuck cleanly into slipstream wake to harvest +15 km/h tow!
-          preferredLat = clamp(leadCandidate.lateralOffset, -ROAD_HALF_WIDTH + 1.8, ROAD_HALF_WIDTH - 1.8);
-        } else if (leadDistM < 32.0 && (leadDistM < pulloutDistM || ttcSec <= 2.4 || (approachingBrakingZone && closingMps > -1.5))) {
-          // Stage 2: Commit decisively to a clean overtake lane (Left or Right) with lock hysteresis!
-          activeSlingshotTarget = leadCandidate;
-          if (car.aiPassLockTimer <= 0) {
-            car.aiPassSide = this._chooseBestOvertakeSide(car, leadCandidate, allCars, upcomingCornerK, arch, mPerGameM);
-            car.aiPassLockTimer = 1.65;
-          }
-          // Ensure chosen side still has physical asphalt room if leader drifted toward barrier
-          const leaderLat = leadCandidate.lateralOffset;
-          const roomChosen = car.aiPassSide < 0
-            ? leaderLat - (-ROAD_HALF_WIDTH + 1.3)
-            : (ROAD_HALF_WIDTH - 1.3) - leaderLat;
-          if (roomChosen < CAR_WIDTH * 1.30) {
-            car.aiPassSide = -car.aiPassSide;
-            car.aiPassLockTimer = 1.4;
-          }
-          const passSpacing = CAR_WIDTH * (leadCandidate.isPlayer ? 1.52 : 1.44);
-          preferredLat = clamp(
-            leaderLat + car.aiPassSide * passSpacing,
-            -ROAD_HALF_WIDTH + 1.25,
-            ROAD_HALF_WIDTH - 1.25
-          );
+      if (leaderAlready2Wide && leadDistM > 11.0) {
+        // Tandem Slipstream Train Discipline: tuck cleanly behind the faster overtaking lane rather than forcing 3-wide!
+        preferredLat = clamp(leadCandidate.lateralOffset, -ROAD_HALF_WIDTH + 1.6, ROAD_HALF_WIDTH - 1.6);
+      } else if (onFastSection && leadDistM >= pulloutDistM && ttcSec > 2.1 && !approachingBrakingZone && leadCandidate.speedKmh > 145) {
+        // Stage 1: Multi-Car Slipstream Train — tuck into the aerodynamic wake with tiny 0.22m visibility stagger!
+        const peepOffset = ((car.carNum % 2 === 0) ? 0.22 : -0.22);
+        preferredLat = clamp(leadCandidate.lateralOffset + peepOffset, -ROAD_HALF_WIDTH + 1.75, ROAD_HALF_WIDTH - 1.75);
+      } else if (
+        approachingBrakingZone &&
+        insideSign !== 0 &&
+        leadDistM < 22.0 &&
+        leadDistM > 6.5 &&
+        leaderDefendingTightInside &&
+        (arch.id === 'APEX_TACTICIAN' || arch.id === 'TIRE_WHISPERER' || arch.id === 'LATE_BRAKER')
+      ) {
+        // Stage 2A: Coordinated Over-Under Switchback Setup!
+        // Defender parked on the compromised tight inside -> swing wide on entry, square the apex & cut underneath on exit!
+        preferredLat = clamp(-insideSign * 4.95, -ROAD_HALF_WIDTH + 1.35, ROAD_HALF_WIDTH - 1.35);
+        car.aiSwitchbackSign = insideSign;
+        car.aiSwitchbackTimer = 1.45;
+      } else if (
+        Math.abs(curK) > 0.24 &&
+        insideSign !== 0 &&
+        leadDistM < 19.0 &&
+        leaderLockedUpWide
+      ) {
+        // Stage 2B: Opportunistic Apex Cutback when rival locks up & drifts 1.0–1.6m wide!
+        activeSlingshotTarget = leadCandidate;
+        car.aiPassSide = insideSign;
+        car.aiPassLockTimer = 1.4;
+        preferredLat = clamp(insideSign * 4.55, -ROAD_HALF_WIDTH + 1.25, ROAD_HALF_WIDTH - 1.25);
+      } else if (leadDistM < 33.0 && (leadDistM < pulloutDistM || ttcSec <= 2.4 || (approachingBrakingZone && closingMps > -1.5))) {
+        // Stage 2C: Committed Slingshot / Inside Late-Braking Dive!
+        activeSlingshotTarget = leadCandidate;
+        if (car.aiPassLockTimer <= 0) {
+          car.aiPassSide = this._chooseBestOvertakeSide(car, leadCandidate, allCars, upcomingCornerK, arch, mPerGameM);
+          car.aiPassLockTimer = 1.65;
         }
+        const leaderLat = leadCandidate.lateralOffset;
+        const roomChosen = car.aiPassSide < 0
+          ? leaderLat - (-ROAD_HALF_WIDTH + 1.3)
+          : (ROAD_HALF_WIDTH - 1.3) - leaderLat;
+        if (roomChosen < CAR_WIDTH * 1.30) {
+          car.aiPassSide = -car.aiPassSide;
+          car.aiPassLockTimer = 1.4;
+        }
+        const passSpacing = CAR_WIDTH * (leadCandidate.isPlayer ? 1.52 : 1.44);
+        preferredLat = clamp(
+          leaderLat + car.aiPassSide * passSpacing,
+          -ROAD_HALF_WIDTH + 1.25,
+          ROAD_HALF_WIDTH - 1.25
+        );
       }
     }
 
@@ -558,7 +864,7 @@ export class SpatialAIController {
       preferredLat = Math.max(3.2, preferredLat);
     }
 
-    // Lap-start 2x2 grid discipline for the first 30 game-meters so 8-16 cars launch cleanly without tangling
+    // Lap-start 2x2 grid discipline for the first 28 game-meters so 8-16 cars launch cleanly without tangling
     if (!isShowroomDemo && !isQualifying && car.lap === 1 && car.totalDistanceGameM < 28.0) {
       preferredLat = car.lateralOffset >= 0 ? Math.max(2.2, preferredLat) : Math.min(-2.2, preferredLat);
     }
@@ -582,11 +888,9 @@ export class SpatialAIController {
       anyValidRay = true;
 
       let score = -Math.abs(laneLat - preferredLat) * 2.55;
-      // Smoothness penalty prevents twitchy mid-straight lane snaps while allowing decisive slingshots
       const smoothWeight = activeSlingshotTarget ? 0.85 : 1.45;
       score -= Math.abs(laneLat - car.lateralOffset) * smoothWeight;
 
-      // Slight edge buffer penalty right near white lines unless needed for overtaking
       if (Math.abs(laneLat) > 6.4) {
         score -= (Math.abs(laneLat) - 6.4) * 1.8;
       }
@@ -674,14 +978,12 @@ export class SpatialAIController {
     // ------------------------------------------------------------------------
     // 6. MULTI-CIRCUIT KINEMATIC CORNER SPEED & BRAKING ENVELOPE SOLVER
     // ------------------------------------------------------------------------
-    // In 1982 Qualifying, rival traffic cruises at authentic classic Namco speeds (208-256 km/h)
     if (isClassic && isQualifying) {
       car._aiTargetSpeedKmh = 208.0 + (car.carNum % 5) * 11.5;
       car._aiBrakeAggression = 0.9;
       return;
     }
 
-    // Update deterministic per-sector braking jitter for ROOKIE_WILDCARD / LATE_BRAKER
     const jitterKey = car.lap * 16 + curSec.id;
     if (car.aiLastJitterKey !== jitterKey) {
       car.aiLastJitterKey = jitterKey;
@@ -691,17 +993,20 @@ export class SpatialAIController {
 
     const effGrip = this._estimateEffectiveGrip(car, curK, isClassic);
 
-    // Archetype braking personality: LATE_BRAKER dives deeper & harder; TIRE_WHISPERER brakes smoother & earlier
+    // Archetype braking personality + subtle late-braking creep when car.aiPressureMeter is high!
+    const pressureCreepM = (car.aiPressureMeter || 0) > 0.52 ? ((car.aiPressureMeter - 0.52) * 5.8) : 0.0;
     const archBrakeAgg = arch.id === 'LATE_BRAKER'
       ? 1.14
       : (arch.id === 'TIRE_WHISPERER' ? 0.91 : (arch.id === 'ROOKIE_WILDCARD' ? 1.08 : 1.0));
     car._aiBrakeAggression = archBrakeAgg;
 
-    // Planned kinematic deceleration (m/s^2), scaled accurately by current tire & wet surface grip!
     const plannedDecelMps2 = (isClassic ? 28.0 : 26.2 * clamp(effGrip, 0.42, 1.14)) * archBrakeAgg;
-    const brakeLeadMarginM = clamp(7.5 - arch.brakeOffsetM * 0.58 + car.aiLapBrakeJitter * 0.45, -1.5, 16.0);
+    const brakeLeadMarginM = clamp(
+      7.5 - (arch.brakeOffsetM + pressureCreepM) * 0.58 + car.aiLapBrakeJitter * 0.45,
+      -2.2,
+      16.0
+    );
 
-    // Immediate corner speed: unwind smoothly onto throttle as soon as lookK15 opens past peak apex!
     const absCurK = Math.abs(curK);
     const absK15 = Math.abs(lookK15);
     const immediateEffK = absK15 < absCurK * 0.88
@@ -710,10 +1015,9 @@ export class SpatialAIController {
 
     let minAllowedKmh = this._cornerSpeedKmhForCurvature(immediateEffK, effGrip, arch, isClassic);
     if (isChicaneFlip && Math.max(absCurK, absK15) > 0.26) {
-      minAllowedKmh *= 0.94; // Crisp S-chicane direction change stability
+      minAllowedKmh *= sideBySideInChicane ? 0.91 : 0.94;
     }
 
-    // Scan multi-point spline lookahead (15m, 30m, 45m, 68m, 95m, 118m, 140m) using v_allow = sqrt(v_req^2 + 2*a*d)
     for (let i = 0; i < KINEMATIC_LOOKAHEAD_M.length; i++) {
       const distRealM = KINEMATIC_LOOKAHEAD_M[i];
       const kAtDist = Math.abs(this.track.getPhysicsCurvature(s + distRealM / mPerGameM));
@@ -730,11 +1034,9 @@ export class SpatialAIController {
       }
     }
 
-    // Apply balanced competitive pace & gentle elastic pack rubber-banding
-    // Note: on pure straights (minAllowedKmh > 308), allow full slipstream speed up to 332 km/h!
     const racePaceMult = this._computeCompetitivePaceMultiplier(car, playerCar, arch, isClassic, isQualifying, isShowroomDemo);
     let targetKmh = minAllowedKmh * racePaceMult;
-    const straightCeilingKmh = isClassic ? 310.0 : 332.0;
+    const straightCeilingKmh = isClassic ? 310.0 : 333.0;
     targetKmh = Math.min(straightCeilingKmh, targetKmh);
 
     // ------------------------------------------------------------------------
@@ -764,13 +1066,11 @@ export class SpatialAIController {
       const aheadM = forwardDistGameM(s, other.s) * mPerGameM;
       if (aheadM <= 0.5 || aheadM > 46.0) continue;
 
-      // Track closest healthy car anywhere ahead on track for strict Yellow Flag / VSC no-passing compliance
       if (!other.exploded && other.speedKmh >= 65.0 && aheadM < anyAheadInYellowDistM) {
         anyAheadInYellowDistM = aheadM;
         anyAheadInYellowCar = other;
       }
 
-      // Track any car physically overlapping our current or target lane corridor
       const inCurrentPath = Math.abs(car.lateralOffset - other.lateralOffset) < CAR_WIDTH * 1.06;
       const inTargetPath = Math.abs(car.aiTargetLat - other.lateralOffset) < CAR_WIDTH * 1.06;
       if ((inCurrentPath && aheadM < 22.0) || (inCurrentPath && inTargetPath && aheadM < 36.0)) {
@@ -781,15 +1081,16 @@ export class SpatialAIController {
       }
     }
 
-    // Progressive kinematic anti-rear-end gap control when behind a car before lateral clearance is achieved
     if (directAheadCar && !directAheadCar.exploded) {
       const clearToPass = Math.abs(car.lateralOffset - directAheadCar.lateralOffset) >= CAR_WIDTH * 1.04;
       if (!clearToPass) {
-        const followGapM = directAheadCar.isPlayer ? 8.2 : 7.4;
+        const playerBrakingHard = directAheadCar.isPlayer && directAheadCar.brakeInput > 0.15;
+        const followGapM = directAheadCar.isPlayer ? (playerBrakingHard ? 11.4 : 9.0) : 7.4;
         if (directAheadDistM < followGapM) {
-          targetKmh = Math.min(targetKmh, directAheadCar.speedKmh - 7.0);
+          targetKmh = Math.min(targetKmh, directAheadCar.speedKmh - (playerBrakingHard ? 12.0 : 7.0));
         } else {
-          const relAllowMps = Math.sqrt(2.0 * 16.0 * Math.max(0, directAheadDistM - followGapM));
+          const followDecel = directAheadCar.isPlayer ? 13.5 : 16.0;
+          const relAllowMps = Math.sqrt(2.0 * followDecel * Math.max(0, directAheadDistM - followGapM));
           const safeFollowKmh = directAheadCar.speedKmh + relAllowMps * 3.6;
           targetKmh = Math.min(targetKmh, safeFollowKmh);
         }
@@ -818,9 +1119,9 @@ export class SpatialAIController {
       }
     }
 
-    // Rookie pressure mistake speed scrub
+    // Controlled apex lockup wide-excursion speed scrub
     if (car.aiMistakeTimer > 0) {
-      targetKmh *= 0.82;
+      targetKmh *= 0.90;
     }
 
     car._aiTargetSpeedKmh = Math.max(62.0, targetKmh);
@@ -842,19 +1143,16 @@ export class SpatialAIController {
     let leftScore = 0.0;
     let rightScore = 0.0;
 
-    // Prefer side closer to our current lateral offset for smoother pull-out
     leftScore -= Math.abs(car.lateralOffset - leftCand) * 0.55;
     rightScore -= Math.abs(car.lateralOffset - rightCand) * 0.55;
 
-    // Corner inside preference (+k = Right inside +1, -k = Left inside -1)
     if (Math.abs(upcomingCornerK) > 0.16) {
       const insideSide = Math.sign(upcomingCornerK);
-      const insideBonus = arch.id === 'LATE_BRAKER' ? 4.2 : (arch.id === 'ROOKIE_WILDCARD' ? 3.2 : 1.8);
+      const insideBonus = arch.id === 'LATE_BRAKER' ? 4.4 : (arch.id === 'ROOKIE_WILDCARD' ? 3.3 : 1.9);
       if (insideSide < 0) leftScore += insideBonus;
       else rightScore += insideBonus;
     }
 
-    // Penalize side if another car ahead within 55m occupies that overtake lane
     for (let i = 0; i < allCars.length; i++) {
       const other = allCars[i];
       if (other === car || other === leader || other.inPitLane) continue;
@@ -869,7 +1167,7 @@ export class SpatialAIController {
   }
 
   // ==========================================================================
-  // HELPER: REAL-TIME TIRE, WEAR, WET & DAMAGE GRIP ESTIMATOR
+  // HELPER: REAL-TIME TIRE, THERMAL, WEAR, WET & DAMAGE GRIP ESTIMATOR
   // ==========================================================================
   _estimateEffectiveGrip(car, curK, isClassic) {
     if (isClassic) return 1.06;
@@ -902,84 +1200,111 @@ export class SpatialAIController {
       wearMult = 0.48 + 0.45 * Math.pow(ratio, 2.0);
     }
 
+    // 4-Corner Tire Thermal Window Awareness (syncs with @physics 4-corner tireTempsC / tires.*.temp)
+    let thermalMult = 1.0;
+    const tempsArr = Array.isArray(car.tireTempsC) && car.tireTempsC.length === 4
+      ? car.tireTempsC
+      : [car.tires.FL.temp, car.tires.FR.temp, car.tires.RL.temp, car.tires.RR.temp];
+    const avgTempC = (tempsArr[0] + tempsArr[1] + tempsArr[2] + tempsArr[3]) * 0.25;
+    if (Number.isFinite(avgTempC)) {
+      if (avgTempC < comp.optTempMin - 6.0) {
+        thermalMult = clamp(1.0 - (comp.optTempMin - 6.0 - avgTempC) * 0.004, 0.91, 1.0);
+      } else if (avgTempC > comp.optTempMax + 8.0) {
+        thermalMult = clamp(1.0 - (avgTempC - (comp.optTempMax + 8.0)) * 0.005, 0.88, 1.0);
+      }
+    }
+
     if (car.damage.hasPuncture) wearMult = 0.34;
     const aeroDamageMult = 1.0 - car.damage.frontWing * 0.22 - car.damage.suspension * 0.16;
 
-    return clamp(baseMu * wearMult * aeroDamageMult, 0.32, 1.18);
+    return clamp(baseMu * wearMult * thermalMult * aeroDamageMult, 0.32, 1.18);
   }
 
   // ==========================================================================
-  // HELPER: CONTINUOUS SPLINE CURVATURE -> APEX TARGET SPEED (ALL 4 CIRCUITS)
+  // HELPER: CONTINUOUS SPLINE CURVATURE -> APEX TARGET SPEED (ALL 6 CIRCUITS)
   // ==========================================================================
   _cornerSpeedKmhForCurvature(absK, effGrip, arch, isClassic) {
-    const maxStraightKmh = isClassic ? 310.0 : 332.0;
+    const maxStraightKmh = isClassic ? 310.0 : 333.0;
     if (absK <= 0.035) return maxStraightKmh;
 
-    // Continuous aerodynamic + mechanical F1 cornering curve:
-    // k=0.12 -> ~307 km/h | k=0.25 -> ~274 km/h | k=0.38 -> ~242 km/h (100R/Parabolica)
-    // k=0.55 -> ~202 km/h | k=0.68 -> ~173 km/h (Daiichi/Sainte-Devote) | k=0.85 -> ~136 km/h (Hairpins/Chicanes)
     const normK = clamp((absK - 0.035) / 0.88, 0.0, 1.06);
     const dryApexKmh = 332.0 - 210.0 * Math.pow(normK, 0.91);
-
-    // Physical lateral grip scaling (v proportional to sqrt(mu))
     const gripScale = Math.sqrt(clamp(effGrip / 1.04, 0.36, 1.10));
 
-    // Subtle personality cornering traits
     let archCornerMod = 1.0;
-    if (arch.id === 'TIRE_WHISPERER') archCornerMod = 1.022; // Carries silky mid-corner rolling speed
+    if (arch.id === 'TIRE_WHISPERER') archCornerMod = 1.022;
     else if (arch.id === 'APEX_TACTICIAN') archCornerMod = 1.015;
     else if (arch.id === 'DEFENSIVE_WALL') archCornerMod = 0.996;
-    else if (arch.id === 'LATE_BRAKER') archCornerMod = 0.992; // V-shapes apex slightly slower after deep lunge
+    else if (arch.id === 'LATE_BRAKER') archCornerMod = 0.992;
 
     return clamp(dryApexKmh * gripScale * archCornerMod, 78.0, maxStraightKmh);
   }
 
   // ==========================================================================
-  // HELPER: BALANCED PACE & FAIR ELASTIC PACK RUBBER-BANDING (P8 -> P1 BATTLES)
+  // HELPER: ZERO-CHEAT PACE & SUBTLE PACK COHESION (100% HONEST BATTLE BUBBLE!)
   // ==========================================================================
   _computeCompetitivePaceMultiplier(car, playerCar, arch, isClassic, isQualifying, isShowroomDemo) {
-    const baseSkill = (arch.basePace || 0.992) + (car.aiSkillTierOffset || 0.0);
+    const outLapBonus = (car.aiOutLapPushTimer || 0) > 0 ? 0.009 : 0.0;
+    const overcutLightFuelBonus = car.aiOvercutActive && car.fuelLaps < 3.0 ? 0.007 : 0.0;
+    const baseSkill = (arch.basePace || 0.992) + (car.aiSkillTierOffset || 0.0) + outLapBonus + overcutLightFuelBonus;
+
     if (isShowroomDemo || isQualifying || !playerCar || playerCar.exploded || playerCar.inPitLane) {
-      return clamp(baseSkill, 0.965, 1.015);
+      return clamp(baseSkill, 0.965, 1.018);
     }
 
-    // Do not rubber-band during initial standing-start sprint
     if (playerCar.totalDistanceGameM < 30.0) {
-      return clamp(baseSkill, 0.97, 1.012);
+      return clamp(baseSkill, 0.97, 1.014);
     }
 
-    // Gap in game-meters (>0 means AI is ahead of Player; <0 means AI is behind Player)
+    // Within [-40..+36] game-meters (~165m real battle zone!), elastic === 1.000 for 100% zero-cheat physics parity!
     const gapGameM = car.totalDistanceGameM - playerCar.totalDistanceGameM;
     let elastic = 1.0;
 
-    if (gapGameM > 32.0) {
-      // AI is >135m ahead of Player: gently temper runaway leaders so clean mobile laps can reel in P1!
-      const excess = Math.min(1.0, (gapGameM - 32.0) / 145.0);
-      elastic = 1.0 - excess * (isClassic ? 0.048 : 0.042);
-    } else if (gapGameM < -36.0 && !car.damage.hasPuncture && car.fuelLaps > 0.2) {
-      // AI is >150m behind Player: subtle catch-up tow keeps midfield pack competitive
-      const deficit = Math.min(1.0, (-gapGameM - 36.0) / 160.0);
-      elastic = 1.0 + deficit * 0.028;
+    if (gapGameM > 36.0) {
+      const excess = Math.min(1.0, (gapGameM - 36.0) / 150.0);
+      elastic = 1.0 - excess * (isClassic ? 0.044 : 0.038);
+    } else if (gapGameM < -40.0 && !car.damage.hasPuncture && car.fuelLaps > 0.2) {
+      const deficit = Math.min(1.0, (-gapGameM - 40.0) / 165.0);
+      elastic = 1.0 + deficit * 0.025;
     }
-    // Note: Within [-36..+32] game-meters (~140m battle bubble!), elastic === 1.0 for 100% pure honest racing!
 
-    return clamp(baseSkill * elastic, 0.942, 1.032);
+    return clamp(baseSkill * elastic, 0.945, 1.032);
   }
 
   // ==========================================================================
-  // 2026 F1 PIT STOP STRATEGY ENGINE (TIRE CLIFF, FUEL, WEATHER & UNDERCUTS)
+  // HELPER: PROJECTED PIT REJOIN CLEAN-AIR CHECK FOR UNDERCUT STRATEGY
   // ==========================================================================
-  _evaluateAIPitStrategy(car, arch, totalLaps) {
+  _isProjectedPitRejoinClean(car, allCars, mPerGameM) {
+    // Typical green-flag 2026 pit stop delta (~195 game-meters along the 1,000m loop)
+    let rejoinS = car.s - 195.0;
+    if (rejoinS < 0) rejoinS += TRACK_GAME_LENGTH;
+
+    for (let i = 0; i < allCars.length; i++) {
+      const other = allCars[i];
+      if (other === car || other.exploded || other.inPitLane || other.aiWantsToPit) continue;
+      const sepM = Math.abs(signedDeltaGameM(other.s, rejoinS)) * mPerGameM;
+      if (sepM < 24.0) {
+        return false; // Traffic congestion in projected rejoin window!
+      }
+    }
+    return true;
+  }
+
+  // ==========================================================================
+  // 2026 PIT STRATEGY ENGINE: TIRE CLIFF (<28%), CLEAN-AIR UNDERCUT/OVERCUT & WET (W > 0.28)
+  // ==========================================================================
+  _evaluateAIPitStrategy(car, allCars, arch, totalLaps, mPerGameM) {
     if (car.aiWantsToPit) return;
 
     const minLife = Math.min(car.tires.FL.life, car.tires.FR.life, car.tires.RL.life, car.tires.RR.life);
     const W = this.weather.grooveMoisture;
     const isWetCompound = car.compound === 'INTERMEDIATE' || car.compound === 'FULL_WET';
 
-    const wrongTireForRain =
-      (!isWetCompound && W > 0.28) ||
-      (car.compound === 'INTERMEDIATE' && W > 0.66) ||
-      (isWetCompound && W < 0.07);
+    // Immediate Wet / Dry Crossover Trigger: instant INTER/WET pit call when track wetness crosses 0.28!
+    const wetCrossoverTriggered = (!isWetCompound && W > 0.28);
+    const monsoonEscalation = (car.compound === 'INTERMEDIATE' && W > 0.65);
+    const drySlickCrossover = (isWetCompound && W < 0.08);
+    const wrongTireForWeather = wetCrossoverTriggered || monsoonEscalation || drySlickCrossover;
 
     const needsDamageFix =
       car.damage.hasPuncture ||
@@ -987,34 +1312,70 @@ export class SpatialAIController {
       car.damage.rearWing > 0.58 ||
       car.damage.suspension > 0.58;
 
-    // Prevent back-to-back lap pit stops unless emergency puncture or sudden weather mismatch
-    if (car._aiLastPitLap === car.lap && !car.damage.hasPuncture && !wrongTireForRain) {
+    if (car._aiLastPitLap === car.lap && !car.damage.hasPuncture && !wrongTireForWeather) {
       return;
     }
 
-    // APEX_TACTICIAN undercuts 1 lap before the 25% tire cliff (~33% life);
-    // TIRE_WHISPERER stretches stint for an overcut (~22% life);
-    // VSC active opens an opportunistic "cheap pit stop" window if tires < 56%!
     const lapsLeft = Math.max(1, totalLaps - car.lap);
-    const lifeThreshold = (this.raceSystems.vscActive && lapsLeft >= 2)
-      ? 0.56
-      : clamp(0.265 + arch.undercutLapsEarly * 0.06, 0.21, 0.34);
-
     const needsFuel = car.fuelLaps < Math.min(1.32, lapsLeft + 0.22);
 
-    if (minLife < lifeThreshold || needsFuel || wrongTireForRain || needsDamageFix) {
+    // 1. Baseline Tire Cliff Alert (tireLife < 28%, modulated slightly by archetype)
+    let cliffThreshold = clamp(0.28 + arch.undercutLapsEarly * 0.035, 0.22, 0.33);
+    if (this.raceSystems.vscActive && lapsLeft >= 2) {
+      cliffThreshold = 0.56; // Cheap VSC pit-stop opportunity!
+    }
+
+    // 2. Real-Time Undercut vs Overcut Evaluation (Fuel Weight vs Dirty Air vs Clean Rejoin Air)
+    let triggerUndercut = false;
+    if (
+      !wrongTireForWeather &&
+      lapsLeft >= 2 &&
+      minLife < 0.42 &&
+      (car.aiDirtyAirStuckTimer || 0) > 4.2 &&
+      (arch.id === 'APEX_TACTICIAN' || arch.id === 'LATE_BRAKER' || arch.id === 'ROOKIE_WILDCARD')
+    ) {
+      if (this._isProjectedPitRejoinClean(car, allCars, mPerGameM)) {
+        triggerUndercut = true;
+      }
+    }
+
+    // Overcut: lightweight low-fuel car (< 3.2 laps fuel) running in 100% clean air stretches stint to 22%!
+    if (
+      !wrongTireForWeather &&
+      !needsFuel &&
+      !needsDamageFix &&
+      (car.aiCleanAirTimer || 0) > 5.0 &&
+      car.fuelLaps < 3.2 &&
+      minLife >= 0.22 &&
+      (arch.id === 'TIRE_WHISPERER' || arch.id === 'DEFENSIVE_WALL')
+    ) {
+      car.aiOvercutActive = true;
+      cliffThreshold = Math.min(cliffThreshold, 0.225);
+    } else {
+      car.aiOvercutActive = false;
+    }
+
+    const hitTireCliff = minLife < cliffThreshold;
+
+    if (wrongTireForWeather || needsDamageFix || needsFuel || hitTireCliff || triggerUndercut) {
       car.aiWantsToPit = true;
       car._aiLastPitLap = car.lap;
+
+      if (wrongTireForWeather) car.aiPitReason = W > 0.28 ? 'WET_TRANSITION' : 'DRY_CROSSOVER';
+      else if (triggerUndercut) car.aiPitReason = 'UNDERCUT_CLEAN_AIR';
+      else if (hitTireCliff) car.aiPitReason = 'TIRE_CLIFF_28';
+      else if (needsFuel) car.aiPitReason = 'LOW_FUEL';
+      else car.aiPitReason = 'DAMAGE_REPAIR';
 
       const stintLapsRemaining = Math.max(2, totalLaps - car.lap + 1);
       let nextComp = arch.preferredDryTire || 'MEDIUM';
 
-      if (W > 0.56) {
+      if (W > 0.58) {
         nextComp = 'FULL_WET';
-      } else if (W > 0.18) {
+      } else if (W > 0.28 || (W > 0.16 && isWetCompound)) {
         nextComp = 'INTERMEDIATE';
       } else if (stintLapsRemaining <= 4) {
-        nextComp = 'SOFT'; // Final sprint on red-walled Softs!
+        nextComp = 'SOFT'; // Lightweight final sprint on red-walled Softs!
       } else if (stintLapsRemaining <= 9) {
         nextComp = (arch.preferredDryTire === 'SOFT' && stintLapsRemaining <= 6) ? 'SOFT' : 'MEDIUM';
       } else {
@@ -1028,7 +1389,7 @@ export class SpatialAIController {
         repairOrder = 'WINGS';
       }
 
-      const crewPushMode = arch.id === 'APEX_TACTICIAN'
+      const crewPushMode = (triggerUndercut || arch.id === 'APEX_TACTICIAN')
         ? 'AGGRESSIVE_UNDERCUT'
         : (arch.id === 'TIRE_WHISPERER' ? 'SAFE' : 'BALANCED');
 
@@ -1037,6 +1398,7 @@ export class SpatialAIController {
         fuelToAdd: 'FILL',
         repairOrder,
         crewPushMode,
+        reason: car.aiPitReason,
       };
     }
   }

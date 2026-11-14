@@ -78,6 +78,26 @@ def apply_box_uvs(bm, scale=1.5):
             loop[uv_layer].uv = (u, v)
 
 
+def apply_livery_uvs(bm, y_min=-2.46, y_max=1.98):
+    """
+    Assign clean, symmetric, non-overlapping [0..1] automotive livery UVs to `Body_Main`
+    so procedural livery decals (#1, racing stripes, PHANATIC / VELOCE / P-ZERO logos)
+    and clearcoat normal maps project cleanly across the nose, engine cover, and sidepods.
+    """
+    uv_layer = bm.loops.layers.uv.verify()
+    bm.faces.ensure_lookup_table()
+    y_span = max(0.001, y_max - y_min)
+    for f in bm.faces:
+        for loop in f.loops:
+            co = loop.vert.co
+            u = max(0.015, min(0.985, (co.y - y_min) / y_span))
+            sx = -1.0 if co.x < 0.0 else 1.0
+            # Smooth dorsal-to-flank wrap around centerline v = 0.50
+            lateral_arc = abs(co.x) * 0.34 + max(0.0, 0.52 - co.z) * 0.38
+            v = max(0.02, min(0.98, 0.50 + sx * min(0.47, lateral_arc)))
+            loop[uv_layer].uv = (u, v)
+
+
 def create_mesh_object(
     name,
     bm,
@@ -264,7 +284,7 @@ def build_f1_chassis():
     # Exact required material names preserved 100%
     mat_primary = make_mat("Livery_Primary", (0.86, 0.05, 0.09), metallic=0.46, roughness=0.16)
     mat_accent = make_mat("Livery_Accent", (0.97, 0.97, 0.99), metallic=0.26, roughness=0.20)
-    mat_carbon = make_mat("Carbon_Fiber", (0.055, 0.060, 0.070), metallic=0.34, roughness=0.34)
+    mat_carbon = make_mat("Carbon_Fiber", (0.042, 0.046, 0.055), metallic=0.32, roughness=0.36)
     mat_metal = make_mat("Titanium_Exhaust", (0.72, 0.69, 0.64), metallic=0.96, roughness=0.16)
     mat_helmet = make_mat("Driver_Helmet_Mat", (0.0, 0.82, 0.98), metallic=0.45, roughness=0.14)
     mat_visor = make_mat("Driver_Visor_Mat", (0.015, 0.035, 0.075), metallic=0.98, roughness=0.04)
@@ -276,243 +296,284 @@ def build_f1_chassis():
         emission=(1.0, 0.04, 0.02),
         emission_strength=6.5,
     )
+    mat_oled = make_mat(
+        "OLED_Telemetry_Mat",
+        (0.02, 0.16, 0.22),
+        metallic=0.10,
+        roughness=0.12,
+        emission=(0.0, 0.88, 0.96),
+        emission_strength=2.8,
+    )
 
     # --------------------------------------------------------------------------
-    # A. BODY_MAIN: Sculpted Monocoque, Needle Nose, Downwash Sidepods & Mirrors
+    # A. BODY_MAIN: Crisp Chiseled Monocoque, High-Overbite Undercut Sidepods & Mirrors
+    #    ZERO uncreased Catmull-Clark subsurf (`subdiv_levels=0`) so sharp aero chines,
+    #    sidepod undercuts, and waterslide channels never melt into rounded blobs!
     # --------------------------------------------------------------------------
     bm_body = bmesh.new()
 
-    # 12-station aerodynamic monocoque + roll-hoop airbox + coke-bottle spine
     mono_stations = [
-        # (y, hw_bot, hw_mid, hw_top, z_bot, z_mid, z_top)
-        (-2.44, 0.048, 0.065, 0.040, 0.125, 0.155, 0.182),  # Drooped aero nose tip
-        (-2.15, 0.105, 0.132, 0.092, 0.132, 0.195, 0.255),
-        (-1.80, 0.165, 0.205, 0.148, 0.138, 0.245, 0.345),
-        (-1.46, 0.220, 0.268, 0.195, 0.130, 0.285, 0.435),  # Front axle bulkhead
-        (-1.05, 0.290, 0.345, 0.242, 0.105, 0.315, 0.505),
-        (-0.68, 0.335, 0.388, 0.275, 0.092, 0.328, 0.535),  # Forward cockpit coaming
-        (-0.26, 0.350, 0.405, 0.282, 0.090, 0.335, 0.542),  # Cockpit waist
-        ( 0.06, 0.342, 0.392, 0.228, 0.090, 0.410, 0.755),  # Roll-hoop intake rise
-        ( 0.24, 0.332, 0.380, 0.195, 0.092, 0.430, 0.798),  # Airbox roll-hoop crest
-        ( 0.68, 0.265, 0.315, 0.132, 0.098, 0.385, 0.685),  # Engine cover taper
-        ( 1.22, 0.165, 0.205, 0.075, 0.115, 0.310, 0.515),  # Coke-bottle narrow waist
-        ( 1.66, 0.105, 0.135, 0.048, 0.138, 0.268, 0.395),
-        ( 1.94, 0.075, 0.092, 0.036, 0.155, 0.245, 0.335),  # Rear gearbox tailcone
+        # (y, hw_bot, hw_mid, hw_chine, hw_top, z_bot, z_mid, z_chine, z_top)
+        (-2.44, 0.044, 0.062, 0.056, 0.036, 0.126, 0.152, 0.172, 0.180),
+        (-2.22, 0.088, 0.114, 0.104, 0.074, 0.130, 0.180, 0.222, 0.236),
+        (-1.94, 0.138, 0.176, 0.162, 0.118, 0.135, 0.220, 0.292, 0.312),
+        (-1.64, 0.188, 0.234, 0.214, 0.162, 0.134, 0.262, 0.368, 0.394),
+        (-1.42, 0.222, 0.274, 0.252, 0.194, 0.128, 0.290, 0.422, 0.448),
+        (-1.06, 0.285, 0.342, 0.316, 0.240, 0.115, 0.318, 0.482, 0.508),
+        (-0.68, 0.326, 0.382, 0.352, 0.268, 0.108, 0.332, 0.514, 0.538),
+        (-0.26, 0.338, 0.395, 0.362, 0.276, 0.108, 0.338, 0.520, 0.544),
+        ( 0.05, 0.330, 0.382, 0.310, 0.218, 0.110, 0.405, 0.665, 0.758),
+        ( 0.24, 0.318, 0.366, 0.285, 0.182, 0.112, 0.425, 0.705, 0.802),
+        ( 0.58, 0.268, 0.315, 0.225, 0.128, 0.118, 0.388, 0.610, 0.705),
+        ( 0.96, 0.205, 0.242, 0.165, 0.086, 0.126, 0.340, 0.505, 0.585),
+        ( 1.32, 0.145, 0.175, 0.118, 0.060, 0.138, 0.295, 0.415, 0.478),
+        ( 1.66, 0.098, 0.122, 0.084, 0.044, 0.150, 0.262, 0.352, 0.392),
+        ( 1.94, 0.070, 0.088, 0.062, 0.032, 0.162, 0.242, 0.305, 0.335),
     ]
     mono_rings = []
-    for (y, hwb, hwm, hwt, zb, zm, zt) in mono_stations:
+    for (y, hwb, hwm, hwc, hwt, zb, zm, zc, zt) in mono_stations:
         mono_rings.append([
             (-hwb, y, zb),
             ( hwb, y, zb),
-            ( hwm, y, zm - 0.045),
-            ( hwm * 0.96, y, zm + 0.055),
+            ( hwm, y, zm),
+            ( hwc, y, zc),
             ( hwt, y, zt),
             (-hwt, y, zt),
-            (-hwm * 0.96, y, zm + 0.055),
-            (-hwm, y, zm - 0.045),
+            (-hwc, y, zc),
+            (-hwm, y, zm),
         ])
     add_loft(bm_body, mono_rings, closed_ring=True, cap_start=True, cap_end=True)
 
-    # Sculpted High-Undercut Downwash Sidepods (left & right) clearing front & rear tires cleanly
+    # Crisp High-Overbite Sculpted Sidepods (z = 0.23..0.51 at inlet, leaving deep dark 3K carbon undercut below!)
     for side in (-1.0, 1.0):
         sp_stations = [
-            # (y, xin, xout_bot, xout_mid, xout_top, zb, zm, zt, gully_dip)
-            (-0.70, 0.28, 0.52, 0.75, 0.73, 0.20, 0.36, 0.485, 0.000),  # High overbite inlet lip
-            (-0.46, 0.30, 0.58, 0.83, 0.78, 0.13, 0.33, 0.505, 0.015),  # Deep floor undercut
-            (-0.08, 0.29, 0.64, 0.82, 0.74, 0.10, 0.31, 0.480, 0.032),  # Maximum aero shoulder
-            ( 0.38, 0.25, 0.56, 0.72, 0.62, 0.10, 0.28, 0.430, 0.042),  # Waterslide downwash ramp
-            ( 0.86, 0.19, 0.42, 0.54, 0.44, 0.11, 0.24, 0.355, 0.030),  # Coke-bottle inward sweep
-            ( 1.28, 0.14, 0.26, 0.33, 0.26, 0.13, 0.21, 0.285, 0.012),  # Clears RL/RR inner tire (|x|=0.67)
-            ( 1.66, 0.09, 0.15, 0.18, 0.14, 0.15, 0.20, 0.245, 0.000),  # Blends into diffuser roof
+            # (y, xin, x_undercut, x_flank, x_shoulder, zb, zm, zt, gully_dip)
+            (-0.72, 0.29, 0.50, 0.74, 0.72, 0.265, 0.395, 0.492, 0.004),
+            (-0.52, 0.31, 0.52, 0.82, 0.78, 0.232, 0.372, 0.512, 0.022),
+            (-0.20, 0.30, 0.50, 0.81, 0.75, 0.215, 0.352, 0.495, 0.044),
+            ( 0.16, 0.27, 0.44, 0.74, 0.66, 0.198, 0.320, 0.455, 0.058),
+            ( 0.54, 0.22, 0.36, 0.60, 0.52, 0.182, 0.285, 0.402, 0.052),
+            ( 0.92, 0.17, 0.27, 0.43, 0.36, 0.170, 0.248, 0.342, 0.032),
+            ( 1.30, 0.13, 0.19, 0.28, 0.23, 0.165, 0.218, 0.282, 0.014),
+            ( 1.66, 0.09, 0.12, 0.16, 0.13, 0.165, 0.202, 0.242, 0.000),
         ]
         sp_rings = []
-        for (y, xin, xob, xom, xot, zb, zm, zt, dip) in sp_stations:
-            x_mid_top = 0.5 * (xin + xot)
+        for (y, xin, xuc, xfl, xsh, zb, zm, zt, dip) in sp_stations:
+            x_trench = 0.48 * xin + 0.52 * xsh
             pts = [
-                (side * xin,       y, zb),
-                (side * xob,       y, zb + 0.035),
-                (side * xom,       y, zm),
-                (side * xot,       y, zt),
-                (side * x_mid_top, y, zt - dip),  # Sculpted downwash cooling channel!
-                (side * xin,       y, zt + 0.012),
+                (side * xin,      y, zb),
+                (side * xuc,      y, zb + 0.022),
+                (side * xfl,      y, zm),
+                (side * xsh,      y, zt),
+                (side * x_trench, y, zt - dip),
+                (side * xin,      y, zt + 0.010),
             ]
             if side < 0:
                 pts = list(reversed(pts))
             sp_rings.append(pts)
         add_loft(bm_body, sp_rings, closed_ring=True, cap_start=True, cap_end=True)
 
-        # Aerodynamic Winged Rear-View Mirror Housings
+        # Aerodynamic Winged Rear-View Mirror Cowlings
         mir_rings = [
             [
-                (side * 0.42, -0.58, 0.545),
-                (side * 0.56, -0.57, 0.550),
-                (side * 0.57, -0.57, 0.592),
-                (side * 0.42, -0.58, 0.588),
+                (side * 0.44, -0.58, 0.555),
+                (side * 0.60, -0.57, 0.560),
+                (side * 0.61, -0.57, 0.606),
+                (side * 0.44, -0.58, 0.602),
             ],
             [
-                (side * 0.41, -0.49, 0.542),
-                (side * 0.57, -0.49, 0.548),
-                (side * 0.58, -0.49, 0.595),
-                (side * 0.41, -0.49, 0.590),
+                (side * 0.43, -0.485, 0.552),
+                (side * 0.61, -0.485, 0.558),
+                (side * 0.62, -0.485, 0.608),
+                (side * 0.43, -0.485, 0.604),
             ],
         ]
         if side < 0:
             mir_rings = [list(reversed(r)) for r in mir_rings]
         add_loft(bm_body, mir_rings, closed_ring=True, cap_start=True, cap_end=True)
 
-    create_mesh_object("Body_Main", bm_body, mat_primary, shade_smooth=True, subdiv_levels=2, uv_scale=1.2)
+    bmesh.ops.recalc_face_normals(bm_body, faces=bm_body.faces)
+    apply_livery_uvs(bm_body, y_min=-2.46, y_max=1.98)
+    create_mesh_object("Body_Main", bm_body, mat_primary, shade_smooth=True, subdiv_levels=0, auto_uv=False)
+
+    # Sky-Reflective Chrome Rear-View Mirror Glass Panes facing driver in Cockpit View
+    bm_mglass = bmesh.new()
+    for side in (-1.0, 1.0):
+        add_box(bm_mglass, side * 0.525, -0.482, 0.580, 0.155, 0.008, 0.038)
+    create_mesh_object("Wing_Mirror_Glass", bm_mglass, mat_visor, shade_smooth=False, uv_scale=3.0)
 
     # --------------------------------------------------------------------------
-    # B. BODY_ACCENT: Nose Livery Stripe, Dorsal Aero Sharkfin & Sidepod Blades
+    # B. BODY_ACCENT: Nose Number Shield, Coaming Trim, Sharkfin & Diagonal Sidepod Slashes
     # --------------------------------------------------------------------------
     bm_acc = bmesh.new()
 
-    # Contoured nosecone center racing stripe hugging upper nose slope
     stripe_stations = [
-        (-2.32, 0.032, 0.175, 0.188),
-        (-1.95, 0.068, 0.258, 0.272),
-        (-1.50, 0.095, 0.418, 0.436),
-        (-1.02, 0.105, 0.502, 0.518),
-        (-0.72, 0.110, 0.530, 0.544),
+        (-2.36, 0.028, 0.168, 0.184),
+        (-2.05, 0.062, 0.236, 0.254),
+        (-1.68, 0.105, 0.358, 0.378),
+        (-1.32, 0.128, 0.452, 0.472),
+        (-0.96, 0.112, 0.506, 0.524),
+        (-0.68, 0.118, 0.532, 0.548),
     ]
     st_rings = []
     for (y, hw, zb, zt) in stripe_stations:
-        st_rings.append([(-hw, y, zb), (hw, y, zb), (hw * 0.92, y, zt), (-hw * 0.92, y, zt)])
+        st_rings.append([(-hw, y, zb), (hw, y, zb), (hw * 0.90, y, zt), (-hw * 0.90, y, zt)])
     add_loft(bm_acc, st_rings, closed_ring=True, cap_start=True, cap_end=True)
 
-    # Sculpted Dorsal Aero Sharkfin along Engine Cover Spine
     fin_stations = [
-        (0.28, 0.014, 0.68, 0.790),
-        (0.68, 0.012, 0.58, 0.755),
-        (1.18, 0.011, 0.44, 0.720),
-        (1.62, 0.010, 0.36, 0.685),
+        (0.26, 0.015, 0.68, 0.798),
+        (0.66, 0.013, 0.58, 0.762),
+        (1.18, 0.011, 0.44, 0.724),
+        (1.64, 0.010, 0.36, 0.688),
     ]
     fin_rings = []
     for (y, hw, zb, zt) in fin_stations:
-        fin_rings.append([(-hw, y, zb), (hw, y, zb), (hw * 0.6, y, zt), (-hw * 0.6, y, zt)])
+        fin_rings.append([(-hw, y, zb), (hw, y, zb), (hw * 0.58, y, zt), (-hw * 0.58, y, zt)])
     add_loft(bm_acc, fin_rings, closed_ring=True, cap_start=True, cap_end=True)
 
-    # Sidepod outer shoulder livery flashes
     for side in (-1.0, 1.0):
         sp_flash = [
-            (-0.62, 0.56, 0.76, 0.475, 0.495),
-            (-0.12, 0.58, 0.80, 0.470, 0.492),
-            ( 0.38, 0.48, 0.68, 0.418, 0.440),
-            ( 0.78, 0.36, 0.50, 0.345, 0.365),
+            (-0.68, 0.56, 0.75, 0.486, 0.504),
+            (-0.18, 0.60, 0.815, 0.488, 0.508),
+            ( 0.34, 0.48, 0.685, 0.428, 0.448),
+            ( 0.84, 0.32, 0.465, 0.342, 0.362),
         ]
         fl_rings = []
         for (y, xi, xo, zb, zt) in sp_flash:
-            pts = [(side * xi, y, zb), (side * xo, y, zb - 0.01), (side * xo, y, zt - 0.01), (side * xi, y, zt)]
+            pts = [(side * xi, y, zb), (side * xo, y, zb - 0.012), (side * xo, y, zt - 0.012), (side * xi, y, zt)]
             if side < 0:
                 pts = list(reversed(pts))
             fl_rings.append(pts)
         add_loft(bm_acc, fl_rings, closed_ring=True, cap_start=True, cap_end=True)
 
-    create_mesh_object("Body_Accent", bm_acc, mat_accent, shade_smooth=True, uv_scale=1.4)
+        # Diagonal sidepod flank speed-stripe hugging outer cheek
+        flank_stripe = [
+            (-0.56, 0.785, 0.826, 0.345, 0.392),
+            (-0.16, 0.780, 0.818, 0.318, 0.362),
+            ( 0.28, 0.665, 0.705, 0.278, 0.318),
+            ( 0.72, 0.475, 0.512, 0.236, 0.272),
+        ]
+        fs_rings = []
+        for (y, xi, xo, zb, zt) in flank_stripe:
+            pts = [(side * xi, y, zb), (side * xo, y, zb), (side * xo, y, zt), (side * xi, y, zt)]
+            if side < 0:
+                pts = list(reversed(pts))
+            fs_rings.append(pts)
+        add_loft(bm_acc, fs_rings, closed_ring=True, cap_start=True, cap_end=True)
+
+        add_strut(bm_acc, (side * 0.275, -0.64, 0.544), (side * 0.282, -0.10, 0.550), 0.012, 0.010, segs=6)
+
+    create_mesh_object("Body_Accent", bm_acc, mat_accent, shade_smooth=True, subdiv_levels=0, uv_scale=1.4)
 
     # --------------------------------------------------------------------------
-    # C. CARBON_CHASSIS: Venturi Floor + Edge Strakes, Sidepod Cooling Louvres,
-    #    Multi-Strake Diffuser, Cockpit Tub, HANS Collar, Scoops & Mirror Stalks
+    # C. CARBON_CHASSIS: Venturi Floor, Deep Carbon Sidepod Undercut, Edge Strakes,
+    #    8-Slot Cooling Louvres, Diffuser & First-Person Cockpit Tub Interior
     # --------------------------------------------------------------------------
     bm_carb = bmesh.new()
 
-    # 1. Sculpted Ground-Effect Venturi Floor + Tapered Tea-Tray Front Bib Splitter
     floor_stations = [
-        (-1.62, 0.16, 0.052, 0.068),  # Forward tea-tray splitter nose
-        (-1.26, 0.32, 0.052, 0.072),  # Bib waist behind front tires
-        (-0.98, 0.82, 0.054, 0.082),  # Venturi tunnel inlet flare
-        (-0.30, 0.84, 0.054, 0.084),  # Maximum ground-effect floor width
-        ( 0.45, 0.83, 0.055, 0.084),
-        ( 0.98, 0.78, 0.058, 0.086),  # Tire-spat taper ahead of rear wheels
-        ( 1.56, 0.62, 0.064, 0.094),  # Transitions into rear diffuser throat
+        (-1.66, 0.16, 0.052, 0.068),
+        (-1.26, 0.34, 0.052, 0.072),
+        (-0.98, 0.83, 0.054, 0.082),
+        (-0.30, 0.845, 0.054, 0.084),
+        ( 0.45, 0.835, 0.055, 0.084),
+        ( 0.98, 0.785, 0.058, 0.086),
+        ( 1.56, 0.62, 0.064, 0.094),
     ]
     flr_rings = []
     for (y, hw, zb, zt) in floor_stations:
         flr_rings.append([(-hw, y, zb), (hw, y, zb), (hw, y, zt), (-hw, y, zt)])
     add_loft(bm_carb, flr_rings, closed_ring=True, cap_start=True, cap_end=True)
 
-    # Tea-tray splitter stay strut to nose underside
     add_strut(bm_carb, (0.0, -1.52, 0.065), (0.0, -1.46, 0.145), 0.012, 0.032, segs=6, up_hint=(1, 0, 0))
 
-    # 2. Venturi Floor Edge Wings, Outwash Vortex Strakes & Forward Underfloor Fences
     for side in (-1.0, 1.0):
-        # Continuous raised scrolled floor-edge wing
-        add_box(bm_carb, side * 0.835, -0.02, 0.095, 0.026, 1.88, 0.045)
-        # 5 angled curved Venturi floor-edge vortex strakes along outer floor edge!
-        for k in range(5):
-            yk = -0.82 + k * 0.36
-            p0 = (side * 0.805, yk - 0.09, 0.082)
-            p1 = (side * 0.858, yk + 0.09, 0.118)
-            add_strut(bm_carb, p0, p1, 0.008, 0.028, segs=6, up_hint=(0, 0, 1))
-        # 3 forward Venturi tunnel inlet fences under sidepod leading edge
-        for f_idx, fx in enumerate((0.44, 0.59, 0.73)):
-            y_f = -0.92 + f_idx * 0.05
-            add_box(bm_carb, side * fx, y_f, 0.095, 0.014, 0.32, 0.075)
+        # Deep recessed 3K carbon lower sidepod undercut skirt (z = 0.08..0.245) beneath overbite!
+        uc_stations = [
+            (-0.76, 0.28, 0.56, 0.080, 0.268),
+            (-0.46, 0.29, 0.60, 0.082, 0.238),
+            (-0.06, 0.28, 0.58, 0.082, 0.220),
+            ( 0.42, 0.23, 0.46, 0.084, 0.198),
+            ( 0.92, 0.17, 0.32, 0.086, 0.176),
+            ( 1.32, 0.13, 0.22, 0.090, 0.168),
+        ]
+        uc_rings = []
+        for (y, xi, xo, zb, zt) in uc_stations:
+            pts = [(side * xi, y, zb), (side * xo, y, zb), (side * (xo * 0.92), y, zt), (side * xi, y, zt)]
+            if side < 0:
+                pts = list(reversed(pts))
+            uc_rings.append(pts)
+        add_loft(bm_carb, uc_rings, closed_ring=True, cap_start=True, cap_end=True)
 
-    # 3. High-Expansion Rear Venturi Diffuser Tunnel + 6 Vertical Strakes + Gurney Flap
+        bb = add_box(bm_carb, side * 0.74, -0.78, 0.20, 0.018, 0.24, 0.22)
+        bmesh.ops.rotate(bm_carb, cent=(side * 0.74, -0.78, 0.20), matrix=Matrix.Rotation(side * -0.18, 3, "Z"), verts=bb)
+
+        add_box(bm_carb, side * 0.840, -0.02, 0.096, 0.028, 1.90, 0.046)
+        for k in range(6):
+            yk = -0.86 + k * 0.32
+            p0 = (side * 0.805, yk - 0.08, 0.082)
+            p1 = (side * 0.865, yk + 0.08, 0.122)
+            add_strut(bm_carb, p0, p1, 0.008, 0.028, segs=6, up_hint=(0, 0, 1))
+        for f_idx, fx in enumerate((0.40, 0.52, 0.64, 0.76)):
+            y_f = -0.94 + f_idx * 0.04
+            add_box(bm_carb, side * fx, y_f, 0.098, 0.014, 0.34, 0.082)
+
     diff_stations = [
         (1.54, 0.62, 0.065, 0.095),
-        (1.78, 0.61, 0.135, 0.175),
-        (2.02, 0.60, 0.215, 0.255),
+        (1.78, 0.61, 0.138, 0.178),
+        (2.04, 0.60, 0.220, 0.262),
     ]
     d_rings = []
     for (y, hw, zb, zt) in diff_stations:
         d_rings.append([(-hw, y, zb), (hw, y, zb), (hw, y, zt), (-hw, y, zt)])
     add_loft(bm_carb, d_rings, closed_ring=True, cap_start=True, cap_end=True)
-    # Outer diffuser wallplates + 6 internal vertical aero strakes
-    for sx in (-0.59, -0.44, -0.29, -0.13, 0.13, 0.29, 0.44, 0.59):
-        add_box(bm_carb, sx, 1.80, 0.135, 0.016, 0.48, 0.145)
-    # Rear crash attenuator structure housing the rain light
+    for sx in (-0.59, -0.45, -0.31, -0.16, 0.16, 0.31, 0.45, 0.59):
+        add_box(bm_carb, sx, 1.80, 0.138, 0.016, 0.50, 0.150)
     add_box(bm_carb, 0.0, 1.96, 0.215, 0.095, 0.22, 0.135)
 
-    # 4. Sculpted Sidepod Cooling Louvres (7 angled shark-gill heat-extraction slats per side!)
     for side in (-1.0, 1.0):
-        # Dark recessed cooling plenum bed along sidepod gully
-        verts_bed = add_box(bm_carb, side * 0.46, 0.16, 0.452, 0.15, 0.72, 0.022)
+        verts_bed = add_box(bm_carb, side * 0.46, 0.15, 0.448, 0.155, 0.78, 0.022)
         bmesh.ops.rotate(
             bm_carb,
-            cent=(side * 0.46, 0.16, 0.452),
-            matrix=Matrix.Rotation(0.085, 3, "X"),
+            cent=(side * 0.46, 0.15, 0.448),
+            matrix=Matrix.Rotation(0.088, 3, "X"),
             verts=verts_bed,
         )
-        for g in range(7):
-            yg = -0.15 + g * 0.102
-            zg = 0.478 - g * 0.0085
-            xg = side * (0.48 - g * 0.010)
-            slat = add_box(bm_carb, xg, yg, zg, 0.145, 0.036, 0.010)
+        for g in range(8):
+            yg = -0.18 + g * 0.094
+            zg = 0.482 - g * 0.0085
+            xg = side * (0.485 - g * 0.010)
+            slat = add_box(bm_carb, xg, yg, zg, 0.152, 0.034, 0.011)
             bmesh.ops.rotate(
                 bm_carb,
                 cent=(xg, yg, zg),
-                matrix=Matrix.Rotation(-0.42, 3, "X") @ Matrix.Rotation(side * 0.16, 3, "Z"),
+                matrix=Matrix.Rotation(-0.44, 3, "X") @ Matrix.Rotation(side * 0.16, 3, "Z"),
                 verts=slat,
             )
 
-        # Dark recessed radiator scoop mouths & roll-hoop intake mouth
-        add_box(bm_carb, side * 0.53, -0.705, 0.355, 0.38, 0.065, 0.20)
-        # Dual aero mirror stalks (inboard & sidepod vertical stay) + dark mirror face
-        add_strut(bm_carb, (side * 0.31, -0.54, 0.525), (side * 0.44, -0.54, 0.562), 0.008, 0.022, segs=6)
-        add_strut(bm_carb, (side * 0.52, -0.53, 0.485), (side * 0.51, -0.53, 0.552), 0.007, 0.020, segs=6)
-        # Over-wheel front wake deflector winglets (2026 ground-effect wheel wake brow!)
-        brow = add_box(bm_carb, side * 0.68, -1.28, 0.555, 0.022, 0.34, 0.12)
-        bmesh.ops.rotate(bm_carb, cent=(side * 0.68, -1.28, 0.555), matrix=Matrix.Rotation(side * 0.42, 3, "Y"), verts=brow)
+        add_box(bm_carb, side * 0.52, -0.715, 0.375, 0.39, 0.065, 0.185)
+        add_strut(bm_carb, (side * 0.30, -0.54, 0.532), (side * 0.45, -0.54, 0.575), 0.008, 0.024, segs=6)
+        add_strut(bm_carb, (side * 0.53, -0.53, 0.492), (side * 0.52, -0.53, 0.562), 0.007, 0.022, segs=6)
+        brow = add_box(bm_carb, side * 0.68, -1.28, 0.558, 0.022, 0.36, 0.128)
+        bmesh.ops.rotate(bm_carb, cent=(side * 0.68, -1.28, 0.558), matrix=Matrix.Rotation(side * 0.42, 3, "Y"), verts=brow)
 
-    # Cockpit dark carbon tub interior, molded headrest bolsters, HANS collar & airbox mouth
-    add_box(bm_carb, 0.0, -0.35, 0.495, 0.44, 0.78, 0.14)
+    # First-Person Cockpit Survival-Cell Tub Interior, Dash Scuttle, FIA Headrest & HANS Collar
+    add_box(bm_carb, 0.0, -0.36, 0.365, 0.44, 0.80, 0.04)
+    add_box(bm_carb, 0.0, -0.64, 0.515, 0.42, 0.18, 0.12)
     for side in (-1.0, 1.0):
-        add_box(bm_carb, side * 0.185, -0.22, 0.585, 0.065, 0.42, 0.075)  # FIA side headrest bolsters
-        # Carbon HANS safety collar resting on driver shoulders
-        add_strut(bm_carb, (side * 0.085, -0.17, 0.58), (side * 0.115, -0.34, 0.535), 0.022, 0.016, segs=6)
-    add_box(bm_carb, 0.0, -0.06, 0.615, 0.26, 0.14, 0.085)  # Rear cockpit headrest pad
-    add_box(bm_carb, 0.0, 0.06, 0.735, 0.165, 0.09, 0.115)  # Roll-hoop intake throat
+        add_box(bm_carb, side * 0.215, -0.36, 0.475, 0.036, 0.74, 0.16)
+        add_box(bm_carb, side * 0.185, -0.22, 0.588, 0.066, 0.44, 0.078)
+        add_strut(bm_carb, (side * 0.085, -0.17, 0.582), (side * 0.115, -0.34, 0.536), 0.022, 0.016, segs=6)
+    add_box(bm_carb, 0.0, -0.06, 0.618, 0.26, 0.14, 0.088)
+    add_box(bm_carb, 0.0, 0.06, 0.738, 0.165, 0.09, 0.118)
 
     create_mesh_object("Carbon_Chassis", bm_carb, mat_carbon, shade_smooth=False, uv_scale=2.2)
 
     # --------------------------------------------------------------------------
-    # D. HALO_TITANIUM: Curved Subdivided Grade-5 Titanium Cockpit Halo Hoop
+    # D. HALO_TITANIUM: Grade-5 Titanium Hoop + Slim Cockpit V-Pillar + Aero Fairings
     # --------------------------------------------------------------------------
     bm_halo = bmesh.new()
 
-    # Smooth 15-point horseshoe curve wrapping around the cockpit from rear mounts to front apex
     halo_arc = [
         (-0.195,  0.03, 0.560),
         (-0.228, -0.12, 0.625),
@@ -520,7 +581,7 @@ def build_f1_chassis():
         (-0.232, -0.46, 0.672),
         (-0.178, -0.58, 0.678),
         (-0.092, -0.645, 0.680),
-        ( 0.000, -0.668, 0.681),  # Front center V-junction
+        ( 0.000, -0.668, 0.681),
         ( 0.092, -0.645, 0.680),
         ( 0.178, -0.58, 0.678),
         ( 0.232, -0.46, 0.672),
@@ -545,14 +606,22 @@ def build_f1_chassis():
     ]
     add_swept_tube(bm_halo, halo_arc, halo_radii, segs=12, up_hint=(0.0, 0.0, 1.0), cap_ends=True)
 
-    # Sculpted teardrop front center Halo V-pylon anchored cleanly to monocoque deck
     pylon_pts = [
         (0.0, -0.715, 0.515),
         (0.0, -0.692, 0.595),
         (0.0, -0.668, 0.678),
     ]
-    pylon_r = [(0.015, 0.036), (0.014, 0.030), (0.018, 0.032)]
+    pylon_r = [(0.013, 0.036), (0.012, 0.030), (0.016, 0.032)]
     add_swept_tube(bm_halo, pylon_pts, pylon_r, segs=12, up_hint=(1.0, 0.0, 0.0), cap_ends=True)
+
+    # Swept 2026 Halo boomerang carbon aero fairings & side vortex winglets
+    for side in (-1.0, 1.0):
+        winglet_pts = [
+            (side * 0.185, -0.54, 0.698),
+            (side * 0.242, -0.34, 0.680),
+            (side * 0.228, -0.14, 0.648),
+        ]
+        add_swept_tube(bm_halo, winglet_pts, (0.024, 0.006), segs=8, up_hint=(0.0, 0.0, 1.0), cap_ends=True)
 
     create_mesh_object("Halo_Titanium", bm_halo, mat_carbon, shade_smooth=True, subdiv_levels=1, uv_scale=2.5)
 
@@ -585,42 +654,34 @@ def build_f1_chassis():
     )
 
     # --------------------------------------------------------------------------
-    # F. COCKPIT_WHEEL: Articulated Butterfly F1 Steering Wheel + Thumb Rotaries
-    #    Origin right at hub (0.0, -0.52, 0.54) so models.js rotates it live!
+    # F. COCKPIT_WHEEL + PARENTED DRIVER ARMS & CARBON-KNUCKLE GLOVES
+    #    Origin right at hub (0.0, -0.52, 0.54) so models.js rotates wheel + hands live!
     # --------------------------------------------------------------------------
     bm_sw = bmesh.new()
-    # Steering shaft quick-release hub extending forward (-Y) into bulkhead
     add_strut(bm_sw, (0.0, -0.14, 0.0), (0.0, 0.012, 0.0), 0.024, 0.024, segs=12, up_hint=(0, 0, 1))
-    # Sculpted carbon butterfly central faceplate (flat top, F1 open bottom cutout)
-    add_box(bm_sw, 0.0, 0.010,  0.014, 0.185, 0.020, 0.092)  # Center display & rotary console
-    add_box(bm_sw, 0.0, 0.010,  0.062, 0.245, 0.018, 0.022)  # Flat top shift-LED brow bridge
-    add_box(bm_sw, 0.0, 0.018,  0.032, 0.105, 0.012, 0.042)  # Recessed telemetry screen bezel
+    add_box(bm_sw, 0.0, 0.010,  0.014, 0.190, 0.020, 0.094)
+    add_box(bm_sw, 0.0, 0.010,  0.064, 0.248, 0.018, 0.022)
+    add_box(bm_sw, 0.0, 0.018,  0.032, 0.108, 0.012, 0.044)
 
-    # Contoured Butterfly Ergonomic Side Grips + Thumb Rotaries + Rear Shift Paddles
     for side in (-1.0, 1.0):
         grip_path = [
-            (side * 0.095, 0.010, -0.062),  # Lower grip horn
-            (side * 0.124, 0.012, -0.025),  # Palm swell
-            (side * 0.128, 0.012,  0.018),  # Main grip barrel
-            (side * 0.112, 0.010,  0.058),  # Upper thumb-hook horn
+            (side * 0.096, 0.010, -0.064),
+            (side * 0.125, 0.012, -0.025),
+            (side * 0.129, 0.012,  0.018),
+            (side * 0.112, 0.010,  0.060),
         ]
         add_swept_tube(bm_sw, grip_path, (0.017, 0.020), segs=10, up_hint=(0, 1, 0), cap_ends=True)
-        # Lower spoke bridge from center plate to lower grip
         add_strut(bm_sw, (side * 0.055, 0.010, -0.028), (side * 0.105, 0.010, -0.052), 0.010, 0.014, segs=6)
-        # Thumb rotary encoder wheel inside thumb cutout
         add_box(bm_sw, side * 0.088, 0.018, 0.036, 0.016, 0.016, 0.022)
-        # Tactile front push-buttons
         for bz in (0.048, 0.015, -0.016):
             add_box(bm_sw, side * 0.068, 0.022, bz, 0.014, 0.010, 0.014)
-        # Magnetic carbon upshift/downshift & dual-clutch paddles on rear (-Y) of wheel!
-        add_box(bm_sw, side * 0.088, -0.014,  0.018, 0.045, 0.008, 0.058)
+        add_box(bm_sw, side * 0.090, -0.014,  0.018, 0.046, 0.008, 0.060)
         add_box(bm_sw, side * 0.072, -0.016, -0.034, 0.038, 0.007, 0.032)
 
-    # 3 Central FIA ERS / Differential / Brake-Migration Rotary Dials
-    for rx in (-0.034, 0.0, 0.034):
+    for rx in (-0.035, 0.0, 0.035):
         add_strut(bm_sw, (rx, 0.016, -0.016), (rx, 0.028, -0.016), 0.012, 0.012, segs=10, up_hint=(0, 0, 1))
 
-    create_mesh_object(
+    sw_obj = create_mesh_object(
         "Cockpit_Wheel",
         bm_sw,
         mat_carbon,
@@ -630,8 +691,54 @@ def build_f1_chassis():
         uv_scale=4.0,
     )
 
+    # Glowing 4.3" OLED Telemetry Screen parented to Cockpit_Wheel
+    bm_oled = bmesh.new()
+    add_box(bm_oled, 0.0, 0.023, 0.032, 0.096, 0.005, 0.036)
+    oled_obj = create_mesh_object("Wheel_OLED_Screen", bm_oled, mat_oled, shade_smooth=False, uv_scale=4.0)
+    oled_obj.parent = sw_obj
+
+    # Driver Nomex Forearms + Moulded Racing Gloves + Carbon Knuckles PARENTED to Cockpit_Wheel!
+    bm_arm = bmesh.new()
+    bm_glv = bmesh.new()
+    bm_knk = bmesh.new()
+    for side in (-1.0, 1.0):
+        forearm_local = [
+            (side * 0.162, 0.148, -0.074),
+            (side * 0.145, 0.088, -0.038),
+            (side * 0.128, 0.036, -0.006),
+        ]
+        add_swept_tube(bm_arm, forearm_local, [(0.036, 0.038), (0.032, 0.034), (0.028, 0.030)], segs=10)
+
+        cuff_and_palm = [
+            (side * 0.128, 0.044, -0.010),
+            (side * 0.126, 0.022,  0.004),
+            (side * 0.125, 0.006,  0.012),
+        ]
+        add_swept_tube(bm_glv, cuff_and_palm, [(0.030, 0.032), (0.028, 0.034), (0.024, 0.032)], segs=10)
+        for fz in (0.034, 0.016, -0.002, -0.020):
+            finger_pts = [
+                (side * 0.136,  0.008, fz),
+                (side * 0.142, -0.010, fz),
+                (side * 0.122, -0.012, fz),
+            ]
+            add_swept_tube(bm_glv, finger_pts, (0.0075, 0.0080), segs=6)
+        thumb_pts = [
+            (side * 0.118, 0.018, 0.024),
+            (side * 0.104, 0.016, 0.040),
+            (side * 0.094, 0.008, 0.046),
+        ]
+        add_swept_tube(bm_glv, thumb_pts, (0.009, 0.010), segs=6)
+        add_box(bm_knk, side * 0.136, 0.018, 0.010, 0.016, 0.014, 0.048)
+
+    arm_obj = create_mesh_object("Driver_Forearms_Wheel", bm_arm, mat_primary, shade_smooth=True, subdiv_levels=1, uv_scale=2.0)
+    arm_obj.parent = sw_obj
+    glv_obj = create_mesh_object("Driver_Gloves", bm_glv, mat_accent, shade_smooth=True, subdiv_levels=1, uv_scale=2.5)
+    glv_obj.parent = sw_obj
+    knk_obj = create_mesh_object("Driver_Glove_Knuckles", bm_knk, mat_carbon, shade_smooth=True, uv_scale=3.5)
+    knk_obj.parent = sw_obj
+
     # --------------------------------------------------------------------------
-    # G. DRIVER HELMET, IRIDIUM VISOR, RACING SHOULDERS & GLOVED HANDS ON WHEEL
+    # G. DRIVER HELMET, IRIDIUM VISOR & RECLINED NOMEX TORSO / SHOULDERS
     # --------------------------------------------------------------------------
     bpy.ops.mesh.primitive_uv_sphere_add(segments=32, ring_count=20, radius=0.148, location=(0.0, -0.245, 0.625))
     helm = bpy.context.active_object
@@ -649,33 +756,19 @@ def build_f1_chassis():
     for p in vis.data.polygons:
         p.use_smooth = True
 
-    # Driver Racing Suit Torso, Shoulders & Articulated Arms reaching to Cockpit_Wheel
     bm_drv = bmesh.new()
-    # Reclined F1 seating chest & shoulders inside cockpit tub
     torso_rings = [
         [(-0.15, -0.14, 0.41), (0.15, -0.14, 0.41), (0.18, -0.16, 0.555), (-0.18, -0.16, 0.555)],
         [(-0.14, -0.32, 0.39), (0.14, -0.32, 0.39), (0.16, -0.30, 0.525), (-0.16, -0.30, 0.525)],
     ]
     add_loft(bm_drv, torso_rings, closed_ring=True, cap_start=True, cap_end=True)
     for side in (-1.0, 1.0):
-        arm_path = [
-            (side * 0.175, -0.20, 0.535),  # Shoulder deltoid
-            (side * 0.185, -0.36, 0.495),  # Bent elbow inside cockpit coaming
-            (side * 0.132, -0.485, 0.532), # Forearm wrist meeting steering grip
+        upper_arm = [
+            (side * 0.175, -0.20, 0.535),
+            (side * 0.168, -0.36, 0.498),
         ]
-        add_swept_tube(bm_drv, arm_path, [(0.044, 0.046), (0.038, 0.040), (0.030, 0.032)], segs=10)
+        add_swept_tube(bm_drv, upper_arm, [(0.044, 0.046), (0.036, 0.038)], segs=10)
     create_mesh_object("Driver_Shoulders", bm_drv, mat_primary, shade_smooth=True, subdiv_levels=1, uv_scale=1.8)
-
-    # Gloved Driver Hands wrapped around Left & Right Butterfly Grips
-    bm_glv = bmesh.new()
-    for side in (-1.0, 1.0):
-        hand_path = [
-            (side * 0.132, -0.482, 0.534),
-            (side * 0.122, -0.515, 0.542),
-            (side * 0.118, -0.532, 0.548),
-        ]
-        add_swept_tube(bm_glv, hand_path, [(0.032, 0.034), (0.034, 0.038), (0.026, 0.030)], segs=10)
-    create_mesh_object("Driver_Gloves", bm_glv, mat_accent, shade_smooth=True, subdiv_levels=1, uv_scale=2.5)
 
     # --------------------------------------------------------------------------
     # H. SUSPENSION_ARMS: Double-Wishbone Airfoils, Pull/Pushrods & Brake Ducts
@@ -759,16 +852,15 @@ def build_f1_chassis():
             ep_rings = [list(reversed(r)) for r in ep_rings]
         add_loft(bm_fwe, ep_rings, closed_ring=True, cap_start=True, cap_end=True)
 
-        # Outwash footplate tunnel along bottom outer edge
-        add_box(bm_fwe, side * 0.032, 0.01, -0.072, 0.075, 0.46, 0.020)
-
-        # S-curved outboard aero diveplane / canard flick!
-        dive_pts = [
-            (side * 0.014, -0.14, -0.010),
-            (side * 0.042,  0.02,  0.035),
-            (side * 0.056,  0.18,  0.088),
-        ]
-        add_swept_tube(bm_fwe, dive_pts, (0.032, 0.008), segs=8, up_hint=(1.0, 0.0, 0.0), cap_ends=True)
+        # Outwash footplate tunnel + 2 S-curved outboard aero diveplane canards!
+        add_box(bm_fwe, side * 0.034, 0.01, -0.072, 0.082, 0.47, 0.020)
+        for dv_z in (0.0, 0.055):
+            dive_pts = [
+                (side * 0.014, -0.15, -0.015 + dv_z),
+                (side * 0.044,  0.02,  0.032 + dv_z),
+                (side * 0.058,  0.19,  0.086 + dv_z),
+            ]
+            add_swept_tube(bm_fwe, dive_pts, (0.032, 0.007), segs=8, up_hint=(1.0, 0.0, 0.0), cap_ends=True)
 
         create_mesh_object(
             f"Front_Wing_Endplate_{label}",
@@ -783,8 +875,6 @@ def build_f1_chassis():
     # J. REAR_WING_MAIN + ARTICULATED REAR_WING_DRS_FLAP + ENDPLATES
     # --------------------------------------------------------------------------
     bm_rwm = bmesh.new()
-    # Local coords centered at (0.0, 1.92, 0.73)
-    # 1. Spoon-profile Rear-Wing Mainplane
     rw_main_span = [
         (-0.525, -0.12, 0.12,  0.012, -0.014, 0.030),
         (-0.260, -0.13, 0.12, -0.008, -0.018, 0.034),
@@ -794,13 +884,14 @@ def build_f1_chassis():
     ]
     add_airfoil_ribbon(bm_rwm, rw_main_span)
 
-    # 2. Lower Dual-Element Beam Wing above Exhaust & Diffuser (dz = -0.33 -> z = 0.40)
-    beam_span = [
-        (-0.48, -0.04, 0.11, -0.33, 0.010, 0.022),
-        ( 0.00, -0.05, 0.12, -0.34, 0.012, 0.025),
-        ( 0.48, -0.04, 0.11, -0.33, 0.010, 0.022),
-    ]
-    add_airfoil_ribbon(bm_rwm, beam_span)
+    # 2. Lower Dual-Element Beam Wing above Exhaust & Diffuser
+    for b_dz, b_dy in ((-0.34, 0.00), (-0.29, 0.06)):
+        beam_span = [
+            (-0.48, -0.04 + b_dy, 0.09 + b_dy, b_dz, 0.010, 0.020),
+            ( 0.00, -0.05 + b_dy, 0.10 + b_dy, b_dz - 0.01, 0.012, 0.022),
+            ( 0.48, -0.04 + b_dy, 0.09 + b_dy, b_dz, 0.010, 0.020),
+        ]
+        add_airfoil_ribbon(bm_rwm, beam_span)
 
     # 3. Twin Swan-Neck Aero Pylons arcing cleanly over the mainplane leading edge
     for side in (-1.0, 1.0):
@@ -866,9 +957,11 @@ def build_f1_chassis():
             rwe_rings = [list(reversed(r)) for r in rwe_rings]
         add_loft(bm_rwe, rwe_rings, closed_ring=True, cap_start=True, cap_end=True)
 
-        # 3 outboard vortex-control gill strakes on outer rear-wing endplate face
-        for g in range(3):
-            add_box(bm_rwe, side * 0.018, -0.02 + g * 0.065, 0.11 - g * 0.035, 0.010, 0.14, 0.012)
+        # 4 outboard vortex-control gill strakes + 3 lower hanging slotted skirt fins
+        for g in range(4):
+            add_box(bm_rwe, side * 0.018, -0.04 + g * 0.055, 0.13 - g * 0.032, 0.010, 0.14, 0.012)
+        for ls in range(3):
+            add_box(bm_rwe, side * (0.004 - ls * 0.012), -0.02 + ls * 0.06, -0.29, 0.008, 0.16, 0.08)
 
         create_mesh_object(
             f"Rear_Wing_Endplate_{label}",
@@ -925,41 +1018,44 @@ def build_f1_wheel():
     reset_scene()
 
     # Exact material names listed in modeling specification
-    mat_rubber = make_mat("Tire_Rubber", (0.062, 0.065, 0.072), metallic=0.06, roughness=0.62)
+    mat_rubber = make_mat("Tire_Rubber", (0.048, 0.050, 0.056), metallic=0.06, roughness=0.62)
     mat_compound = make_mat(
         "Compound_Stripe",
         (0.98, 0.12, 0.14),
-        metallic=0.10,
-        roughness=0.30,
+        metallic=0.08,
+        roughness=0.34,
         emission=(0.98, 0.12, 0.14),
-        emission_strength=0.65,
+        emission_strength=0.22,
     )
-    mat_rim = make_mat("Wheel_Rim", (0.25, 0.27, 0.32), metallic=0.90, roughness=0.20)
+    mat_rim = make_mat("Wheel_Rim", (0.14, 0.16, 0.20), metallic=0.92, roughness=0.20)
+    # Dedicated pitch-dark matte 3K carbon barrel & aero cover (preserved untouched by models.js
+    # so the cavity behind the 10 forged Y-spokes is deep dark carbon instead of a silver pie-plate!)
+    mat_aero_drum = make_mat("Aero_Drum_Carbon", (0.012, 0.014, 0.018), metallic=0.16, roughness=0.60)
     mat_nut = make_mat("Center_Nut_Mat", (0.90, 0.18, 0.18), metallic=0.88, roughness=0.18)
     mat_disc = make_mat(
         "Brake_Disc",
-        (0.32, 0.30, 0.28),
+        (0.28, 0.26, 0.25),
         metallic=0.80,
         roughness=0.28,
         emission=(1.0, 0.32, 0.02),
         emission_strength=0.0,
     )
 
-    # 1. Sculpted Rounded Racing Slick Profile (48 radial segments x 13 profile rings + Cylindrical UVs!)
+    # 1. Sculpted Rounded Racing Slick Profile (56 radial segments x 13 profile rings + Cylindrical UVs!)
     bm_tire = bmesh.new()
-    segs = 48
+    segs = 56
     prof = [
         (-0.178, 0.194, 0.00),
         (-0.184, 0.220, 0.06),
-        (-0.187, 0.262, 0.12),
-        (-0.182, 0.305, 0.18),
-        (-0.166, 0.332, 0.24),
+        (-0.187, 0.258, 0.12),
+        (-0.183, 0.305, 0.18),
+        (-0.167, 0.332, 0.24),
         (-0.132, 0.343, 0.32),
         ( 0.000, 0.346, 0.50),
         ( 0.132, 0.343, 0.68),
-        ( 0.166, 0.332, 0.76),
-        ( 0.182, 0.305, 0.82),
-        ( 0.187, 0.262, 0.88),
+        ( 0.167, 0.332, 0.76),
+        ( 0.183, 0.305, 0.82),
+        ( 0.187, 0.258, 0.88),
         ( 0.184, 0.220, 0.94),
         ( 0.178, 0.194, 1.00),
     ]
@@ -987,117 +1083,150 @@ def build_f1_wheel():
 
     create_mesh_object("Tire_Tread", bm_tire, mat_rubber, shade_smooth=True, auto_uv=False)
 
-    # 2. Dual Outer + Inner Pirelli-Style Curved Sidewall Compound Stripes
-    #    3 broken racing arc bands per sidewall so wheel spin reads dynamically at 60fps!
+    # 2. Razor-Thin 11 mm (r = 0.248..0.259) Pirelli P-Zero 3-Arc Sidewall Compound Stripes!
+    #    Eliminates fat 46mm glowing sidewall band & inner ring while keeping crisp 60fps spin cues!
     bm_ring = bmesh.new()
     for side in (-1.0, 1.0):
-        x_sw = side * 0.1885
-        # 3 bold curved Pirelli arc segments (100 deg each, 20 deg lettering gaps)
+        x_sw = side * 0.1882
         for arc_idx in range(3):
-            base_deg = arc_idx * 120.0 + 10.0
-            arc_steps = 16
+            base_deg = arc_idx * 120.0 + 16.0
+            arc_steps = 18
             v_in, v_out = [], []
             for s in range(arc_steps + 1):
-                ang = math.radians(base_deg + (100.0 * s) / arc_steps)
+                ang = math.radians(base_deg + (88.0 * s) / arc_steps)
                 cy, cz = math.cos(ang), math.sin(ang)
-                v_in.append(bm_ring.verts.new((x_sw, cy * 0.232, cz * 0.232)))
-                v_out.append(bm_ring.verts.new((x_sw, cy * 0.278, cz * 0.278)))
+                v_in.append(bm_ring.verts.new((x_sw, cy * 0.248, cz * 0.248)))
+                v_out.append(bm_ring.verts.new((x_sw, cy * 0.259, cz * 0.259)))
             for s in range(arc_steps):
                 if side > 0:
                     bm_ring.faces.new([v_in[s], v_out[s], v_out[s + 1], v_in[s + 1]])
                 else:
                     bm_ring.faces.new([v_in[s], v_in[s + 1], v_out[s + 1], v_out[s]])
 
-        # Continuous fine inner rim-lip accent ring
-        p_in, p_out = [], []
-        for i in range(segs):
-            ang = (2.0 * math.pi * i) / segs
-            cy, cz = math.cos(ang), math.sin(ang)
-            p_in.append(bm_ring.verts.new((side * 0.1855, cy * 0.205, cz * 0.205)))
-            p_out.append(bm_ring.verts.new((side * 0.1865, cy * 0.216, cz * 0.216)))
-        for i in range(segs):
-            inext = (i + 1) % segs
-            if side > 0:
-                bm_ring.faces.new([p_in[i], p_out[i], p_out[inext], p_in[inext]])
-            else:
-                bm_ring.faces.new([p_in[i], p_in[inext], p_out[inext], p_out[i]])
-
     create_mesh_object("Compound_Sidewall", bm_ring, mat_compound, shade_smooth=True)
 
-    # 3. Forged 10-Spoke Motorsport Alloy Rim (Machined Barrel + Recessed Hub + 10 Sculpted Spokes)
-    #    Built symmetrically on both -X and +X faces so FL/RL and FR/RR both display concave forged spokes!
-    bm_rim = bmesh.new()
-    rim_segs = 40
-    barrel_prof = [
-        (-0.182, 0.200),
-        (-0.182, 0.188),
-        (-0.155, 0.184),
-        ( 0.000, 0.180),
-        ( 0.155, 0.184),
-        ( 0.182, 0.188),
-        ( 0.182, 0.200),
-        ( 0.168, 0.196),
-        ( 0.000, 0.192),
-        (-0.168, 0.196),
+    # 3. Pitch-Dark Matte 3K Carbon Inner Wheel Drum + 2026 Outer Aero Rim-Cover Ring
+    #    Provides deep shadow contrast behind the 10 forged spokes (ZERO silver barrel pie-plate!)
+    bm_drum = bmesh.new()
+    drum_segs = 48
+    drum_prof = [
+        (-0.168, 0.184),
+        (-0.145, 0.176),
+        ( 0.000, 0.174),
+        ( 0.145, 0.176),
+        ( 0.168, 0.184),
+        ( 0.168, 0.189),
+        ( 0.000, 0.185),
+        (-0.168, 0.189),
     ]
-    b_rings = []
-    for (bx, br) in barrel_prof:
+    dr_rings = []
+    for (bx, br) in drum_prof:
         ring = []
-        for i in range(rim_segs):
-            ang = (2.0 * math.pi * i) / rim_segs
+        for i in range(drum_segs):
+            ang = (2.0 * math.pi * i) / drum_segs
             ring.append((bx, math.cos(ang) * br, math.sin(ang) * br))
-        b_rings.append(ring)
-    add_loft(bm_rim, b_rings, closed_ring=True, cap_start=False, cap_end=False)
-    # Close barrel profile loop
-    r_first = [bm_rim.verts.new(p) for p in b_rings[0]]
-    r_last = [bm_rim.verts.new(p) for p in b_rings[-1]]
-    for i in range(rim_segs):
-        inext = (i + 1) % rim_segs
-        bm_rim.faces.new([r_last[i], r_last[inext], r_first[inext], r_first[i]])
+        dr_rings.append(ring)
+    add_loft(bm_drum, dr_rings, closed_ring=True, cap_start=False, cap_end=False)
+    r_f0 = [bm_drum.verts.new(p) for p in dr_rings[0]]
+    r_fl = [bm_drum.verts.new(p) for p in dr_rings[-1]]
+    for i in range(drum_segs):
+        inext = (i + 1) % drum_segs
+        bm_drum.faces.new([r_fl[i], r_fl[inext], r_f0[inext], r_f0[i]])
 
-    # Central forged hub cylinder connecting inner & outer lug bowls
-    add_strut(bm_rim, (-0.156, 0.0, 0.0), (0.156, 0.0, 0.0), 0.072, 0.072, segs=24, up_hint=(0, 0, 1))
-
-    # 10 Crisp Forged Concave Spokes on BOTH Wheel Faces!
+    # 2026 Outer Matte Carbon Aero Rim-Cover Ring (r = 0.162..0.190) framing the Y-spoke tips
     for side in (-1.0, 1.0):
+        ac_in, ac_out = [], []
+        for i in range(drum_segs):
+            ang = (2.0 * math.pi * i) / drum_segs
+            cy, cz = math.cos(ang), math.sin(ang)
+            ac_in.append(bm_drum.verts.new((side * 0.179, cy * 0.164, cz * 0.164)))
+            ac_out.append(bm_drum.verts.new((side * 0.183, cy * 0.190, cz * 0.190)))
+        for i in range(drum_segs):
+            inext = (i + 1) % drum_segs
+            if side > 0:
+                bm_drum.faces.new([ac_in[i], ac_out[i], ac_out[inext], ac_in[inext]])
+            else:
+                bm_drum.faces.new([ac_in[i], ac_in[inext], ac_out[inext], ac_out[i]])
+
+    # Deeply recessed matte dark central lug socket bowl (|x| = 0.104)
+    add_strut(bm_drum, (-0.108, 0.0, 0.0), (0.108, 0.0, 0.0), 0.056, 0.056, segs=24, up_hint=(0, 0, 1))
+    create_mesh_object("Wheel_Aero_Drum", bm_drum, mat_aero_drum, shade_smooth=True, uv_scale=3.0)
+
+    # 4. Deep-Dish Concave 10-Spoke Y-Split Forged Alloy Rim (`Wheel_Rim`)
+    #    ONLY outer machined lip flange + deep recessed hub ring (|x|=0.110) + 10 Y-split 3D spokes!
+    bm_rim = bmesh.new()
+    rim_segs = 48
+    for side in (-1.0, 1.0):
+        lip_prof = [
+            (side * 0.172, 0.190),
+            (side * 0.185, 0.191),
+            (side * 0.186, 0.200),
+            (side * 0.174, 0.198),
+        ]
+        l_rings = []
+        for (lx, lr) in lip_prof:
+            ring = []
+            for i in range(rim_segs):
+                ang = (2.0 * math.pi * i) / rim_segs
+                ring.append((lx, math.cos(ang) * lr, math.sin(ang) * lr))
+            if side < 0:
+                ring = list(reversed(ring))
+            l_rings.append(ring)
+        add_loft(bm_rim, l_rings, closed_ring=True, cap_start=False, cap_end=False)
+
+        # Compact recessed forged hub collar (75 mm concave dish depth inside wheel!)
+        add_strut(bm_rim, (side * 0.098, 0.0, 0.0), (side * 0.116, 0.0, 0.0), 0.062, 0.062, segs=24, up_hint=(0, 0, 1))
+
+        # 10 Crisp Concave Y-Split Forged Spokes sweeping from (0.110, r=0.056) to (0.183, r=0.191)!
         for sp_i in range(10):
             ang = (2.0 * math.pi * sp_i) / 10.0
             cy, cz = math.cos(ang), math.sin(ang)
             ty, tz = -cz, cy
-            p_hub = (side * 0.142, cy * 0.064, cz * 0.064)
-            p_mid = (side * 0.158, cy * 0.128, cz * 0.128)
-            p_rim = (side * 0.174, cy * 0.190, cz * 0.190)
+            p_hub = (side * 0.110, cy * 0.056, cz * 0.056)
+            p_fork = (side * 0.148, cy * 0.116, cz * 0.116)
             add_swept_tube(
                 bm_rim,
-                [p_hub, p_mid, p_rim],
-                [(0.013, 0.015), (0.010, 0.012), (0.012, 0.016)],
-                segs=8,
+                [p_hub, p_fork],
+                [(0.013, 0.010), (0.011, 0.009)],
+                segs=6,
                 up_hint=(0.0, ty, tz),
                 cap_ends=True,
             )
+            for branch in (-1.0, 1.0):
+                b_ang = ang + branch * 0.195
+                bcy, bcz = math.cos(b_ang), math.sin(b_ang)
+                bty, btz = -bcz, bcy
+                p_tip = (side * 0.183, bcy * 0.191, bcz * 0.191)
+                add_swept_tube(
+                    bm_rim,
+                    [p_fork, p_tip],
+                    [(0.0095, 0.0080), (0.0085, 0.0110)],
+                    segs=6,
+                    up_hint=(0.0, bty, btz),
+                    cap_ends=True,
+                )
 
     create_mesh_object("Wheel_Rim", bm_rim, mat_rim, shade_smooth=False, uv_scale=3.0)
 
-    # 4. Machined Anodized FIA Center-Lock Wheel Nut (Hex/Octagonal Splined Nut on Both Faces)
+    # 5. Deeply Recessed FIA Anodized Center-Lock Wheel Nut inside the 75mm Concave Hub Bowl!
     bm_nut = bmesh.new()
-    add_strut(bm_nut, (-0.182, 0.0, 0.0), (0.182, 0.0, 0.0), 0.046, 0.046, segs=8, up_hint=(0, 0, 1))
     for side in (-1.0, 1.0):
-        add_strut(bm_nut, (side * 0.148, 0.0, 0.0), (side * 0.168, 0.0, 0.0), 0.056, 0.056, segs=16, up_hint=(0, 0, 1))
+        add_strut(bm_nut, (side * 0.106, 0.0, 0.0), (side * 0.144, 0.0, 0.0), 0.042, 0.042, segs=8, up_hint=(0, 0, 1))
+        add_strut(bm_nut, (side * 0.112, 0.0, 0.0), (side * 0.126, 0.0, 0.0), 0.050, 0.050, segs=16, up_hint=(0, 0, 1))
     create_mesh_object("Center_Lock_Nut", bm_nut, mat_nut, shade_smooth=False, uv_scale=4.0)
 
-    # 5. Slotted Carbon-Ceramic Brake Disc + Machined Rotor Bell + Radial Planar UVs!
+    # 6. Slotted Carbon-Ceramic Brake Disc + Wide Cheek Offset so Rotor Glows Through Spokes!
     bm_disc = bmesh.new()
     disc_segs = 48
-    r_outer = 0.176
-    r_bell = 0.088
-    # Ventilated rotor ring + recessed central bell
+    r_outer = 0.170
+    r_bell = 0.084
     disc_prof = [
-        (-0.026, r_bell),
-        (-0.026, r_outer),
-        ( 0.026, r_outer),
-        ( 0.026, r_bell),
-        ( 0.014, 0.052),
-        (-0.014, 0.052),
+        (-0.072, r_bell),
+        (-0.072, r_outer),
+        ( 0.072, r_outer),
+        ( 0.072, r_bell),
+        ( 0.048, 0.052),
+        (-0.048, 0.052),
     ]
     d_rings = []
     for (dx, dr) in disc_prof:
@@ -1113,23 +1242,21 @@ def build_f1_wheel():
             inext = (i + 1) % disc_segs
             bm_disc.faces.new([r0[i], r0[inext], r1[inext], r1[i]])
 
-    # 16 Sculpted Radial Slotted Friction Ribs on both rotor faces
     for side in (-1.0, 1.0):
-        for sl in range(16):
-            ang = (2.0 * math.pi * sl) / 16.0 + 0.12
+        for sl in range(18):
+            ang = (2.0 * math.pi * sl) / 18.0 + 0.10
             cy0, cz0 = math.cos(ang), math.sin(ang)
             cy1, cz1 = math.cos(ang + 0.14), math.sin(ang + 0.14)
             add_strut(
                 bm_disc,
-                (side * 0.026, cy0 * 0.096, cz0 * 0.096),
-                (side * 0.026, cy1 * 0.168, cz1 * 0.168),
+                (side * 0.073, cy0 * 0.092, cz0 * 0.092),
+                (side * 0.073, cy1 * 0.164, cz1 * 0.164),
                 0.0035,
                 0.0045,
                 segs=4,
                 up_hint=(1, 0, 0),
             )
 
-    # Custom Planar Radial UV mapping centered at (0.5, 0.5) so getBrakeRotorTexture() glows concentrically!
     bmesh.ops.recalc_face_normals(bm_disc, faces=bm_disc.faces)
     uv_disc = bm_disc.loops.layers.uv.verify()
     for f in bm_disc.faces:
@@ -1238,31 +1365,47 @@ def build_pit_crew():
     add_strut(bm_eq, (-0.145, -0.08, 1.44), (-0.04, -0.22, 1.40), 0.008, 0.008, segs=6)
     add_box(bm_eq, 0.0, 0.15, 0.89, 0.12, 0.06, 0.11)
 
-    # High-Detail Paoli F1 Pneumatic Impact Wheel Gun (aimed forward along -Y!)
-    # Main machined alloy motor housing
-    add_strut(bm_eq, (0.0, -0.26, 0.87), (0.0, -0.50, 0.84), 0.054, 0.058, segs=16, up_hint=(0, 0, 1))
-    # Top torque-light bar housing
-    add_box(bm_eq, 0.0, -0.37, 0.935, 0.052, 0.19, 0.032)
-    # High-speed drive anvil + flared conical center-lock wheel socket
-    add_strut(bm_eq, (0.0, -0.50, 0.84), (0.0, -0.62, 0.825), 0.026, 0.026, segs=14, up_hint=(0, 0, 1))
+    # High-Detail Paoli Hurricane F1 Pneumatic Impact Wheel Gun (aimed forward along -Y!)
+    add_strut(bm_eq, (0.0, -0.26, 0.87), (0.0, -0.52, 0.84), 0.056, 0.060, segs=18, up_hint=(0, 0, 1))
+    # Finned twin-hammer titanium clutch nosecone + top torque-LED status housing
+    add_strut(bm_eq, (0.0, -0.50, 0.84), (0.0, -0.58, 0.831), 0.044, 0.044, segs=16, up_hint=(0, 0, 1))
+    add_box(bm_eq, 0.0, -0.38, 0.938, 0.054, 0.20, 0.034)
+    # High-speed drive anvil + flared conical FIA center-lock wheel socket + retaining fingers
+    add_strut(bm_eq, (0.0, -0.58, 0.831), (0.0, -0.64, 0.822), 0.026, 0.026, segs=14, up_hint=(0, 0, 1))
     add_swept_tube(
         bm_eq,
-        [(0.0, -0.61, 0.826), (0.0, -0.695, 0.815)],
-        [(0.032, 0.032), (0.054, 0.054)],
-        segs=16,
+        [(0.0, -0.625, 0.824), (0.0, -0.715, 0.812)],
+        [(0.034, 0.034), (0.058, 0.058)],
+        segs=18,
         up_hint=(0, 0, 1),
     )
-    # Rear pistol grip + left auxiliary side stabilizing handle + pneumatic air-hose whip
-    add_strut(bm_eq, (0.02, -0.32, 0.85), (0.03, -0.30, 0.71), 0.020, 0.028, segs=8, up_hint=(1, 0, 0))
-    add_strut(bm_eq, (-0.03, -0.45, 0.85), (-0.13, -0.45, 0.86), 0.018, 0.018, segs=8, up_hint=(0, 0, 1))
+    # Rear pistol grip + left auxiliary side stabilizing handle + coiled pneumatic air-hose whip
+    add_strut(bm_eq, (0.02, -0.32, 0.85), (0.03, -0.30, 0.70), 0.022, 0.030, segs=8, up_hint=(1, 0, 0))
+    add_strut(bm_eq, (-0.03, -0.45, 0.85), (-0.14, -0.45, 0.86), 0.019, 0.019, segs=8, up_hint=(0, 0, 1))
     add_swept_tube(
         bm_eq,
-        [(0.02, -0.26, 0.72), (0.06, -0.16, 0.62), (0.12, -0.02, 0.58)],
-        (0.014, 0.014),
-        segs=8,
+        [(0.03, -0.28, 0.70), (0.07, -0.18, 0.58), (0.14, -0.04, 0.50), (0.20, 0.14, 0.56)],
+        (0.015, 0.015),
+        segs=10,
     )
+    # Moulded fireproof pit-gunner gloves wrapped around pistol grip & side handle
+    add_box(bm_eq,  0.03, -0.31, 0.79, 0.068, 0.075, 0.078)
+    add_box(bm_eq, -0.10, -0.45, 0.86, 0.075, 0.068, 0.068)
 
     create_mesh_object("Crew_Equipment", bm_eq, mat_equip, shade_smooth=True, uv_scale=2.5)
+
+    # Glowing Green/Amber FIA Wheel-Gun Torque-Lock Beacon Bar
+    mat_gun_led = make_mat(
+        "Crew_Gun_LED_Mat",
+        (0.05, 1.0, 0.45),
+        metallic=0.1,
+        roughness=0.15,
+        emission=(0.05, 1.0, 0.45),
+        emission_strength=4.2,
+    )
+    bm_gled = bmesh.new()
+    add_box(bm_gled, 0.0, -0.38, 0.958, 0.042, 0.16, 0.012)
+    create_mesh_object("Crew_Gun_LED", bm_gled, mat_gun_led, shade_smooth=False)
 
     export_asset("pit_crew")
 

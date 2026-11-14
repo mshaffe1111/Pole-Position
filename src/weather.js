@@ -53,43 +53,51 @@ export class WeatherSystem {
     this.nextLightningSec = 6.5;
     this.elapsedSkySec = 0.0;
     this._sunOffset = new THREE.Vector3(65, 115, 78);
+    this._baseSunIntensity = 3.40;
+    this._baseAmbientIntensity = 0.62;
+    this._visorAccum = 0.0;
+    this._visorTearOffProgress = 1.2;
+    this._prevCamYaw = null;
+    this._smoothedYawSlip = 0.0;
 
     this._buildSkyAndLighting();
     this._buildParallaxMountainVistas();
     this._buildRainParticles();
+    this._buildCockpitVisorRain();
   }
 
   _buildSkyAndLighting() {
-    // Rich Hemisphere Sky + Warm Ground bounce light (zero flat/pitch-black undersides!)
-    this.ambientLight = new THREE.HemisphereLight(0xdff0ff, 0x485648, 1.18);
+    // High-contrast Hemisphere Sky + Ground bounce (45% lower fill so directional sun shadows pop crisply!)
+    this.ambientLight = new THREE.HemisphereLight(0xdff0ff, 0x2a332a, 0.62);
     this.scene.add(this.ambientLight);
 
-    // Primary Sun Light with 2048x2048 High-Res Player-Following Real-Time Soft Shadows!
-    this.sunLight = new THREE.DirectionalLight(0xfff7e6, 2.65);
+    // Primary Golden/Daylight Sun with Tightly Framed 2048x2048 Real-Time Soft Shadows!
+    this.sunLight = new THREE.DirectionalLight(0xfff5e0, 3.40);
     this.sunLight.position.set(65, 115, 78);
     this.sunLight.castShadow = true;
     this.sunLight.shadow.mapSize.width = 2048;
     this.sunLight.shadow.mapSize.height = 2048;
-    this.sunLight.shadow.camera.near = 12;
-    this.sunLight.shadow.camera.far = 315;
-    const d = 52;
+    this.sunLight.shadow.camera.near = 6;
+    this.sunLight.shadow.camera.far = 245;
+    const d = 35;
     this.sunLight.shadow.camera.left = -d;
     this.sunLight.shadow.camera.right = d;
     this.sunLight.shadow.camera.top = d;
     this.sunLight.shadow.camera.bottom = -d;
-    this.sunLight.shadow.bias = -0.00042;
-    this.sunLight.shadow.normalBias = 0.022;
-    this.sunLight.shadow.radius = 2.2;
+    this.sunLight.shadow.camera.updateProjectionMatrix();
+    this.sunLight.shadow.bias = -0.00024;
+    this.sunLight.shadow.normalBias = 0.016;
+    this.sunLight.shadow.radius = 1.45;
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
 
-    // Secondary Sky-Bounce Fill Light from opposite azimuth so zero buildings/signs render dark!
-    this.fillLight = new THREE.DirectionalLight(0xd6e8ff, 0.88);
+    // Subtle Secondary Sky-Bounce Fill Light (45% lower so shadow side retains rich 3D sculpting)
+    this.fillLight = new THREE.DirectionalLight(0xd6e8ff, 0.46);
     this.fillLight.position.set(-340, 360, -310);
     this.scene.add(this.fillLight);
 
-    // Subtle Warm Rim/Cross Fill Light for 360° Showroom & Grandstand architectural sculpting
-    this.rimLight = new THREE.DirectionalLight(0xffe8cc, 0.44);
+    // Subtle Warm Rim/Cross Fill Light for architectural & bodywork edge definition
+    this.rimLight = new THREE.DirectionalLight(0xffe8cc, 0.24);
     this.rimLight.position.set(-230, 185, 340);
     this.scene.add(this.rimLight);
 
@@ -103,6 +111,7 @@ export class WeatherSystem {
       antiHorizonColor: { value: new THREE.Color(0x9bd2ff) },
       groundFogColor:   { value: new THREE.Color(0xb0dbff) },
       sunColor:         { value: new THREE.Color(0xfff7e6) },
+      themeHorizonTint: { value: new THREE.Color(0xd8eeff) },
       sunDir:           { value: new THREE.Vector3(0.42, 0.48, 0.77).normalize() },
       uTime:            { value: 0.0 },
       cloudCover:       { value: 0.30 },
@@ -137,6 +146,7 @@ export class WeatherSystem {
         uniform vec3 antiHorizonColor;
         uniform vec3 groundFogColor;
         uniform vec3 sunColor;
+        uniform vec3 themeHorizonTint;
         uniform vec3 sunDir;
         uniform float uTime;
         uniform float cloudCover;
@@ -205,17 +215,20 @@ export class WeatherSystem {
           vec2 horizD = normalize(d.xz + vec2(1e-5));
           vec2 horizS = normalize(sDir.xz + vec2(1e-5));
           float sunAzimuth = clamp(dot(horizD, horizS) * 0.5 + 0.5, 0.0, 1.0);
-          vec3 dirHorizon = mix(antiHorizonColor, horizonColor, pow(sunAzimuth, 1.35));
+          vec3 dirHorizon = mix(antiHorizonColor, horizonColor, pow(sunAzimuth, 1.28));
+          dirHorizon = mix(dirHorizon, themeHorizonTint, 0.18);
 
           // 3-stop Rayleigh vertical sky gradient with HDR luminance boost (prevents sRGB->Linear ACES toe crush!)
-          vec3 col = mix(dirHorizon, midColor, smoothstep(0.0, 0.32, h));
+          vec3 col = mix(dirHorizon, midColor, smoothstep(0.0, 0.34, h));
           col = mix(col, zenithColor, smoothstep(0.24, 0.88, h));
           col *= skyRadianceBoost;
 
-          // Warm Mie atmospheric horizon scattering & 360-degree sunset golden-rose band
-          float horizonBand = pow(1.0 - abs(d.y), 5.2);
-          vec3 mieTint = mix(dirHorizon * 1.22, sunColor * 1.15, 0.32 + sunsetAmount * 0.42);
-          col = mix(col, mieTint, horizonBand * (0.48 + sunsetAmount * 0.28) * (1.0 - stormDarkness * 0.40));
+          // Warm Mie atmospheric horizon scattering, twilight golden-rose band & solar horizon pillar bloom
+          float horizonBand = pow(1.0 - abs(d.y), 4.8);
+          vec3 mieTint = mix(dirHorizon * 1.24, sunColor * 1.18, 0.34 + sunsetAmount * 0.44);
+          col = mix(col, mieTint, horizonBand * (0.50 + sunsetAmount * 0.30) * (1.0 - stormDarkness * 0.38));
+          float horizonPillar = pow(sunAzimuth, 6.5) * pow(1.0 - h, 3.6) * (0.36 + sunsetAmount * 0.48) * (1.0 - cloudCover * 0.65);
+          col += sunColor * horizonPillar * (1.0 - nightAmount * 0.55);
 
           // Crisp Dual-Scale Anti-Aliased Twinkling Starfield + Galactic Band at Night / Dusk
           if (nightAmount > 0.04 && d.y > 0.015) {
@@ -234,15 +247,16 @@ export class WeatherSystem {
             col += vec3(0.20, 0.14, 0.38) * galaxy * nightAmount * 0.16 * smoothstep(0.04, 0.55, d.y);
           }
 
-          // Solar / Lunar Disc + 3-Ring Anisotropic Mie Corona
+          // Solar / Lunar Disc + 4-Ring Anisotropic Mie Corona & HDR Bloom Halo
           float sunDot = max(0.0, dot(d, sDir));
-          float coronaWide  = pow(sunDot, 5.0) * (0.18 + sunsetAmount * 0.14);
-          float coronaMid   = pow(sunDot, 36.0) * 0.42;
-          float coronaTight = pow(sunDot, 195.0) * 0.75;
-          float disc        = smoothstep(0.99905, 0.99968, sunDot);
-          float clearVis    = max(0.06, 1.0 - cloudCover * 0.78);
-          float nightSunDim = mix(1.0, 0.32, nightAmount);
-          col += sunColor * (coronaWide + coronaMid + coronaTight + disc * 2.15) * clearVis * nightSunDim;
+          float coronaHalo  = pow(sunDot, 2.8) * (0.10 + sunsetAmount * 0.12);
+          float coronaWide  = pow(sunDot, 6.0) * (0.22 + sunsetAmount * 0.16);
+          float coronaMid   = pow(sunDot, 38.0) * 0.48;
+          float coronaTight = pow(sunDot, 210.0) * 0.88;
+          float disc        = smoothstep(0.99900, 0.99968, sunDot);
+          float clearVis    = max(0.08, 1.0 - cloudCover * 0.76);
+          float nightSunDim = mix(1.0, 0.34, nightAmount);
+          col += sunColor * (coronaHalo + coronaWide + coronaMid + coronaTight + disc * 2.55) * clearVis * nightSunDim;
 
           // Multi-Layer Volumetric Domain-Warped Cumulus & High Cirrus Cloud Deck
           if (d.y > 0.008 && cloudCover > 0.02) {
@@ -264,22 +278,22 @@ export class WeatherSystem {
             // Directional sunward self-shadowing & Henyey-Greenstein silver/gold rim lining
             vec2 sunStep = normalize(sDir.xz + vec2(0.001)) * 0.082;
             float nLit = fbm(cloudUv + sunStep);
-            float lightGrad = clamp((billow - nLit) * 3.4 + 0.54, 0.0, 1.0);
-            float hgForward = pow(sunDot, 4.5) * (0.58 + sunsetAmount * 0.35);
-            float silverRim = smoothstep(thresh + 0.14, thresh + 0.01, billow) * pow(sunDot, 2.5) * 0.55;
+            float lightGrad = clamp((billow - nLit) * 3.8 + 0.56, 0.0, 1.0);
+            float hgForward = pow(sunDot, 4.0) * (0.68 + sunsetAmount * 0.44);
+            float silverRim = smoothstep(thresh + 0.16, thresh + 0.008, billow) * (0.28 + pow(sunDot, 2.2) * 0.78);
 
-            vec3 cloudBright = mix(vec3(0.97, 0.98, 1.0), sunColor, 0.44 + sunsetAmount * 0.38) * (1.05 + hgForward);
+            vec3 cloudBright = mix(vec3(0.98, 0.99, 1.0), sunColor, 0.46 + sunsetAmount * 0.40) * (1.12 + hgForward);
             vec3 cloudDark   = mix(midColor * 0.72, vec3(0.18, 0.23, 0.34), clamp(cloudCover * 0.55 + stormDarkness * 0.42, 0.0, 1.0));
 
             if (sunsetAmount > 0.15) {
               cloudDark = mix(cloudDark, vec3(0.58, 0.32, 0.52), sunsetAmount * 0.62);
             }
             if (nightAmount > 0.4) {
-              cloudBright = vec3(0.34, 0.24, 0.54);
+              cloudBright = vec3(0.36, 0.26, 0.58);
               cloudDark   = vec3(0.08, 0.10, 0.20);
             }
 
-            vec3 cloudCol = mix(cloudDark, cloudBright, lightGrad) + sunColor * silverRim * (1.0 - nightAmount * 0.7);
+            vec3 cloudCol = mix(cloudDark, cloudBright, lightGrad) + sunColor * silverRim * (1.0 - nightAmount * 0.65);
 
             // Internal storm sheet-lightning veins illuminating storm clouds!
             if (flashBoost > 0.005) {
@@ -287,12 +301,20 @@ export class WeatherSystem {
               cloudCol += vec3(0.75, 0.86, 1.0) * flashBoost * (0.65 + vein * 1.55);
             }
 
-            col = mix(col, cloudCol, cMask * 0.92);
+            col = mix(col, cloudCol, cMask * 0.93);
 
-            // High-altitude wispy Cirrus layer
+            // Mid-altitude sunlit Altocumulus deck with crisp golden/silver rim-lighting
+            vec2 altoUv = (d.xz / (d.y + 0.22)) * 1.95 + vec2(-uTime * 0.0032, uTime * 0.0026);
+            float altoN = fbm(altoUv);
+            float altoMask = smoothstep(thresh + 0.06, thresh + 0.28, altoN) * smoothstep(0.04, 0.26, d.y) * (1.0 - cMask * 0.72);
+            float altoRim = smoothstep(thresh + 0.18, thresh + 0.05, altoN) * (0.35 + pow(sunDot, 2.0) * 0.65);
+            vec3 altoCol = mix(cloudDark * 1.08, cloudBright * 1.06, 0.68) + sunColor * altoRim * 0.55;
+            col = mix(col, altoCol, altoMask * 0.56);
+
+            // High-altitude wispy Cirrus layer + sunlit ice-crystal rim sheen
             vec2 cirrusUv = (d.xz / (d.y + 0.28)) * vec2(2.4, 0.95) + vec2(uTime * 0.0068, -uTime * 0.0018);
-            float cirrus = smoothstep(0.56, 0.86, fbm(cirrusUv));
-            col += cloudBright * cirrus * (1.0 - cloudCover * 0.58) * smoothstep(0.08, 0.52, d.y) * 0.22;
+            float cirrus = smoothstep(0.54, 0.85, fbm(cirrusUv));
+            col += cloudBright * cirrus * (1.0 - cloudCover * 0.55) * smoothstep(0.08, 0.55, d.y) * 0.26;
           }
 
           // Smooth lower-hemisphere ground haze skirt so zero horizon seam ever appears
@@ -318,12 +340,14 @@ export class WeatherSystem {
     this.skyDome.frustumCulled = false;
     this.scene.add(this.skyDome);
 
-    this.scene.fog = new THREE.FogExp2(0xb0dbff, 0.00014);
+    // Ultra-clear 75%-reduced atmospheric fog so pit garages, grandstands & alpine vistas stay vibrant!
+    this.scene.fog = new THREE.FogExp2(0xb0dbff, 0.00004);
   }
 
   // --------------------------------------------------------------------------
   // DYNAMIC OUTDOOR HDR ENVIRONMENT MAP GENERATOR (PMREM)
-  // Makes clearcoat F1 bodywork, chrome visors, forged rims & wet tarmac gleam!
+  // Crisp overhead clearcoat specular ribbons + dark charcoal tarmac bounce so
+  // crimson/team car paint stays deeply saturated (zero milky sky bleach!).
   // Disposes all temporary studio geometries/materials immediately (zero leaks).
   // --------------------------------------------------------------------------
   _bakeDynamicHDREnvironment(skyReg, theme, isNight) {
@@ -340,24 +364,25 @@ export class WeatherSystem {
     const isStorm = skyReg.id === 'MONSOON_STORM' || skyReg.id === 'LIGHT_DRIZZLE';
     const sunDir = this.skyUniforms.sunDir.value.clone().normalize();
 
-    // Ground bounce tint matched to circuit surface + moisture sheen
-    let groundBounceHex = 0x202630;
-    if (isNight || theme === 'VEGAS') groundBounceHex = 0x0b0e1a;
-    else if (theme === 'MONACO') groundBounceHex = 0x1c3648;
-    else if (theme === 'MONZA') groundBounceHex = 0x282924;
+    // Dark charcoal asphalt ground bounce prevents diffuse sky bleach on lower bodywork & sidepods!
+    let groundBounceHex = 0x0a0d12;
+    if (isNight || theme === 'VEGAS') groundBounceHex = 0x05070e;
+    else if (theme === 'MONACO') groundBounceHex = 0x091620;
+    else if (theme === 'MONZA') groundBounceHex = 0x0d0f0c;
+    else if (theme === 'SUZUKA' || theme === 'SILVERSTONE') groundBounceHex = 0x0b0f14;
 
-    // 1. Rich HDR Sky + Horizon Sheen + Tarmac Ground Bounce Sphere
+    // 1. Controlled-Irradiance Sky Dome + Sharp Horizon Crease + Dark Asphalt Ground Bounce
     const domeGeo = trackDisp(new THREE.SphereGeometry(42, 32, 20));
     const domeMat = trackDisp(new THREE.ShaderMaterial({
       side: THREE.BackSide,
       uniforms: {
         cTop:    { value: new THREE.Color(skyReg.skyZenith) },
         cMid:    { value: new THREE.Color(skyReg.skyMid) },
-        cBot:    { value: new THREE.Color(skyReg.skyHorizon).multiplyScalar(isNight ? 1.95 : 1.35) },
+        cBot:    { value: new THREE.Color(skyReg.skyHorizon).multiplyScalar(isNight ? 1.24 : 1.04) },
         cSun:    { value: new THREE.Color(skyReg.sunColor) },
         cGround: { value: new THREE.Color(groundBounceHex) },
         uSunDir: { value: sunDir },
-        uBoost:  { value: isNight ? 1.55 : (isStorm ? 1.50 : 1.38) },
+        uBoost:  { value: isNight ? 1.18 : (isSunset ? 1.10 : (isStorm ? 1.06 : 1.04)) },
       },
       vertexShader: `
         varying vec3 vDir;
@@ -378,15 +403,16 @@ export class WeatherSystem {
         void main() {
           vec3 d = normalize(vDir);
           if (d.y < 0.0) {
-            // Specular road horizon reflection fading into warm tarmac bounce
-            float roadGrad = clamp(-d.y * 2.8, 0.0, 1.0);
-            vec3 gCol = mix(cBot * 0.68, cGround, roadGrad);
+            // Sharp automotive horizon reflection crease fading rapidly into dark charcoal asphalt
+            float roadGrad = pow(clamp(-d.y * 5.2, 0.0, 1.0), 0.72);
+            vec3 gCol = mix(cBot * 0.48, cGround, roadGrad);
             gl_FragColor = vec4(gCol, 1.0);
           } else {
-            vec3 c = mix(cBot, cMid, smoothstep(0.0, 0.34, d.y));
-            c = mix(c, cTop, smoothstep(0.28, 0.94, d.y));
+            vec3 c = mix(cBot, cMid, smoothstep(0.0, 0.30, d.y));
+            c = mix(c, cTop, smoothstep(0.26, 0.92, d.y));
             float sDot = max(0.0, dot(d, normalize(uSunDir)));
-            c += cSun * pow(sDot, 8.0) * 0.65;
+            float horizonSheen = pow(1.0 - d.y, 8.0) * 0.24;
+            c += cSun * (pow(sDot, 9.0) * 0.58 + horizonSheen);
             gl_FragColor = vec4(c * uBoost, 1.0);
           }
         }
@@ -395,8 +421,8 @@ export class WeatherSystem {
     envScene.add(new THREE.Mesh(domeGeo, domeMat));
 
     // 2. Solar / Lunar Primary Specular Emitter aligned with true Sun Direction
-    const sunInt = isNight ? 2.6 : (isSunset ? 4.4 : (isStorm ? 2.8 : 4.0));
-    const sunDiscGeo = trackDisp(new THREE.SphereGeometry(4.4, 16, 16));
+    const sunInt = isNight ? 2.4 : (isSunset ? 4.2 : (isStorm ? 2.6 : 3.9));
+    const sunDiscGeo = trackDisp(new THREE.SphereGeometry(4.2, 16, 16));
     const sunDiscMat = trackDisp(new THREE.MeshBasicMaterial({
       color: new THREE.Color(skyReg.sunColor).multiplyScalar(sunInt),
     }));
@@ -404,7 +430,7 @@ export class WeatherSystem {
     sunDisc.position.copy(sunDir).multiplyScalar(32);
     envScene.add(sunDisc);
 
-    // 3. Curated Automotive Specular Softbox Ribbons (creates GT7-style flowing clearcoat lines!)
+    // 3. Narrow High-Contrast Automotive Specular Softbox Ribbons (crisp clearcoat highlights, low diffuse area)
     const addRibbon = (w, h, d, hex, mult, x, y, z, ry = 0) => {
       const g = trackDisp(new THREE.BoxGeometry(w, h, d));
       const m = trackDisp(new THREE.MeshBasicMaterial({
@@ -417,22 +443,20 @@ export class WeatherSystem {
     };
 
     if (isNight || theme === 'VEGAS') {
-      // Multi-color Las Vegas Strip & Floodlight HDR reflections on clearcoat & chrome visors!
-      addRibbon(30, 2.2, 1.0, 0xff1493, 3.1,   0,  8,  26);
-      addRibbon(30, 2.2, 1.0, 0x00f0ff, 3.1,   0, 10, -26);
-      addRibbon(22, 1.8, 1.0, 0xffb300, 2.5, -25,  7,   0, Math.PI / 2);
-      addRibbon(24, 1.6, 3.2, 0xf0f6ff, 2.6,   4, 28,   0);
+      addRibbon(28, 1.6, 0.9, 0xff1493, 3.0,   0,  8,  26);
+      addRibbon(28, 1.6, 0.9, 0x00f0ff, 3.0,   0, 10, -26);
+      addRibbon(22, 1.5, 0.9, 0xffb300, 2.5, -25,  7,   0, Math.PI / 2);
+      addRibbon(22, 1.4, 2.4, 0xf0f6ff, 2.6,   4, 28,   0);
     } else if (isSunset) {
-      addRibbon(32, 2.6, 1.4, 0xff8c42, 2.8,  18,  7,  22, -0.6);
-      addRibbon(28, 1.8, 3.6, 0xffe4c4, 2.2, -10, 26, -12,  0.3);
-      addRibbon(24, 2.0, 1.2, 0x6f8eff, 1.7, -20, 12, -20,  0.7);
+      addRibbon(28, 1.8, 1.2, 0xff8c42, 2.6,  18,  7,  22, -0.6);
+      addRibbon(24, 1.5, 2.6, 0xffe4c4, 2.2, -10, 26, -12,  0.3);
+      addRibbon(20, 1.5, 1.0, 0x6f8eff, 1.7, -20, 12, -20,  0.7);
     } else {
-      // Crisp bright cloud-break & pit-building architectural reflection strips
-      addRibbon(32, 2.0, 4.2, 0xffffff, isStorm ? 2.4 : 2.15, -10, 27, -12, 0.25);
-      addRibbon(26, 1.6, 2.5, 0xe8f4ff, isStorm ? 2.0 : 1.75,  14, 18, -22, -0.4);
+      addRibbon(28, 1.5, 2.8, 0xffffff, isStorm ? 2.1 : 2.25, -10, 27, -12, 0.25);
+      addRibbon(22, 1.3, 1.8, 0xe8f4ff, isStorm ? 1.8 : 1.85,  14, 18, -22, -0.4);
+      addRibbon(22, 1.1, 1.6, 0xfff8eb, 1.75, -18, 14,  20,  0.5);
       if (theme === 'MONACO') {
-        // Shimmering Mediterranean turquoise water horizon reflection
-        addRibbon(34, 2.4, 1.2, 0x00c8ff, 1.85, 0, 2.5, 28);
+        addRibbon(30, 1.8, 1.0, 0x00c8ff, 1.85, 0, 2.5, 28);
       }
     }
 
@@ -637,7 +661,7 @@ export class WeatherSystem {
         cCrag.lerp(slate, 0.35);
       }
 
-      const hazeBlend = idx === 2 ? (isStorm ? 0.56 : 0.44) : (idx === 1 ? (isStorm ? 0.28 : 0.17) : 0.04);
+      const hazeBlend = idx === 2 ? (isStorm ? 0.36 : 0.22) : (idx === 1 ? (isStorm ? 0.16 : 0.08) : 0.02);
 
       const posAttr = layer.geo.attributes.position;
       const colAttr = layer.geo.attributes.color;
@@ -752,6 +776,219 @@ export class WeatherSystem {
     this.scene.add(this.splashLines);
   }
 
+  // --------------------------------------------------------------------------
+  // 3D COCKPIT HELMET VISOR RAINDROPS, RADIAL AERO-SHEAR STREAKS & TEAR-OFF
+  // Clip-space shader quad rendered only when Cockpit Camera (cameraIndex===2)
+  // is active in wet/rainy sessions. Zero occlusion of center apex sightline!
+  // --------------------------------------------------------------------------
+  _buildCockpitVisorRain() {
+    this.visorUniforms = {
+      uTime:       { value: 0.0 },
+      uWetness:    { value: 0.0 },
+      uSpeedNorm:  { value: 0.0 },
+      uSteerSlip:  { value: 0.0 },
+      uTearOff:    { value: 1.2 },
+      uLightning:  { value: 0.0 },
+      uSkyTint:    { value: new THREE.Color(0xd8eeff) },
+    };
+
+    const visorGeo = new THREE.PlaneGeometry(2, 2);
+    this.visorRainMat = new THREE.ShaderMaterial({
+      uniforms: this.visorUniforms,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = vec4(position.xy, 0.0, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uWetness;
+        uniform float uSpeedNorm;
+        uniform float uSteerSlip;
+        uniform float uTearOff;
+        uniform float uLightning;
+        uniform vec3 uSkyTint;
+        varying vec2 vUv;
+
+        float vHash21(vec2 p) {
+          p = fract(p * vec2(123.34, 456.21));
+          p += dot(p, p + 45.32);
+          return fract(p.x * p.y);
+        }
+
+        // Low-speed 3D spherical water beads with gravity crawl
+        vec3 dropletLayer(vec2 uv, float scale, float seed, float speedFade) {
+          vec2 aspectUv = vec2(uv.x * 1.72, uv.y);
+          vec2 gv = aspectUv * scale;
+          gv.y += uTime * (0.12 + uSpeedNorm * 0.25);
+          vec2 id = floor(gv);
+          vec2 f = fract(gv) - 0.5;
+
+          float n = vHash21(id + seed);
+          if (n < 0.42) return vec3(0.0);
+
+          vec2 offs = vec2((n - 0.5) * 0.52, (fract(n * 31.7) - 0.5) * 0.44);
+          vec2 p = f - offs;
+          float rad = (0.11 + fract(n * 17.3) * 0.13) * speedFade;
+          float d = length(p);
+
+          // Trailing micro-bead wake above crawling drop
+          float trailW = rad * 0.34;
+          float trail = smoothstep(trailW, 0.0, abs(p.x))
+                      * smoothstep(0.0, 0.36, p.y)
+                      * smoothstep(0.42, 0.04, p.y) * 0.45;
+
+          float drop = smoothstep(rad, rad * 0.55, d);
+          vec2 nrm = p / max(rad, 0.001);
+          float spec = pow(max(0.0, -nrm.x * 0.35 + nrm.y * 0.85), 5.0) * drop;
+          float rim = smoothstep(rad * 0.50, rad * 0.96, d) * drop;
+          float alpha = max(drop * 0.55, trail * 0.32);
+          return vec3(spec + trail * 0.25, rim, alpha);
+        }
+
+        // High-speed radial aero-sheared water rivulets streaming outward from visor stagnation center
+        vec2 aeroStreaks(vec2 uv) {
+          vec2 center = vec2(0.50 + uSteerSlip * 0.09, 0.43);
+          vec2 rel = (uv - center) * vec2(1.68, 1.0);
+          float r = length(rel);
+          float ang = atan(rel.y, rel.x);
+
+          // Keep dead-center apex sightline crystal clear at speed!
+          float peripheryMask = smoothstep(0.14, 0.52, r);
+
+          float angCells = floor((ang + 3.14159265) * 28.0);
+          float h1 = vHash21(vec2(angCells, 11.7));
+          float angFrac = fract((ang + 3.14159265) * 28.0) - 0.5;
+
+          float streamSpeed = (1.4 + h1 * 1.9) * (0.45 + uSpeedNorm * 2.35);
+          float rFlow = fract(r * (3.2 + h1 * 2.4) - uTime * streamSpeed + h1 * 7.0);
+
+          float width = 0.10 + (1.0 - rFlow) * 0.14;
+          float head = smoothstep(width, 0.0, abs(angFrac)) * smoothstep(0.06, 0.42, rFlow) * smoothstep(0.96, 0.52, rFlow);
+
+          // Secondary fine mist streaks
+          float angCells2 = floor((ang + 3.14159265) * 54.0);
+          float h2 = vHash21(vec2(angCells2, 43.1));
+          float angFrac2 = fract((ang + 3.14159265) * 54.0) - 0.5;
+          float rFlow2 = fract(r * 5.6 - uTime * (2.2 + h2 * 2.4) * (0.5 + uSpeedNorm * 2.6) + h2 * 13.0);
+          float fine = smoothstep(0.14, 0.0, abs(angFrac2)) * smoothstep(0.15, 0.75, rFlow2) * smoothstep(0.98, 0.72, rFlow2);
+
+          float total = (head * 0.85 + fine * 0.55) * peripheryMask * smoothstep(0.12, 0.65, uSpeedNorm);
+          float glint = pow(max(0.0, head), 2.0) * peripheryMask;
+          return vec2(total, glint);
+        }
+
+        void main() {
+          if (uWetness <= 0.01) discard;
+
+          // Visor tear-off wipe clears accumulated droplets behind sweeping film edge
+          float wipeMask = uTearOff < 1.05 ? smoothstep(uTearOff - 0.06, uTearOff + 0.04, vUv.x) : 1.0;
+          float wipeLine = uTearOff < 1.02 ? exp(-pow((vUv.x - uTearOff) * 42.0, 2.0)) * 0.65 : 0.0;
+
+          float lowSpeedFade = mix(1.0, 0.38, clamp(uSpeedNorm, 0.0, 1.0));
+          vec3 d1 = dropletLayer(vUv, 14.0, 3.1, lowSpeedFade);
+          vec3 d2 = dropletLayer(vUv + vec2(0.17, 0.31), 26.0, 19.7, lowSpeedFade * 0.88);
+          vec2 aero = aeroStreaks(vUv);
+
+          // Keep immediate center focal circle subtle so driving precision is never compromised
+          float centerClear = mix(0.45, 1.0, smoothstep(0.08, 0.34, length((vUv - vec2(0.5, 0.46)) * vec2(1.4, 1.0))));
+
+          float spec = (d1.x + d2.x * 0.85 + aero.y * 0.95) * wipeMask * centerClear;
+          float rim  = (d1.y + d2.y * 0.75) * wipeMask * centerClear;
+          float dropAlpha = (d1.z + d2.z * 0.75 + aero.x * 0.72) * uWetness * wipeMask * centerClear;
+
+          // Subtle FIA Zylon top visor strip & corner gasket framing
+          float topBrow = smoothstep(0.955, 0.992, vUv.y + pow(vUv.x - 0.5, 2.0) * 0.08);
+          vec3 waterCol = uSkyTint * (0.78 + spec * 1.65 + uLightning * 0.85) - vec3(rim * 0.16);
+          vec3 finalCol = mix(waterCol, vec3(0.03, 0.04, 0.06), topBrow * 0.75) + vec3(wipeLine);
+          float finalAlpha = clamp(dropAlpha * 0.68 + topBrow * 0.28 + wipeLine * 0.55, 0.0, 0.76);
+
+          gl_FragColor = vec4(finalCol, finalAlpha);
+        }
+      `,
+    });
+
+    this.visorRainMesh = new THREE.Mesh(visorGeo, this.visorRainMat);
+    this.visorRainMesh.name = 'CockpitVisorRainOverlay';
+    this.visorRainMesh.renderOrder = 950;
+    this.visorRainMesh.frustumCulled = false;
+    this.visorRainMesh.visible = false;
+    this.scene.add(this.visorRainMesh);
+
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      this._onVisorTearOffEvent = () => this.triggerVisorTearOff();
+      window.addEventListener('f1-visor-tearoff', this._onVisorTearOffEvent);
+    }
+  }
+
+  triggerVisorTearOff() {
+    this._visorTearOffProgress = -0.05;
+    this._visorAccum *= 0.15;
+  }
+
+  // Supports both (camera, isCockpitView, speedKmh, dt) and (isCockpitView, speedKmh, dt)
+  updateCockpitVisorRain(cameraOrFlag, isCockpitView = false, speedKmh = 0, dt = 0.016, yawSlipOverride = null) {
+    if (!this.visorRainMesh) return;
+
+    let camera = null;
+    let cockpitActive = false;
+    let spd = 0;
+    let stepDt = 0.016;
+
+    if (typeof cameraOrFlag === 'object' && cameraOrFlag !== null && ('isCamera' in cameraOrFlag || 'rotation' in cameraOrFlag)) {
+      camera = cameraOrFlag;
+      cockpitActive = Boolean(isCockpitView);
+      spd = Number(speedKmh) || 0;
+      stepDt = Number(dt) || 0.016;
+    } else {
+      cockpitActive = Boolean(cameraOrFlag);
+      spd = Number(isCockpitView) || 0;
+      stepDt = Number(speedKmh) || 0.016;
+    }
+
+    const activeReg = WEATHER_REGIMES[this.currentRegimeId] || WEATHER_REGIMES.HOT_SUNNY;
+    const rainInt = activeReg.rainIntensity || 0.0;
+    const surfaceWet = Math.max(0, this.offLineMoisture || 0);
+    const targetWet = Math.min(1.0, rainInt * 0.92 + (rainInt > 0.02 ? surfaceWet * 0.28 : 0.0));
+
+    if (!cockpitActive || targetWet <= 0.02) {
+      this.visorRainMesh.visible = false;
+      this._prevCamYaw = null;
+      return;
+    }
+
+    this._visorAccum = THREE.MathUtils.lerp(this._visorAccum, targetWet, Math.min(1.0, stepDt * 2.2));
+    if (this._visorTearOffProgress < 1.15) {
+      this._visorTearOffProgress += stepDt * 2.8;
+    }
+
+    let yawRate = Number(yawSlipOverride) || 0;
+    if (camera && camera.rotation && yawSlipOverride === null) {
+      const curYaw = camera.rotation.y || 0;
+      if (this._prevCamYaw !== null && stepDt > 0.0005) {
+        let dy = curYaw - this._prevCamYaw;
+        while (dy > Math.PI) dy -= Math.PI * 2;
+        while (dy < -Math.PI) dy += Math.PI * 2;
+        yawRate = THREE.MathUtils.clamp(dy / stepDt, -2.5, 2.5);
+      }
+      this._prevCamYaw = curYaw;
+    }
+    this._smoothedYawSlip = THREE.MathUtils.lerp(this._smoothedYawSlip, THREE.MathUtils.clamp(yawRate * 0.45, -1, 1), Math.min(1, stepDt * 8.0));
+
+    this.visorUniforms.uTime.value = this.elapsedSkySec;
+    this.visorUniforms.uWetness.value = Math.max(0.12, this._visorAccum);
+    this.visorUniforms.uSpeedNorm.value = THREE.MathUtils.clamp(spd / 320.0, 0.0, 1.25);
+    this.visorUniforms.uSteerSlip.value = this._smoothedYawSlip;
+    this.visorUniforms.uTearOff.value = this._visorTearOffProgress;
+    this.visorUniforms.uLightning.value = this.lightningFlash;
+    this.visorRainMesh.visible = true;
+  }
+
   // Roll ONE single fixed weather regime for an entire race weekend (NEVER changes mid-race!)
   rollRegimeForRace(mode, weatherPreset, trackDef) {
     if (trackDef?.forceNight) {
@@ -820,9 +1057,29 @@ export class WeatherSystem {
       this.skyUniforms.sunDir.value.set(0.42, 0.56, 0.71).normalize();
     }
 
-    // Warm, balanced Hemisphere + Sun + Dual Fill lighting so zero surfaces ever look flat or black
+    // High-contrast Directional Sun (3.4 in sunny/golden-hour) + 45%-lower Fill/Hemisphere lighting
+    // so crisp real-time directional shadows ground every car, pit garage, barrier, and tree!
+    const sunIntensityMap = {
+      HOT_SUNNY:     3.40,
+      GOLDEN_SUNSET: 3.40,
+      OVERCAST_COOL: 2.25,
+      LIGHT_DRIZZLE: 1.65,
+      MONSOON_STORM: 1.32,
+      NEON_NIGHT:    1.20,
+    };
+    const ambientIntensityMap = {
+      HOT_SUNNY:     0.64,
+      GOLDEN_SUNSET: 0.66,
+      OVERCAST_COOL: 0.62,
+      LIGHT_DRIZZLE: 0.54,
+      MONSOON_STORM: 0.48,
+      NEON_NIGHT:    0.52,
+    };
+    this._baseSunIntensity = sunIntensityMap[skyReg.id] ?? 3.40;
+    this._baseAmbientIntensity = ambientIntensityMap[skyReg.id] ?? ((skyReg.ambientIntensity || 1.15) * 0.52);
+
     this.sunLight.color.setHex(skyReg.sunColor);
-    this.sunLight.intensity = skyReg.sunIntensity;
+    this.sunLight.intensity = this._baseSunIntensity;
 
     const hemiSkyMap = {
       HOT_SUNNY:     0xdff2ff,
@@ -833,42 +1090,42 @@ export class WeatherSystem {
       NEON_NIGHT:    0x88a8ff,
     };
     const hemiGroundMap = {
-      HOT_SUNNY:     0x505c49,
-      GOLDEN_SUNSET: 0x5c4238,
-      OVERCAST_COOL: 0x485058,
-      LIGHT_DRIZZLE: 0x3a434d,
-      MONSOON_STORM: 0x2e3742,
-      NEON_NIGHT:    0x2c2244,
+      HOT_SUNNY:     0x2b3429,
+      GOLDEN_SUNSET: 0x36241d,
+      OVERCAST_COOL: 0x282e34,
+      LIGHT_DRIZZLE: 0x20262d,
+      MONSOON_STORM: 0x181e26,
+      NEON_NIGHT:    0x181228,
     };
     this.ambientLight.color.setHex(hemiSkyMap[skyReg.id] || 0xdff0ff);
-    this.ambientLight.groundColor.setHex(hemiGroundMap[skyReg.id] || 0x485648);
-    this.ambientLight.intensity = skyReg.ambientIntensity;
+    this.ambientLight.groundColor.setHex(hemiGroundMap[skyReg.id] || 0x2a332a);
+    this.ambientLight.intensity = this._baseAmbientIntensity;
 
     this.fillLight.color.setHex(isNight ? 0x9ec4ff : (isSunset ? 0xc9d8ff : 0xd8e9ff));
-    this.fillLight.intensity = isNight ? 0.96 : (isSunset ? 0.86 : 0.84);
+    this.fillLight.intensity = isNight ? 0.52 : (isSunset ? 0.47 : 0.45);
 
     this.rimLight.color.setHex(isNight ? 0xff6bd6 : (isSunset ? 0xffb070 : 0xffe9cf));
-    this.rimLight.intensity = isNight ? 0.52 : (isSunset ? 0.54 : 0.42);
+    this.rimLight.intensity = isNight ? 0.28 : (isSunset ? 0.29 : 0.23);
 
-    // High-luminance 360-degree sky palettes (prevents sRGB->Linear gamma crush above mountains!)
+    // Rich 360-degree sky palettes tuned cleanly below UnrealBloomPass threshold (zero milky bloom wash!)
     const skyPaletteOverrides = {
       HOT_SUNNY: {
-        zenith: 0x0e5ce0, mid: 0x459bf7, horizon: 0xc7e8ff, antiHorizon: 0x9bd2ff, sun: 0xfff7e6, boost: 1.22,
+        zenith: 0x0b52d4, mid: 0x3c91f2, horizon: 0xb8e0ff, antiHorizon: 0x8cc8fc, sun: 0xfff5e0, boost: 1.05,
       },
       GOLDEN_SUNSET: {
-        zenith: 0x2d5cb8, mid: 0xe86858, horizon: 0xffc46b, antiHorizon: 0x8c5ca8, sun: 0xffbe66, boost: 1.38,
+        zenith: 0x254fa6, mid: 0xdc5f4e, horizon: 0xf7b65c, antiHorizon: 0x7c4e98, sun: 0xffb85c, boost: 1.10,
       },
       OVERCAST_COOL: {
-        zenith: 0x4a6482, mid: 0x839bb5, horizon: 0xcbd9e8, antiHorizon: 0xb5c7da, sun: 0xeef4fa, boost: 1.20,
+        zenith: 0x425b78, mid: 0x7991ab, horizon: 0xbfd0e0, antiHorizon: 0xa8bcd0, sun: 0xeef4fa, boost: 1.04,
       },
       LIGHT_DRIZZLE: {
-        zenith: 0x344a63, mid: 0x607891, horizon: 0x9cb0c4, antiHorizon: 0x879cb2, sun: 0xc8d8e8, boost: 1.24,
+        zenith: 0x2e4359, mid: 0x566e87, horizon: 0x91a6ba, antiHorizon: 0x7d92a8, sun: 0xc8d8e8, boost: 1.06,
       },
       MONSOON_STORM: {
-        zenith: 0x1f2f46, mid: 0x3b4f6b, horizon: 0x667c96, antiHorizon: 0x546a84, sun: 0xa4bcd8, boost: 1.28,
+        zenith: 0x1a283d, mid: 0x344761, horizon: 0x5c728c, antiHorizon: 0x4b607a, sun: 0xa4bcd8, boost: 1.08,
       },
       NEON_NIGHT: {
-        zenith: 0x09122e, mid: 0x172654, horizon: 0x3b2466, antiHorizon: 0x261c4c, sun: 0xd8ecff, boost: 1.42,
+        zenith: 0x070f28, mid: 0x13204a, horizon: 0x331e59, antiHorizon: 0x201742, sun: 0xd8ecff, boost: 1.14,
       },
     };
 
@@ -878,15 +1135,27 @@ export class WeatherSystem {
       horizon: skyReg.skyHorizon,
       antiHorizon: skyReg.skyHorizon,
       sun: skyReg.sunColor,
-      boost: 1.22,
+      boost: 1.05,
+    };
+
+    const themeHorizonMap = {
+      FUJI:        isSunset ? 0xffb88c : 0xcbe8ff,
+      MONACO:      isSunset ? 0xffc680 : 0x9ee8ff,
+      SUZUKA:      isSunset ? 0xffb094 : 0xc2e4ff,
+      MONZA:       isSunset ? 0xffba70 : 0xffe4b8,
+      SILVERSTONE: isSunset ? 0xf2b49b : 0xd4e4f4,
+      VEGAS:       0x9b38ff,
     };
 
     this.skyUniforms.zenithColor.value.setHex(pal.zenith);
     this.skyUniforms.midColor.value.setHex(pal.mid);
     this.skyUniforms.horizonColor.value.setHex(pal.horizon);
     this.skyUniforms.antiHorizonColor.value.setHex(pal.antiHorizon);
-    this.skyUniforms.groundFogColor.value.setHex(isSunset ? 0xf2a477 : skyReg.fogColor);
+    this.skyUniforms.groundFogColor.value.setHex(isSunset ? 0xe89668 : skyReg.fogColor);
     this.skyUniforms.sunColor.value.setHex(pal.sun);
+    this.skyUniforms.themeHorizonTint.value.setHex(
+      isNight ? 0x7c2ae8 : (themeHorizonMap[this.activeTheme] || pal.horizon)
+    );
     this.skyUniforms.skyRadianceBoost.value = pal.boost;
 
     this.skyUniforms.nightAmount.value = isNight ? 1.0 : (isSunset ? 0.18 : 0.0);
@@ -903,6 +1172,11 @@ export class WeatherSystem {
     };
     this.skyUniforms.cloudCover.value = cloudMap[reg.id] ?? 0.30;
 
+    if (this.visorUniforms) {
+      this.visorUniforms.uSkyTint.value.setHex(isNight ? 0xa8dcff : (isSunset ? 0xffcfa8 : 0xdcf0ff));
+      this._visorAccum = 0.0;
+    }
+
     const effectiveSkyReg = {
       ...skyReg,
       skyZenith: pal.zenith,
@@ -911,8 +1185,9 @@ export class WeatherSystem {
       sunColor: pal.sun,
     };
 
-    this.scene.fog.color.setHex(isSunset ? 0xf09c6e : skyReg.fogColor);
-    this.scene.fog.density = skyReg.fogDensity * 0.85;
+    // 75% cut to FogExp2 density so garages 20m away & alpine vistas remain vivid and razor-sharp!
+    this.scene.fog.color.setHex(isSunset ? 0xe89668 : skyReg.fogColor);
+    this.scene.fog.density = Math.min(0.00028, (skyReg.fogDensity || 0.00016) * 0.25);
 
     this._tintVistaLayersForBiome(this.activeTheme, isNight, effectiveSkyReg);
     this._bakeDynamicHDREnvironment(effectiveSkyReg, this.activeTheme, isNight);
@@ -977,8 +1252,8 @@ export class WeatherSystem {
     this.skyUniforms.flashBoost.value = this.lightningFlash;
     this.skyDome.position.copy(cameraPos);
 
-    this.sunLight.intensity = skyReg.sunIntensity + this.lightningFlash * 2.8;
-    this.ambientLight.intensity = skyReg.ambientIntensity + this.lightningFlash * 0.9;
+    this.sunLight.intensity = this._baseSunIntensity + this.lightningFlash * 2.8;
+    this.ambientLight.intensity = this._baseAmbientIntensity + this.lightningFlash * 0.65;
 
     // Wind-driven rain streaks + wet surface splash micro-glints
     const rainInt = activeReg.rainIntensity || 0.0;

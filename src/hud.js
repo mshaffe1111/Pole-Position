@@ -3,7 +3,7 @@
 // Dual-Mode Broadcast Telemetry HUD, Anti-Aliased GPS Minimap & Pit Strategy
 // ============================================================================
 
-import { TIRE_COMPOUNDS, FUJI_SECTORS, PIT_LANE_CONFIG } from './config.js';
+import { TIRE_COMPOUNDS, FUJI_SECTORS, PIT_LANE_CONFIG } from './config.js?v=20261114aplus';
 
 export function formatLapTimeArcade(sec) {
   if (sec === null || sec === undefined || !isFinite(sec)) return '--"--';
@@ -51,6 +51,8 @@ export class TelemetryHUD {
     this._mapLogicalW = 0;
     this._mapLogicalH = 0;
     this._mapDpr = 1;
+    this._bestMacroSectorTimes = [null, null, null];
+    this._sectorDeltaPopup = null;
 
     this._cacheElements();
     this._bindStrategyButtons();
@@ -127,6 +129,66 @@ export class TelemetryHUD {
 
   setSpeedUnit(unit = 'KMH') {
     this.speedUnit = unit === 'MPH' ? 'MPH' : 'KMH';
+  }
+
+  resetSectorSplits() {
+    this._bestMacroSectorTimes = [null, null, null];
+    this._sectorDeltaPopup = null;
+  }
+
+  recordSectorSplit(sectorNum, splitSec) {
+    const idx = Math.max(0, Math.min(2, (Number(sectorNum) || 1) - 1));
+    if (!Number.isFinite(splitSec) || splitSec <= 2.0 || splitSec >= 120.0) return null;
+    const prevBest = this._bestMacroSectorTimes[idx];
+    let deltaSec = 0;
+    let isPurple = false;
+    let color = '#00e676';
+    let displayText = '';
+    let retroText = '';
+
+    if (prevBest === null) {
+      this._bestMacroSectorTimes[idx] = splitSec;
+      isPurple = true;
+      color = '#e040fb';
+      displayText = `🟣 S${idx + 1} ${formatLapTimeArcade(splitSec)}`;
+      retroText = `S${idx + 1} ${splitSec.toFixed(2)}S`;
+    } else {
+      deltaSec = splitSec - prevBest;
+      if (splitSec < prevBest) {
+        this._bestMacroSectorTimes[idx] = splitSec;
+        isPurple = true;
+        color = '#e040fb';
+        displayText = `🟣 S${idx + 1} ${deltaSec.toFixed(2)}s`;
+      } else if (deltaSec <= 0.08) {
+        color = '#00e676';
+        displayText = `🟢 S${idx + 1} +${Math.max(0, deltaSec).toFixed(2)}s`;
+      } else {
+        color = '#ff5252';
+        displayText = `🔴 S${idx + 1} +${deltaSec.toFixed(2)}s`;
+      }
+      const sign = deltaSec <= 0 ? '' : '+';
+      retroText = `S${idx + 1} ${sign}${deltaSec.toFixed(2)}S`;
+    }
+
+    this._sectorDeltaPopup = {
+      sector: idx + 1,
+      deltaSec,
+      isPurple,
+      color,
+      displayText,
+      text: retroText,
+      expiresAtMs: performance.now() + 2500,
+    };
+    return this._sectorDeltaPopup;
+  }
+
+  getActiveSectorDeltaPopup() {
+    if (!this._sectorDeltaPopup) return null;
+    if (performance.now() > this._sectorDeltaPopup.expiresAtMs) {
+      this._sectorDeltaPopup = null;
+      return null;
+    }
+    return this._sectorDeltaPopup;
   }
 
   _bindStrategyButtons() {
@@ -321,14 +383,72 @@ export class TelemetryHUD {
 
     if (this.lapTimeEl) this.lapTimeEl.textContent = formatLapTimeArcade(playerCar.currentLapTime);
     if (this.bestLapEl) {
-      this.bestLapEl.textContent = playerCar.bestLapTime
-        ? `BEST ${formatLapTimeArcade(playerCar.bestLapTime)}`
-        : 'BEST --"--';
+      if (playerCar.bestLapTime) {
+        const formattedBest = `BEST ${formatLapTimeArcade(playerCar.bestLapTime)}`;
+        if (this._lastBestLapTime !== playerCar.bestLapTime) {
+          this._lastBestLapTime = playerCar.bestLapTime;
+          this.bestLapEl.style.color = '#e040fb';
+          clearTimeout(this._bestPulseTimer);
+          this._bestPulseTimer = setTimeout(() => {
+            if (this.bestLapEl) this.bestLapEl.style.color = '';
+          }, 2600);
+        }
+        this.bestLapEl.textContent = formattedBest;
+      } else {
+        this._lastBestLapTime = null;
+        this.bestLapEl.textContent = 'BEST --"--';
+      }
     }
 
     if (this.sectorReadoutEl) {
       const sec = this.track.getSector(playerCar.s);
-      this.sectorReadoutEl.textContent = playerCar.inPitLane ? 'PIT LANE' : `SEC ${sec.id}`;
+      if (!playerCar.inPitLane && this._lastSectorId !== sec.id) {
+        this._lastSectorId = sec.id;
+        this.sectorReadoutEl.style.color = '#00e5ff';
+        clearTimeout(this._secPulseTimer);
+        this._secPulseTimer = setTimeout(() => {
+          if (this.sectorReadoutEl) this.sectorReadoutEl.style.color = '';
+        }, 700);
+      }
+      const activeSplitPopup = !playerCar.inPitLane ? this.getActiveSectorDeltaPopup() : null;
+      if (playerCar.inPitLane) {
+        this.sectorReadoutEl.textContent = 'PIT LANE';
+        this.sectorReadoutEl.style.color = '';
+      } else if (activeSplitPopup) {
+        this.sectorReadoutEl.textContent = activeSplitPopup.displayText;
+        this.sectorReadoutEl.style.color = activeSplitPopup.color;
+      } else if (sessionPhase !== 'QUALIFYING' && Array.isArray(allCars) && allCars.length > 1) {
+        const mPerGameM = this.track.realMetersPerGameMeter || 4.54;
+        const pDist = playerCar.totalDistanceGameM || 0;
+        let aheadCar = null;
+        let aheadDelta = Infinity;
+        let behindCar = null;
+        let behindDelta = Infinity;
+        for (const c of allCars) {
+          if (c.isPlayer || c.exploded) continue;
+          const d = (c.totalDistanceGameM || 0) - pDist;
+          if (d > 0 && d < aheadDelta) {
+            aheadDelta = d;
+            aheadCar = c;
+          } else if (d <= 0 && -d < behindDelta) {
+            behindDelta = -d;
+            behindCar = c;
+          }
+        }
+        const refCar = playerPos === 1 ? behindCar : (aheadCar || behindCar);
+        const refDeltaM = (playerPos === 1 ? behindDelta : (aheadCar ? aheadDelta : behindDelta)) * mPerGameM;
+        if (refCar && isFinite(refDeltaM)) {
+          const avgSpdMs = Math.max(48, ((playerCar.speedKmh + refCar.speedKmh) * 0.5) / 3.6);
+          const gapSec = Math.min(99.9, refDeltaM / avgSpdMs);
+          this.sectorReadoutEl.textContent = playerPos === 1
+            ? `S${sec.id} • LEAD +${gapSec.toFixed(1)}s`
+            : `S${sec.id} • INT -${gapSec.toFixed(1)}s`;
+        } else {
+          this.sectorReadoutEl.textContent = `SEC ${sec.id}`;
+        }
+      } else {
+        this.sectorReadoutEl.textContent = `SEC ${sec.id}`;
+      }
     }
 
     const kmh = Math.round(playerCar.speedKmh);
@@ -379,10 +499,14 @@ export class TelemetryHUD {
     }
 
     if (this.slipBadgeEl) {
-      this.slipBadgeEl.style.display = playerCar.inSlipstream ? 'inline-block' : 'none';
+      const drsHighSpeed = !playerCar.inPitLane && playerCar.speedKmh > 288 && Math.abs(playerCar.steerInput || 0) < 0.22;
+      const showDrs = playerCar.inSlipstream || drsHighSpeed;
+      this.slipBadgeEl.style.display = showDrs ? 'inline-block' : 'none';
       if (playerCar.inSlipstream) {
-        const towKmh = Math.max(5, Math.round((playerCar.slipstreamFactor || 0.5) * 15));
+        const towKmh = Math.max(5, Math.round((playerCar.slipstreamFactor || 0.5) * 16));
         this.slipBadgeEl.textContent = `⚡ DRS +${towKmh}`;
+      } else if (drsHighSpeed) {
+        this.slipBadgeEl.textContent = '⚡ DRS OPEN';
       }
     }
 
@@ -444,17 +568,22 @@ export class TelemetryHUD {
       this.compoundBadgeEl.style.color = comp.colorHex;
     }
 
-    for (const k of ['FL', 'FR', 'RL', 'RR']) {
+    const cornerOrder = ['FL', 'FR', 'RL', 'RR'];
+    for (let idx = 0; idx < cornerOrder.length; idx++) {
+      const k = cornerOrder[idx];
       const box = this.tireBoxes[k];
       if (!box) continue;
       const t = playerCar.tires[k];
       const pct = Math.max(0, Math.round(t.life * 100));
+      const dynTemp = Array.isArray(playerCar.tireTempsC) && Number.isFinite(playerCar.tireTempsC[idx])
+        ? playerCar.tireTempsC[idx]
+        : t.temp;
       const col = tireWearColor(t.life, t.punctured);
       box.style.borderColor = col;
       box.innerHTML = `
         <span class="t-corner">${k}</span>
         <span class="t-pct" style="color:${col}">${t.punctured ? 'PUNC' : pct + '%'}</span>
-        <span class="t-temp">${Math.round(t.temp)}°</span>
+        <span class="t-temp">${Math.round(dynTemp)}°</span>
         <span class="t-wear-bar" style="width:${t.punctured ? 100 : pct}%;background:${col}"></span>
       `;
     }
@@ -522,7 +651,10 @@ export class TelemetryHUD {
           this.clutchWrapEl.style.display = 'none';
         } else if (playerCar.pitPhase === 'STOPPED') {
           const sticky = this.raceSystems.lastStickyGunTriggered ? ' • ⚠️ STICKY GUN +3.0s!' : '';
-          this.pitServiceStatusEl.textContent = `CREW SERVICING (${this.raceSystems.playerPitPlan.nextCompound})${sticky}`;
+          const subPhase = playerCar.pitServiceSubPhase
+            || (this.raceSystems.getPitServiceSubPhase ? this.raceSystems.getPitServiceSubPhase(playerCar) : '')
+            || `CREW SERVICING (${this.raceSystems.playerPitPlan.nextCompound})`;
+          this.pitServiceStatusEl.textContent = `${subPhase}${sticky}`;
           this.pitServiceTimerEl.textContent = `${Math.max(0, playerCar.pitStopTimer).toFixed(2)}s`;
 
           const cg = this.raceSystems.clutchGame;

@@ -1,0 +1,655 @@
+[gd_scene load_steps=40 format=3 uid="uid://cpitcrewrig2026f1"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_PitBoxZone"]
+size = Vector3(3.6, 2.2, 6.8)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_GarageSteel"]
+albedo_color = Color(0.14, 0.16, 0.19, 1)
+metallic = 0.68
+roughness = 0.34
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_CabinetRed"]
+albedo_color = Color(0.84, 0.08, 0.1, 1)
+metallic = 0.45
+roughness = 0.22
+clearcoat_enabled = true
+clearcoat = 0.9
+clearcoat_roughness = 0.06
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_CeilingLED"]
+albedo_color = Color(0.95, 0.98, 1, 1)
+roughness = 0.1
+emission_enabled = true
+emission = Color(0.88, 0.95, 1, 1)
+emission_energy_multiplier = 2.6
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_BoomCarbon"]
+albedo_color = Color(0.06, 0.065, 0.075, 1)
+metallic = 0.25
+roughness = 0.32
+clearcoat_enabled = true
+clearcoat = 0.65
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_PneumaticHose"]
+albedo_color = Color(0.98, 0.76, 0.06, 1)
+metallic = 0.08
+roughness = 0.42
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_FuelChrome"]
+albedo_color = Color(0.78, 0.81, 0.86, 1)
+metallic = 0.92
+roughness = 0.18
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_NomexSuit"]
+albedo_color = Color(0.82, 0.07, 0.09, 1)
+metallic = 0.04
+roughness = 0.68
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_SuitStripe"]
+albedo_color = Color(0.96, 0.97, 0.99, 1)
+roughness = 0.45
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_CrewHelmet"]
+albedo_color = Color(0.08, 0.09, 0.11, 1)
+metallic = 0.35
+roughness = 0.2
+clearcoat_enabled = true
+clearcoat = 1.0
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_CrewVisor"]
+albedo_color = Color(0.04, 0.14, 0.28, 1)
+metallic = 0.95
+roughness = 0.05
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_PaoliGun"]
+albedo_color = Color(0.22, 0.56, 0.96, 1)
+metallic = 0.85
+roughness = 0.24
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_TorqueLED"]
+albedo_color = Color(0.05, 1.0, 0.5, 1)
+roughness = 0.12
+emission_enabled = true
+emission = Color(0.05, 1.0, 0.5, 1)
+emission_energy_multiplier = 3.2
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_LollipopSign"]
+albedo_color = Color(1.0, 0.82, 0.04, 1)
+roughness = 0.28
+emission_enabled = true
+emission = Color(1.0, 0.72, 0.02, 1)
+emission_energy_multiplier = 0.85
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_SpareTire"]
+albedo_color = Color(0.042, 0.045, 0.052, 1)
+metallic = 0.04
+roughness = 0.72
+
+[sub_resource type="BoxMesh" id="BoxMesh_GarageFloor"]
+material = SubResource("StandardMaterial3D_GarageSteel")
+size = Vector3(7.4, 0.06, 9.2)
+
+[sub_resource type="BoxMesh" id="BoxMesh_GarageRearWall"]
+material = SubResource("StandardMaterial3D_GarageSteel")
+size = Vector3(0.28, 3.8, 9.2)
+
+[sub_resource type="BoxMesh" id="BoxMesh_GarageRoof"]
+material = SubResource("StandardMaterial3D_GarageSteel")
+size = Vector3(6.2, 0.18, 9.2)
+
+[sub_resource type="BoxMesh" id="BoxMesh_ToolCabinet"]
+material = SubResource("StandardMaterial3D_CabinetRed")
+size = Vector3(0.72, 1.35, 2.4)
+
+[sub_resource type="BoxMesh" id="BoxMesh_CeilingLED"]
+material = SubResource("StandardMaterial3D_CeilingLED")
+size = Vector3(0.22, 0.05, 7.6)
+
+[sub_resource type="BoxMesh" id="BoxMesh_PitMarkStripe"]
+material = SubResource("StandardMaterial3D_PneumaticHose")
+size = Vector3(0.14, 0.012, 5.4)
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_BoomMast"]
+material = SubResource("StandardMaterial3D_BoomCarbon")
+top_radius = 0.09
+bottom_radius = 0.12
+height = 3.45
+radial_segments = 18
+
+[sub_resource type="BoxMesh" id="BoxMesh_BoomArm"]
+material = SubResource("StandardMaterial3D_BoomCarbon")
+size = Vector3(3.4, 0.09, 0.11)
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_PneumaticHose"]
+material = SubResource("StandardMaterial3D_PneumaticHose")
+top_radius = 0.018
+bottom_radius = 0.018
+height = 2.15
+radial_segments = 12
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_FuelTower"]
+material = SubResource("StandardMaterial3D_FuelChrome")
+top_radius = 0.28
+bottom_radius = 0.32
+height = 2.35
+radial_segments = 24
+
+[sub_resource type="BoxMesh" id="BoxMesh_QuickLiftJack"]
+material = SubResource("StandardMaterial3D_CabinetRed")
+size = Vector3(0.46, 0.12, 0.92)
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_LollipopPole"]
+material = SubResource("StandardMaterial3D_BoomCarbon")
+top_radius = 0.022
+bottom_radius = 0.024
+height = 2.35
+radial_segments = 12
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_LollipopBoard"]
+material = SubResource("StandardMaterial3D_LollipopSign")
+top_radius = 0.29
+bottom_radius = 0.29
+height = 0.032
+radial_segments = 24
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_SparePirelliTire"]
+material = SubResource("StandardMaterial3D_SpareTire")
+top_radius = 0.34
+bottom_radius = 0.34
+height = 0.35
+radial_segments = 28
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_CrewTorso"]
+material = SubResource("StandardMaterial3D_NomexSuit")
+radius = 0.19
+height = 0.78
+
+[sub_resource type="SphereMesh" id="SphereMesh_CrewHelmet"]
+material = SubResource("StandardMaterial3D_CrewHelmet")
+radius = 0.14
+height = 0.28
+
+[sub_resource type="BoxMesh" id="BoxMesh_CrewArm"]
+material = SubResource("StandardMaterial3D_SuitStripe")
+size = Vector3(0.1, 0.1, 0.42)
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_PaoliGun"]
+material = SubResource("StandardMaterial3D_PaoliGun")
+top_radius = 0.038
+bottom_radius = 0.052
+height = 0.38
+radial_segments = 18
+
+[sub_resource type="BoxMesh" id="BoxMesh_GunTorqueLED"]
+material = SubResource("StandardMaterial3D_TorqueLED")
+size = Vector3(0.036, 0.016, 0.14)
+
+[sub_resource type="Animation" id="Animation_RESET"]
+length = 0.001
+tracks/0/type = "value"
+tracks/0/imported = false
+tracks/0/enabled = true
+tracks/0/path = NodePath("PitCrew_Gunner_FL:position")
+tracks/0/interp = 1
+tracks/0/loop_wrap = true
+tracks/0/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector3(-1.55, 0, -1.48)]
+}
+tracks/1/type = "value"
+tracks/1/imported = false
+tracks/1/enabled = true
+tracks/1/path = NodePath("PitCrew_Gunner_FR:position")
+tracks/1/interp = 1
+tracks/1/loop_wrap = true
+tracks/1/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector3(1.55, 0, -1.48)]
+}
+tracks/2/type = "value"
+tracks/2/imported = false
+tracks/2/enabled = true
+tracks/2/path = NodePath("PitCrew_Gunner_RL:position")
+tracks/2/interp = 1
+tracks/2/loop_wrap = true
+tracks/2/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector3(-1.55, 0, 1.42)]
+}
+tracks/3/type = "value"
+tracks/3/imported = false
+tracks/3/enabled = true
+tracks/3/path = NodePath("PitCrew_Gunner_RR:position")
+tracks/3/interp = 1
+tracks/3/loop_wrap = true
+tracks/3/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector3(1.55, 0, 1.42)]
+}
+tracks/4/type = "value"
+tracks/4/imported = false
+tracks/4/enabled = true
+tracks/4/path = NodePath("Pressurized_Fuel_Rig_And_Jacks/QuickLift_FrontJack:position")
+tracks/4/interp = 1
+tracks/4/loop_wrap = true
+tracks/4/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector3(0, 0.08, -2.85)]
+}
+tracks/5/type = "value"
+tracks/5/imported = false
+tracks/5/enabled = true
+tracks/5/path = NodePath("Pressurized_Fuel_Rig_And_Jacks/QuickLift_RearJack:position")
+tracks/5/interp = 1
+tracks/5/loop_wrap = true
+tracks/5/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector3(0, 0.08, 2.65)]
+}
+tracks/6/type = "value"
+tracks/6/imported = false
+tracks/6/enabled = true
+tracks/6/path = NodePath("Pit_Lollipop_Sign:rotation")
+tracks/6/interp = 1
+tracks/6/loop_wrap = true
+tracks/6/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector3(0, 0, 0)]
+}
+
+[sub_resource type="Animation" id="Animation_PitIdleReady"]
+resource_name = "Pit_Idle_Ready"
+length = 1.2
+loop_mode = 1
+tracks/0/type = "value"
+tracks/0/imported = false
+tracks/0/enabled = true
+tracks/0/path = NodePath("PitCrew_Gunner_FL:position")
+tracks/0/interp = 2
+tracks/0/loop_wrap = true
+tracks/0/keys = {
+"times": PackedFloat32Array(0, 0.6, 1.2),
+"transitions": PackedFloat32Array(1, 1, 1),
+"update": 0,
+"values": [Vector3(-1.55, 0, -1.48), Vector3(-1.53, -0.02, -1.48), Vector3(-1.55, 0, -1.48)]
+}
+tracks/1/type = "value"
+tracks/1/imported = false
+tracks/1/enabled = true
+tracks/1/path = NodePath("PitCrew_Gunner_FR:position")
+tracks/1/interp = 2
+tracks/1/loop_wrap = true
+tracks/1/keys = {
+"times": PackedFloat32Array(0, 0.6, 1.2),
+"transitions": PackedFloat32Array(1, 1, 1),
+"update": 0,
+"values": [Vector3(1.55, 0, -1.48), Vector3(1.53, -0.02, -1.48), Vector3(1.55, 0, -1.48)]
+}
+
+[sub_resource type="Animation" id="Animation_PitTireSwap"]
+resource_name = "Pit_Tire_Swap"
+length = 2.0
+tracks/0/type = "value"
+tracks/0/imported = false
+tracks/0/enabled = true
+tracks/0/path = NodePath("PitCrew_Gunner_FL:position")
+tracks/0/interp = 2
+tracks/0/loop_wrap = false
+tracks/0/keys = {
+"times": PackedFloat32Array(0, 0.35, 1.45, 2.0),
+"transitions": PackedFloat32Array(1, 1, 1, 1),
+"update": 0,
+"values": [Vector3(-1.55, 0, -1.48), Vector3(-1.16, -0.05, -1.48), Vector3(-1.16, -0.05, -1.48), Vector3(-1.55, 0, -1.48)]
+}
+tracks/1/type = "value"
+tracks/1/imported = false
+tracks/1/enabled = true
+tracks/1/path = NodePath("PitCrew_Gunner_FR:position")
+tracks/1/interp = 2
+tracks/1/loop_wrap = false
+tracks/1/keys = {
+"times": PackedFloat32Array(0, 0.35, 1.45, 2.0),
+"transitions": PackedFloat32Array(1, 1, 1, 1),
+"update": 0,
+"values": [Vector3(1.55, 0, -1.48), Vector3(1.16, -0.05, -1.48), Vector3(1.16, -0.05, -1.48), Vector3(1.55, 0, -1.48)]
+}
+tracks/2/type = "value"
+tracks/2/imported = false
+tracks/2/enabled = true
+tracks/2/path = NodePath("PitCrew_Gunner_RL:position")
+tracks/2/interp = 2
+tracks/2/loop_wrap = false
+tracks/2/keys = {
+"times": PackedFloat32Array(0, 0.38, 1.48, 2.0),
+"transitions": PackedFloat32Array(1, 1, 1, 1),
+"update": 0,
+"values": [Vector3(-1.55, 0, 1.42), Vector3(-1.18, -0.05, 1.42), Vector3(-1.18, -0.05, 1.42), Vector3(-1.55, 0, 1.42)]
+}
+tracks/3/type = "value"
+tracks/3/imported = false
+tracks/3/enabled = true
+tracks/3/path = NodePath("PitCrew_Gunner_RR:position")
+tracks/3/interp = 2
+tracks/3/loop_wrap = false
+tracks/3/keys = {
+"times": PackedFloat32Array(0, 0.38, 1.48, 2.0),
+"transitions": PackedFloat32Array(1, 1, 1, 1),
+"update": 0,
+"values": [Vector3(1.55, 0, 1.42), Vector3(1.18, -0.05, 1.42), Vector3(1.18, -0.05, 1.42), Vector3(1.55, 0, 1.42)]
+}
+tracks/4/type = "value"
+tracks/4/imported = false
+tracks/4/enabled = true
+tracks/4/path = NodePath("Pit_Lollipop_Sign:rotation")
+tracks/4/interp = 2
+tracks/4/loop_wrap = false
+tracks/4/keys = {
+"times": PackedFloat32Array(0, 1.42, 1.65, 2.0),
+"transitions": PackedFloat32Array(1, 1, 1, 1),
+"update": 0,
+"values": [Vector3(0, 0, 0), Vector3(0, 0, 0), Vector3(0, 1.5708, 0), Vector3(0, 0, 0)]
+}
+
+[sub_resource type="Animation" id="Animation_PitJackAndRefuel"]
+resource_name = "Pit_Jack_And_Refuel"
+length = 2.2
+tracks/0/type = "value"
+tracks/0/imported = false
+tracks/0/enabled = true
+tracks/0/path = NodePath("Pressurized_Fuel_Rig_And_Jacks/QuickLift_FrontJack:position")
+tracks/0/interp = 2
+tracks/0/loop_wrap = false
+tracks/0/keys = {
+"times": PackedFloat32Array(0, 0.3, 1.75, 2.2),
+"transitions": PackedFloat32Array(1, 1, 1, 1),
+"update": 0,
+"values": [Vector3(0, 0.08, -2.85), Vector3(0, 0.16, -2.35), Vector3(0, 0.16, -2.35), Vector3(0, 0.08, -2.85)]
+}
+tracks/1/type = "value"
+tracks/1/imported = false
+tracks/1/enabled = true
+tracks/1/path = NodePath("Pressurized_Fuel_Rig_And_Jacks/QuickLift_RearJack:position")
+tracks/1/interp = 2
+tracks/1/loop_wrap = false
+tracks/1/keys = {
+"times": PackedFloat32Array(0, 0.32, 1.78, 2.2),
+"transitions": PackedFloat32Array(1, 1, 1, 1),
+"update": 0,
+"values": [Vector3(0, 0.08, 2.65), Vector3(0, 0.16, 2.18), Vector3(0, 0.16, 2.18), Vector3(0, 0.08, 2.65)]
+}
+tracks/2/type = "value"
+tracks/2/imported = false
+tracks/2/enabled = true
+tracks/2/path = NodePath("Pit_Lollipop_Sign:rotation")
+tracks/2/interp = 2
+tracks/2/loop_wrap = false
+tracks/2/keys = {
+"times": PackedFloat32Array(0, 1.7, 1.92, 2.2),
+"transitions": PackedFloat32Array(1, 1, 1, 1),
+"update": 0,
+"values": [Vector3(0, 0, 0), Vector3(0, 0, 0), Vector3(0, 1.5708, 0), Vector3(0, 0, 0)]
+}
+
+[sub_resource type="AnimationLibrary" id="AnimationLibrary_PitCrew"]
+_data = {
+"Pit_Idle_Ready": SubResource("Animation_PitIdleReady"),
+"Pit_Jack_And_Refuel": SubResource("Animation_PitJackAndRefuel"),
+"Pit_Tire_Swap": SubResource("Animation_PitTireSwap"),
+"RESET": SubResource("Animation_RESET")
+}
+
+[node name="PitCrewRig" type="Node3D" groups=["pit_box_rig"]]
+metadata/blender_glb_source = "res://assets/models/pit_crew_rig.glb"
+
+[node name="PitBoxTrigger" type="Area3D" parent="." groups=["pit_lane_trigger"]]
+collision_layer = 128
+collision_mask = 16
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="PitBoxTrigger"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.1, 0)
+shape = SubResource("BoxShape3D_PitBoxZone")
+
+[node name="PitGarage_Bay" type="Node3D" parent="."]
+
+[node name="GarageFloorPad" type="MeshInstance3D" parent="PitGarage_Bay"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.4, -0.03, 0)
+mesh = SubResource("BoxMesh_GarageFloor")
+
+[node name="GarageRearWall" type="MeshInstance3D" parent="PitGarage_Bay"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.95, 1.9, 0)
+mesh = SubResource("BoxMesh_GarageRearWall")
+
+[node name="GarageRoofCanopy" type="MeshInstance3D" parent="PitGarage_Bay"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3.0, 3.72, 0)
+mesh = SubResource("BoxMesh_GarageRoof")
+
+[node name="ToolCabinet_Front" type="MeshInstance3D" parent="PitGarage_Bay"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.3, 0.675, -2.3)
+mesh = SubResource("BoxMesh_ToolCabinet")
+
+[node name="ToolCabinet_Rear" type="MeshInstance3D" parent="PitGarage_Bay"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.3, 0.675, 2.3)
+mesh = SubResource("BoxMesh_ToolCabinet")
+
+[node name="CeilingLEDStrip_Outer" type="MeshInstance3D" parent="PitGarage_Bay"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.4, 3.6, 0)
+mesh = SubResource("BoxMesh_CeilingLED")
+
+[node name="CeilingLEDStrip_Inner" type="MeshInstance3D" parent="PitGarage_Bay"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4.2, 3.6, 0)
+mesh = SubResource("BoxMesh_CeilingLED")
+
+[node name="PitSlotLine_L" type="MeshInstance3D" parent="PitGarage_Bay"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.08, 0.008, 0)
+mesh = SubResource("BoxMesh_PitMarkStripe")
+
+[node name="PitSlotLine_R" type="MeshInstance3D" parent="PitGarage_Bay"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.08, 0.008, 0)
+mesh = SubResource("BoxMesh_PitMarkStripe")
+
+[node name="Overhead_Gantry_And_Hoses" type="Node3D" parent="."]
+
+[node name="SwivelBoomMast" type="MeshInstance3D" parent="Overhead_Gantry_And_Hoses"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.65, 1.725, 0)
+mesh = SubResource("CylinderMesh_BoomMast")
+
+[node name="SwivelBoomArm_Front" type="MeshInstance3D" parent="Overhead_Gantry_And_Hoses"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.95, 3.28, -1.48)
+mesh = SubResource("BoxMesh_BoomArm")
+
+[node name="SwivelBoomArm_Rear" type="MeshInstance3D" parent="Overhead_Gantry_And_Hoses"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.95, 3.28, 1.42)
+mesh = SubResource("BoxMesh_BoomArm")
+
+[node name="Pneumatic_Hose_FL" type="MeshInstance3D" parent="Overhead_Gantry_And_Hoses"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.15, 2.18, -1.48)
+mesh = SubResource("CylinderMesh_PneumaticHose")
+
+[node name="Pneumatic_Hose_FR" type="MeshInstance3D" parent="Overhead_Gantry_And_Hoses"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.15, 2.18, -1.48)
+mesh = SubResource("CylinderMesh_PneumaticHose")
+
+[node name="Pneumatic_Hose_RL" type="MeshInstance3D" parent="Overhead_Gantry_And_Hoses"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.15, 2.18, 1.42)
+mesh = SubResource("CylinderMesh_PneumaticHose")
+
+[node name="Pneumatic_Hose_RR" type="MeshInstance3D" parent="Overhead_Gantry_And_Hoses"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.15, 2.18, 1.42)
+mesh = SubResource("CylinderMesh_PneumaticHose")
+
+[node name="Pressurized_Fuel_Rig_And_Jacks" type="Node3D" parent="."]
+
+[node name="FuelRigTower" type="MeshInstance3D" parent="Pressurized_Fuel_Rig_And_Jacks"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.85, 1.175, 0.45)
+mesh = SubResource("CylinderMesh_FuelTower")
+
+[node name="QuickLift_FrontJack" type="MeshInstance3D" parent="Pressurized_Fuel_Rig_And_Jacks"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.08, -2.85)
+mesh = SubResource("BoxMesh_QuickLiftJack")
+
+[node name="QuickLift_RearJack" type="MeshInstance3D" parent="Pressurized_Fuel_Rig_And_Jacks"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.08, 2.65)
+mesh = SubResource("BoxMesh_QuickLiftJack")
+
+[node name="Pit_Lollipop_Sign" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -3.55)
+
+[node name="Lollipop_Pole" type="MeshInstance3D" parent="Pit_Lollipop_Sign"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.12, 1.175, 0)
+mesh = SubResource("CylinderMesh_LollipopPole")
+
+[node name="Lollipop_Arm" type="MeshInstance3D" parent="Pit_Lollipop_Sign"]
+transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, 0.56, 2.25, 0)
+mesh = SubResource("CylinderMesh_LollipopPole")
+scale = Vector3(0.75, 0.48, 0.75)
+
+[node name="Lollipop_Board" type="MeshInstance3D" parent="Pit_Lollipop_Sign"]
+transform = Transform3D(1, 0, 0, 0, 0, -1, 0, 1, 0, 0, 1.92, 0)
+mesh = SubResource("CylinderMesh_LollipopBoard")
+
+[node name="Spare_Pirelli_Wheel_Set" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.15, 0, -1.95)
+
+[node name="SpareTire_Bottom_F" type="MeshInstance3D" parent="Spare_Pirelli_Wheel_Set"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.175, 0)
+mesh = SubResource("CylinderMesh_SparePirelliTire")
+
+[node name="SpareTire_Top_F" type="MeshInstance3D" parent="Spare_Pirelli_Wheel_Set"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.535, 0)
+mesh = SubResource("CylinderMesh_SparePirelliTire")
+
+[node name="SpareTire_Standing_R" type="MeshInstance3D" parent="Spare_Pirelli_Wheel_Set"]
+transform = Transform3D(0, -1, 0, 1, 0, 0, 0, 0, 1, 0, 0.34, 3.85)
+mesh = SubResource("CylinderMesh_SparePirelliTire")
+
+[node name="PitCrew_Gunner_FL" type="Node3D" parent="."]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, -1.55, 0, -1.48)
+
+[node name="Torso" type="MeshInstance3D" parent="PitCrew_Gunner_FL"]
+transform = Transform3D(1, 0, 0, 0, 0.939693, 0.34202, 0, -0.34202, 0.939693, 0, 0.62, 0)
+mesh = SubResource("CapsuleMesh_CrewTorso")
+
+[node name="Helmet" type="MeshInstance3D" parent="PitCrew_Gunner_FL"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.08, -0.08)
+mesh = SubResource("SphereMesh_CrewHelmet")
+
+[node name="Visor" type="MeshInstance3D" parent="PitCrew_Gunner_FL/Helmet"]
+transform = Transform3D(0.94, 0, 0, 0, 0.52, 0, 0, 0, 0.98, 0, 0.01, -0.03)
+mesh = SubResource("SphereMesh_CrewHelmet")
+surface_material_override/0 = SubResource("StandardMaterial3D_CrewVisor")
+
+[node name="RightArm" type="MeshInstance3D" parent="PitCrew_Gunner_FL"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.14, 0.52, -0.22)
+mesh = SubResource("BoxMesh_CrewArm")
+
+[node name="PaoliWheelGun" type="MeshInstance3D" parent="PitCrew_Gunner_FL/RightArm"]
+transform = Transform3D(1, 0, 0, 0, 0, -1, 0, 1, 0, -0.14, -0.06, -0.22)
+mesh = SubResource("CylinderMesh_PaoliGun")
+
+[node name="GunTorqueLED" type="MeshInstance3D" parent="PitCrew_Gunner_FL/RightArm"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.14, -0.005, -0.22)
+mesh = SubResource("BoxMesh_GunTorqueLED")
+
+[node name="PitCrew_Gunner_FR" type="Node3D" parent="."]
+transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, 1.55, 0, -1.48)
+
+[node name="Torso" type="MeshInstance3D" parent="PitCrew_Gunner_FR"]
+transform = Transform3D(1, 0, 0, 0, 0.939693, 0.34202, 0, -0.34202, 0.939693, 0, 0.62, 0)
+mesh = SubResource("CapsuleMesh_CrewTorso")
+
+[node name="Helmet" type="MeshInstance3D" parent="PitCrew_Gunner_FR"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.08, -0.08)
+mesh = SubResource("SphereMesh_CrewHelmet")
+
+[node name="Visor" type="MeshInstance3D" parent="PitCrew_Gunner_FR/Helmet"]
+transform = Transform3D(0.94, 0, 0, 0, 0.52, 0, 0, 0, 0.98, 0, 0.01, -0.03)
+mesh = SubResource("SphereMesh_CrewHelmet")
+surface_material_override/0 = SubResource("StandardMaterial3D_CrewVisor")
+
+[node name="RightArm" type="MeshInstance3D" parent="PitCrew_Gunner_FR"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.14, 0.52, -0.22)
+mesh = SubResource("BoxMesh_CrewArm")
+
+[node name="PaoliWheelGun" type="MeshInstance3D" parent="PitCrew_Gunner_FR/RightArm"]
+transform = Transform3D(1, 0, 0, 0, 0, -1, 0, 1, 0, -0.14, -0.06, -0.22)
+mesh = SubResource("CylinderMesh_PaoliGun")
+
+[node name="GunTorqueLED" type="MeshInstance3D" parent="PitCrew_Gunner_FR/RightArm"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.14, -0.005, -0.22)
+mesh = SubResource("BoxMesh_GunTorqueLED")
+
+[node name="PitCrew_Gunner_RL" type="Node3D" parent="."]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, -1.55, 0, 1.42)
+
+[node name="Torso" type="MeshInstance3D" parent="PitCrew_Gunner_RL"]
+transform = Transform3D(1, 0, 0, 0, 0.939693, 0.34202, 0, -0.34202, 0.939693, 0, 0.62, 0)
+mesh = SubResource("CapsuleMesh_CrewTorso")
+
+[node name="Helmet" type="MeshInstance3D" parent="PitCrew_Gunner_RL"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.08, -0.08)
+mesh = SubResource("SphereMesh_CrewHelmet")
+
+[node name="Visor" type="MeshInstance3D" parent="PitCrew_Gunner_RL/Helmet"]
+transform = Transform3D(0.94, 0, 0, 0, 0.52, 0, 0, 0, 0.98, 0, 0.01, -0.03)
+mesh = SubResource("SphereMesh_CrewHelmet")
+surface_material_override/0 = SubResource("StandardMaterial3D_CrewVisor")
+
+[node name="RightArm" type="MeshInstance3D" parent="PitCrew_Gunner_RL"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.14, 0.52, -0.22)
+mesh = SubResource("BoxMesh_CrewArm")
+
+[node name="PaoliWheelGun" type="MeshInstance3D" parent="PitCrew_Gunner_RL/RightArm"]
+transform = Transform3D(1, 0, 0, 0, 0, -1, 0, 1, 0, -0.14, -0.06, -0.22)
+mesh = SubResource("CylinderMesh_PaoliGun")
+
+[node name="GunTorqueLED" type="MeshInstance3D" parent="PitCrew_Gunner_RL/RightArm"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.14, -0.005, -0.22)
+mesh = SubResource("BoxMesh_GunTorqueLED")
+
+[node name="PitCrew_Gunner_RR" type="Node3D" parent="."]
+transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, 1.55, 0, 1.42)
+
+[node name="Torso" type="MeshInstance3D" parent="PitCrew_Gunner_RR"]
+transform = Transform3D(1, 0, 0, 0, 0.939693, 0.34202, 0, -0.34202, 0.939693, 0, 0.62, 0)
+mesh = SubResource("CapsuleMesh_CrewTorso")
+
+[node name="Helmet" type="MeshInstance3D" parent="PitCrew_Gunner_RR"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.08, -0.08)
+mesh = SubResource("SphereMesh_CrewHelmet")
+
+[node name="Visor" type="MeshInstance3D" parent="PitCrew_Gunner_RR/Helmet"]
+transform = Transform3D(0.94, 0, 0, 0, 0.52, 0, 0, 0, 0.98, 0, 0.01, -0.03)
+mesh = SubResource("SphereMesh_CrewHelmet")
+surface_material_override/0 = SubResource("StandardMaterial3D_CrewVisor")
+
+[node name="RightArm" type="MeshInstance3D" parent="PitCrew_Gunner_RR"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.14, 0.52, -0.22)
+mesh = SubResource("BoxMesh_CrewArm")
+
+[node name="PaoliWheelGun" type="MeshInstance3D" parent="PitCrew_Gunner_RR/RightArm"]
+transform = Transform3D(1, 0, 0, 0, 0, -1, 0, 1, 0, -0.14, -0.06, -0.22)
+mesh = SubResource("CylinderMesh_PaoliGun")
+
+[node name="GunTorqueLED" type="MeshInstance3D" parent="PitCrew_Gunner_RR/RightArm"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.14, -0.005, -0.22)
+mesh = SubResource("BoxMesh_GunTorqueLED")
+
+[node name="AnimationPlayer" type="AnimationPlayer" parent="."]
+libraries = {
+"": SubResource("AnimationLibrary_PitCrew")
+}
+autoplay = "Pit_Idle_Ready"

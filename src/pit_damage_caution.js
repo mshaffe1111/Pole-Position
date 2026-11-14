@@ -12,7 +12,7 @@ import {
   PIT_LANE_CONFIG,
   PIT_CREW_MODES,
   REPAIR_ORDERS,
-} from './config.js';
+} from './config.js?v=20261114aplus';
 
 function signedDeltaS(a, b) {
   let d = a - b;
@@ -184,12 +184,51 @@ export class RaceSystemsController {
     return 'MISS';
   }
 
+  getPitServiceSubPhase(car) {
+    if (!car || car.pitPhase !== 'STOPPED') return '';
+    const total = Math.max(0.1, car.pitStopTotalDuration || 2.5);
+    const elapsed = Math.max(0, total - (car.pitStopTimer || 0));
+    const prog = Math.max(0, Math.min(1, elapsed / total));
+    const comp = car._activeServicePlan?.nextCompound || this.playerPitPlan.nextCompound || 'MEDIUM';
+    if (prog < 0.24) return 'JACKS UP • LOOSENING NUTS';
+    if (prog < 0.62) return `SWAPPING 4 TIRES (${comp})`;
+    if (prog < 0.84) return 'TORQUE GUNS • FUEL FLOW';
+    return 'TORQUE LOCKED • CLEAR!';
+  }
+
   // --------------------------------------------------------------------------
   // PIT LANE CORRIDOR, SPEEDING PENALTY & CREW SERVICE EXECUTION
   // --------------------------------------------------------------------------
   updatePitLaneForCar(car, dt, ctx) {
     const { mode, totalLaps, callbacks = {} } = ctx;
     if (mode === '1982_ORIGINAL') return;
+
+    // Smart Race Engineer radio warnings at 35% tire wear & 1.5 laps fuel
+    if (car.isPlayer && !car.inPitLane && !car.exploded) {
+      const minTire = Math.min(
+        car.tires.FL.life,
+        car.tires.FR.life,
+        car.tires.RL.life,
+        car.tires.RR.life
+      );
+      if (minTire <= 0.35 && minTire > 0.25 && !car._warnedTire35) {
+        car._warnedTire35 = true;
+        if (callbacks.onEngineerWarning) {
+          callbacks.onEngineerWarning(`Tires down to ${Math.round(minTire * 100)}% — pit window is open, consider boxing soon.`);
+        }
+      } else if (minTire > 0.60) {
+        car._warnedTire35 = false;
+      }
+
+      if (car.fuelLaps <= 1.5 && car.fuelLaps > 0.05 && !car._warnedFuel15) {
+        car._warnedFuel15 = true;
+        if (callbacks.onEngineerWarning) {
+          callbacks.onEngineerWarning(`Low fuel warning (${car.fuelLaps.toFixed(1)} laps remaining) — box this lap for fuel!`);
+        }
+      } else if (car.fuelLaps > 2.2) {
+        car._warnedFuel15 = false;
+      }
+    }
 
     const s = car.s;
 
@@ -250,6 +289,7 @@ export class RaceSystemsController {
     if (car.pitPhase === 'STOPPED') {
       car.pitStopTimer -= dt;
       const elapsed = car.pitStopTotalDuration - car.pitStopTimer;
+      car.pitServiceSubPhase = this.getPitServiceSubPhase(car);
 
       // Jack lift animation (lifts in first 0.35s, drops in final 0.35s)
       if (car.pitStopTimer > 0.4) {

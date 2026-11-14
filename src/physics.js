@@ -49,6 +49,19 @@ function wrapTrackS(s) {
   return r;
 }
 
+// Pacejka Magic Formula y(x) = sin(C * atan(B*x - E*(B*x - atan(B*x))))
+function pacejkaMagic(slip, B = 10.2, C = 1.38, E = -0.52) {
+  const bx = B * slip;
+  return Math.sin(C * Math.atan(bx - E * (bx - Math.atan(bx))));
+}
+
+function ensureFourArray(arr, fillVal = 0.0) {
+  if (!Array.isArray(arr) || arr.length < 4) {
+    return [fillVal, fillVal, fillVal, fillVal];
+  }
+  return arr;
+}
+
 export function createVehicleState(opts = {}) {
   const compound = TIRE_COMPOUNDS[opts.compound] ? opts.compound : 'SOFT';
   const compDef = TIRE_COMPOUNDS[compound] || TIRE_COMPOUNDS.SOFT;
@@ -79,16 +92,30 @@ export function createVehicleState(opts = {}) {
     gearboxMode, // Defaults to 'AUTO_8SPD'
     shiftCooldown: 0,
     revBlipTimer: 0,
+    cornerExitTorqueTimer: 0,
     overRevTimer: 0,
+    turboBoostBar: 0.0, // 0.0..2.4 bar V6 split-turbo + MGU-H boost pressure
+    ersCharge: 1.0,     // 0.0..1.0 MGU-K battery state of charge
+    ersDeploying: false,
     inSlipstream: false,
     slipstreamFactor: 0,
+    towReservoir: 0,
     drsActive: false,
 
-    // Control inputs [0..1] / [-1..1]
+    // Control inputs [0..1] / [-1..1] & Front-Axle Pneumatic-Trail SAT Feedback
     steerInput: 0,
     steerAngleRad: 0,
+    selfAligningTorque: 0.0, // [-1..1] counter-steer & pneumatic-trail feedback for @controls
     throttleInput: 0,
     brakeInput: 0,
+
+    // 3D Suspension Attitude & 4-Corner Deflection Dynamics
+    chassisPitchRad: 0.0, // +0.028 rad braking nose-dive, -0.020 rad launch/ERS rear squat
+    chassisPitchVel: 0.0,
+    chassisRollRad: 0.0,  // Lateral G body roll + asymmetric sawtooth FIA kerb lift
+    chassisRollVel: 0.0,
+    chassisHeaveM: 0.0,
+    wheelCompression: [0.25, 0.25, 0.25, 0.25], // [fl, fr, rl, rr] normalized [0..1]
 
     // Surface & Hazard state
     onCurb: false,
@@ -98,13 +125,15 @@ export function createVehicleState(opts = {}) {
     longG: 0,
     skidIntensity: 0,
 
-    // 2026 Tire & Fuel Simulation
+    // 2026 Dual-Layer (Surface + Core) Tire & Fuel Simulation
     compound,
+    tireTempsC: [baseTemp, baseTemp, baseTemp, baseTemp],     // [fl, fr, rl, rr] °C
+    tireCoreTempsC: [baseTemp, baseTemp, baseTemp, baseTemp], // [fl, fr, rl, rr] °C
     tires: {
-      FL: { life: 1.0, temp: baseTemp, load: 0.25, punctured: false },
-      FR: { life: 1.0, temp: baseTemp, load: 0.25, punctured: false },
-      RL: { life: 1.0, temp: baseTemp, load: 0.25, punctured: false },
-      RR: { life: 1.0, temp: baseTemp, load: 0.25, punctured: false },
+      FL: { life: 1.0, temp: baseTemp, surfaceTemp: baseTemp, coreTemp: baseTemp, load: 0.25, compression: 0.25, slipAngleRad: 0.0, slipRatio: 0.0, punctured: false },
+      FR: { life: 1.0, temp: baseTemp, surfaceTemp: baseTemp, coreTemp: baseTemp, load: 0.25, compression: 0.25, slipAngleRad: 0.0, slipRatio: 0.0, punctured: false },
+      RL: { life: 1.0, temp: baseTemp, surfaceTemp: baseTemp, coreTemp: baseTemp, load: 0.25, compression: 0.25, slipAngleRad: 0.0, slipRatio: 0.0, punctured: false },
+      RR: { life: 1.0, temp: baseTemp, surfaceTemp: baseTemp, coreTemp: baseTemp, load: 0.25, compression: 0.25, slipAngleRad: 0.0, slipRatio: 0.0, punctured: false },
     },
     fuelLaps: finiteOr(opts.fuelLaps, 7.0),
     maxFuelLaps: finiteOr(opts.maxFuelLaps, 15.0),
@@ -172,7 +201,8 @@ export function shiftGear(car, direction, callbacks = {}) {
     if (step > 0) {
       if (callbacks.onGearShift) callbacks.onGearShift(car, next, 'UP');
     } else {
-      car.revBlipTimer = 0.11;
+      car.revBlipTimer = 0.125;
+      car.cornerExitTorqueTimer = 0.28;
       if (callbacks.onGearShift) callbacks.onGearShift(car, next, 'DOWN');
       if (spd > 110 && callbacks.onBackfire) callbacks.onBackfire(car);
     }
@@ -190,7 +220,8 @@ export function shiftGear(car, direction, callbacks = {}) {
       if (step > 0) {
         if (callbacks.onGearShift) callbacks.onGearShift(car, next, 'UP');
       } else {
-        car.revBlipTimer = 0.11;
+        car.revBlipTimer = 0.125;
+        car.cornerExitTorqueTimer = 0.28;
         if (callbacks.onGearShift) callbacks.onGearShift(car, next, 'DOWN');
         if (spd > 110 && callbacks.onBackfire) callbacks.onBackfire(car);
       }
@@ -264,11 +295,21 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
   // Strict micro-deadzone guarantees 0.000000 steering input when resting straight
   const steerIn = Math.abs(rawSteerIn) < 0.002 ? 0.0 : rawSteerIn;
 
+  car.tireTempsC = ensureFourArray(car.tireTempsC, 92.0);
+  car.tireCoreTempsC = ensureFourArray(car.tireCoreTempsC, 92.0);
+  car.wheelCompression = ensureFourArray(car.wheelCompression, 0.25);
+
   // Handle explosion respawn countdown
   if (car.exploded) {
     car.explodeTimer = finiteOr(car.explodeTimer, 0) - safeDt;
     car.speedKmh = 0;
     car.rpm = 0;
+    car.turboBoostBar = 0.0;
+    car.selfAligningTorque = 0.0;
+    car.chassisPitchRad = 0.0;
+    car.chassisPitchVel = 0.0;
+    car.chassisRollRad = 0.0;
+    car.chassisRollVel = 0.0;
     car.latG = 0;
     car.longG = 0;
     car.skidIntensity = 0;
@@ -289,11 +330,19 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
   if (controlsLocked) {
     car.speedKmh = 0;
     car.gear = 1;
-    car.lateralVel = 0;
+    car.lateralVel = clamp(car.lateralVel, -16.5, 16.5) * 0.0;
     car.latG = 0;
     car.longG = 0;
     const revIdle = 3800 + Math.sin(nowMs * 0.018) * 180;
     car.rpm += (revIdle + throttleIn * 7400 - car.rpm) * Math.min(1, safeDt * 14);
+    car.turboBoostBar = clamp(throttleIn * 1.35, 0.0, 2.4);
+    car.selfAligningTorque = 0.0;
+    car.chassisPitchRad += (0.0 - finiteOr(car.chassisPitchRad, 0)) * Math.min(1, safeDt * 12);
+    car.chassisRollRad += (0.0 - finiteOr(car.chassisRollRad, 0)) * Math.min(1, safeDt * 12);
+    car.wheelCompression[0] = 0.25;
+    car.wheelCompression[1] = 0.25;
+    car.wheelCompression[2] = 0.25;
+    car.wheelCompression[3] = 0.25;
     car.skidIntensity = 0;
     car.drsActive = false;
     return;
@@ -304,9 +353,19 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
     car.speedKmh = 0;
     car.gear = 1;
     car.rpm = 4100 + Math.sin(nowMs * 0.025) * 240;
+    car.turboBoostBar = 0.12;
+    car.selfAligningTorque = 0.0;
     car.lateralVel = 0;
     car.latG = 0;
     car.longG = 0;
+    car.chassisPitchRad += (0.0 - finiteOr(car.chassisPitchRad, 0)) * Math.min(1, safeDt * 14);
+    car.chassisRollRad += (0.0 - finiteOr(car.chassisRollRad, 0)) * Math.min(1, safeDt * 14);
+    // Quick-lift pit jacks droop all 4 suspension corners smoothly to 0.0 when car is lifted!
+    const jackDroop = clamp(1.0 - finiteOr(car.pitJackLift, 0.0), 0.0, 1.0) * 0.25;
+    car.wheelCompression[0] = jackDroop;
+    car.wheelCompression[1] = jackDroop;
+    car.wheelCompression[2] = jackDroop;
+    car.wheelCompression[3] = jackDroop;
     car.skidIntensity = 0;
     car.drsActive = false;
     return;
@@ -423,10 +482,12 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
   }
 
   // --------------------------------------------------------------------------
-  // 2. PACEJKA-LITE 4-CORNER TIRE GRIP, THERMAL WINDOW & 25% CLIFF SOLVER
+  // 2. PACEJKA COMBINED-SLIP 4-CORNER TIRE MODEL, SURFACE/CORE THERMALS & CLIFF
   // --------------------------------------------------------------------------
   let muLat = 1.12;
   let muLong = 1.12;
+  let frontSlipAngleRad = 0.0;
+  let rearSlipAngleRad = 0.0;
 
   if (!isClassic) {
     const comp = TIRE_COMPOUNDS[car.compound] || TIRE_COMPOUNDS.SOFT;
@@ -452,55 +513,118 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
       }
     }
 
-    // Dynamic 4-corner vertical load transfer under braking, acceleration & cornering
-    const longTransfer = clamp((brakeIn - throttleIn * 0.62) * 0.085, -0.09, 0.11);
-    const latTransfer = clamp(curvature * (speedMps / 72.0) * 0.12, -0.12, 0.12);
+    // Dynamic 4-corner vertical load transfer under braking, acceleration, aero & cornering
+    const aeroLoadPerCorner = 0.09 * Math.min(1.25, (speedMps / 82.0) * (speedMps / 82.0));
+    const longTransfer = clamp((brakeIn - throttleIn * 0.62) * 0.095, -0.095, 0.12);
+    const latTransfer = clamp((curvature * (speedMps / 68.0) + car.latG * 0.14) * 0.11, -0.13, 0.13);
     const loads = {
-      FL: Math.max(0.08, 0.25 + longTransfer + latTransfer),
-      FR: Math.max(0.08, 0.25 + longTransfer - latTransfer),
-      RL: Math.max(0.08, 0.25 - longTransfer + latTransfer),
-      RR: Math.max(0.08, 0.25 - longTransfer - latTransfer),
+      FL: Math.max(0.07, 0.25 + aeroLoadPerCorner * 0.42 + longTransfer + latTransfer),
+      FR: Math.max(0.07, 0.25 + aeroLoadPerCorner * 0.42 + longTransfer - latTransfer),
+      RL: Math.max(0.07, 0.25 + aeroLoadPerCorner * 0.58 - longTransfer + latTransfer),
+      RR: Math.max(0.07, 0.25 + aeroLoadPerCorner * 0.58 - longTransfer - latTransfer),
     };
 
+    // Estimate front & rear axle slip angles + longitudinal wheelspin / brake lockup slip ratios
+    const vSafe = Math.max(6.0, speedMps);
+    const estSteerRad = steerIn * 0.26 / (1.0 + 0.00015 * speedMps * speedMps);
+    const bodyBetaRad = clamp(car.lateralVel / vSafe, -0.32, 0.32);
+    frontSlipAngleRad = clamp(estSteerRad - bodyBetaRad * 0.52, -0.30, 0.30);
+    const lowGearTorqueExcess = (car.gear <= 3 && throttleIn > 0.72)
+      ? (throttleIn - 0.68) * (4 - car.gear) * (0.045 + localW * 0.085)
+      : 0.0;
+    rearSlipAngleRad = clamp(
+      -bodyBetaRad * 0.48 + Math.sign(curvature || steerIn || 0) * lowGearTorqueExcess * 0.45,
+      -0.34,
+      0.34
+    );
+
     const ambientTemp = finiteOr(weather?.ambientTemp, 26.0);
-    let sumCornerMu = 0;
+    const optMin = comp.optTempMin - modThermalWindowC * 0.5; // Optimal dry window ~88°C-106°C
+    const optMax = comp.optTempMax + modThermalWindowC * 0.5;
+
+    let sumLatMu = 0;
+    let sumLongMu = 0;
     let anyPunctured = false;
     const corners = ['FL', 'FR', 'RL', 'RR'];
 
-    for (const cKey of corners) {
+    for (let idx = 0; idx < 4; idx++) {
+      const cKey = corners[idx];
+      const isFront = idx < 2;
       const t = car.tires[cKey];
       t.load = loads[cKey];
 
-      // Carcass & tread surface thermal balance
-      const slipHeat = car.skidIntensity * 14.0;
-      const workEnergy =
-        (Math.abs(curvature) * speedMps * 0.42 + brakeIn * speedMps * 0.24 + throttleIn * 9.5 + slipHeat) *
-        (t.load * 4.0);
-      const dryGroovedPenalty = comp.isWetTire && localW < 0.08
-        ? (comp.id === 'FULL_WET' ? 30.0 : 22.0)
+      // Per-corner Pacejka slip angle (alpha) & longitudinal slip ratio (kappa)
+      const cornerAlpha = isFront ? frontSlipAngleRad : rearSlipAngleRad;
+      const brakeLockSlip = brakeIn > 0.72
+        ? (brakeIn - 0.72) * (isFront ? 0.36 : 0.22) * (1.0 + localW * 0.55) / Math.max(0.45, t.load * 3.6)
         : 0.0;
-      const wetCooling = localW * 36.0;
-      const targetTemp = ambientTemp + 52.0 + workEnergy + dryGroovedPenalty - wetCooling;
-      t.temp = finiteOr(t.temp, 88) + (targetTemp - finiteOr(t.temp, 88)) * Math.min(1, safeDt * 0.45);
+      const wheelspinSlip = !isFront ? lowGearTorqueExcess / Math.max(0.45, t.load * 3.4) : 0.0;
+      const cornerKappa = clamp(wheelspinSlip - brakeLockSlip, -0.45, 0.45);
+      t.slipAngleRad = cornerAlpha;
+      t.slipRatio = cornerKappa;
+
+      // Pacejka Magic Formula combined-slip friction power
+      const normAlpha = Math.abs(cornerAlpha) / 0.14;
+      const normKappa = Math.abs(cornerKappa) / 0.15;
+      const combinedSlipNorm = Math.hypot(normAlpha, normKappa);
+      const pacejkaUtil = Math.abs(pacejkaMagic(Math.min(1.8, combinedSlipNorm * 0.12), 10.2, 1.38, -0.52));
+
+      // Dual-Layer Tire Thermal Solver:
+      // 1) Flash Surface Temperature (fast ~0.85s response to cornering scrub, lockups, wheelspin & wet spray)
+      const prevCore = finiteOr(t.coreTemp, finiteOr(t.temp, 92.0));
+      const prevSurf = finiteOr(t.surfaceTemp, prevCore);
+
+      const cornerFrictionHeat =
+        (Math.abs(curvature) * speedMps * 0.46 +
+          combinedSlipNorm * speedMps * 0.32 +
+          Math.abs(brakeLockSlip) * 105.0 +
+          wheelspinSlip * 92.0 +
+          car.skidIntensity * 15.0) *
+        (t.load * 3.5);
+      const dryGroovedPenalty = comp.isWetTire && localW < 0.08
+        ? (comp.id === 'FULL_WET' ? 32.0 : 23.0)
+        : 0.0;
+      const wetSprayCooling = localW * (34.0 + speedMps * 0.18);
+      const airflowCooling = Math.max(0, speedMps - 35.0) * 0.085;
+
+      const targetSurfTemp =
+        ambientTemp + 54.0 + cornerFrictionHeat + dryGroovedPenalty - wetSprayCooling - airflowCooling;
+      t.surfaceTemp = clamp(prevSurf + (targetSurfTemp - prevSurf) * Math.min(1, safeDt * 1.25), 18.0, 158.0);
+
+      // 2) Bulk Carcass Core Temperature (slow ~8.5s response to rolling hysteresis, brake disc heat & conduction)
+      const carcassHysteresis = (speedMps * 0.26 + brakeIn * speedMps * 0.19 + throttleIn * 7.5) * (t.load * 3.6);
+      const targetCoreTemp =
+        ambientTemp + 50.0 + carcassHysteresis + (t.surfaceTemp - prevCore) * 0.42 - localW * 24.0;
+      t.coreTemp = clamp(prevCore + (targetCoreTemp - prevCore) * Math.min(1, safeDt * 0.14), 20.0, 145.0);
+
+      // Weighted effective contact-patch temperature (optimal grip window: 88°C-106°C on dry slicks)
+      t.temp = t.surfaceTemp * 0.58 + t.coreTemp * 0.42;
+      car.tireTempsC[idx] = t.temp;
+      car.tireCoreTempsC[idx] = t.coreTemp;
 
       let tempMult = 1.0;
-      const optMin = comp.optTempMin - modThermalWindowC * 0.5;
-      const optMax = comp.optTempMax + modThermalWindowC * 0.5;
       if (t.temp < optMin) {
-        tempMult = Math.max(0.92, 1.0 - (optMin - t.temp) * 0.0028);
+        tempMult = Math.max(0.91, 1.0 - (optMin - t.temp) * 0.0030);
       } else if (t.temp > optMax) {
-        tempMult = Math.max(0.88, 1.0 - (t.temp - optMax) * 0.0038);
+        tempMult = Math.max(0.86, 1.0 - (t.temp - optMax) * 0.0042);
+      } else {
+        // Subtle +1.5% peak bite right in the heart of the 88°C-106°C sweet spot!
+        const midTemp = (optMin + optMax) * 0.5;
+        const halfSpan = Math.max(4.0, (optMax - optMin) * 0.5);
+        tempMult = 1.0 + 0.015 * (1.0 - Math.abs(t.temp - midTemp) / halfSpan);
       }
 
-      // Progressive tread degradation
+      // Progressive tread degradation driven by combined Pacejka slip & thermal blistering
       if (!car.inPitLane && speedMps > 2.0) {
+        const blisterPenalty = t.surfaceTemp > optMax + 10.0 ? 1.35 : 1.0;
         let wearStep =
-          0.00110 *
+          0.00108 *
           comp.wearRate *
           wearFuelMult *
           modTireWear *
-          (t.load * 4.0) *
-          (0.55 + Math.abs(curvature) * 1.10 + car.skidIntensity * 1.30) *
+          blisterPenalty *
+          (t.load * 3.8) *
+          (0.52 + Math.abs(curvature) * 1.05 + pacejkaUtil * 0.35 + car.skidIntensity * 1.20) *
           (speedMps / 68.0) *
           safeDt;
 
@@ -531,20 +655,32 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
         wearMult = 0.28;
       }
 
-      sumCornerMu += baseMu * tempMult * wearMult;
+      // Friction Ellipse Coupling: heavy longitudinal lockup/wheelspin trims available lateral grip slightly
+      const ellipseLatScale = clamp(1.0 - Math.max(0.0, normKappa - 0.55) * 0.18, 0.80, 1.0);
+      const ellipseLongScale = clamp(1.0 - Math.max(0.0, normAlpha - 0.65) * 0.14, 0.84, 1.0);
+      const cornerPeakMu = baseMu * tempMult * wearMult;
+
+      sumLatMu += cornerPeakMu * ellipseLatScale;
+      sumLongMu += cornerPeakMu * ellipseLongScale;
     }
 
     car.damage.hasPuncture = anyPunctured;
     const wetMasteryBoost = localW > 0.12 ? modWetGripBonus : 0.0;
-    muLat = (sumCornerMu * 0.25 + wetMasteryBoost) * modAeroGrip;
-    muLong = sumCornerMu * 0.25 + wetMasteryBoost;
+    muLat = (sumLatMu * 0.25 + wetMasteryBoost) * modAeroGrip;
+    muLong = sumLongMu * 0.25 + wetMasteryBoost;
+  } else {
+    for (let i = 0; i < 4; i++) {
+      car.tireTempsC[i] = 96.0;
+      car.tireCoreTempsC[i] = 96.0;
+    }
   }
 
   if (car.onGrass) {
     muLat = Math.min(muLat, 0.44);
     muLong = Math.min(muLong, 0.54);
   } else if (car.onCurb) {
-    muLat *= 0.96;
+    // Tactile FIA apex kerbs: high dry mechanical grip (0.985x) so clipping kerbs never causes unfair spin-outs
+    muLat *= localW > 0.32 ? 0.94 : 0.985;
   }
 
   // --------------------------------------------------------------------------
@@ -552,6 +688,9 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
   // --------------------------------------------------------------------------
   if (car.shiftCooldown > 0) car.shiftCooldown = Math.max(0, car.shiftCooldown - safeDt);
   if (car.revBlipTimer > 0) car.revBlipTimer = Math.max(0, car.revBlipTimer - safeDt);
+  if (car.cornerExitTorqueTimer > 0) {
+    car.cornerExitTorqueTimer = Math.max(0, finiteOr(car.cornerExitTorqueTimer, 0) - safeDt);
+  }
 
   const is8Speed = car.gearboxMode === 'AUTO_8SPD' || car.gearboxMode === 'MANUAL_8SPD';
   const is6Speed = car.gearboxMode === 'PRO_6SPD';
@@ -565,8 +704,9 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
     const gIdx = car.gear - 1;
     gearTopKmh = EIGHT_SPEED_TOPS[gIdx];
     const prevTop = gIdx > 0 ? EIGHT_SPEED_TOPS[gIdx - 1] : 0;
-    // Hybrid MGU-K + V6/V10 torque curve across G1..G8
-    torqueMult = 1.38 - gIdx * 0.045;
+    // Hybrid MGU-K + V6/V10 torque curve across G1..G8 + post-downshift corner-exit response boost
+    const exitPunch = car.cornerExitTorqueTimer > 0 ? 1.08 : 1.0;
+    torqueMult = (1.38 - gIdx * 0.045) * exitPunch;
     if (car.gearboxMode === 'MANUAL_8SPD' && car.speedKmh < prevTop * 0.65 && car.gear > 1) {
       torqueMult *= 0.56;
     }
@@ -589,14 +729,55 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
     }
   }
 
-  // Slipstream / DRS tow reduces aero drag and raises top speed up to 331 km/h (+15 km/h in G7/G8)!
+  // Exhilarating Slipstream Wake Drafting (within 48m) & DRS Slingshot Momentum Reservoir:
+  // If ctx.allCars is provided, also detect extended 48m wake directly; shape partial wake factors
+  // and sustain a 1.6s slingshot reservoir when pulling out laterally to pass!
+  let rawSlip = car.slipstreamFactor;
+  if (Array.isArray(ctx.allCars) && !car.inPitLane && car.speedKmh > 125.0) {
+    for (let i = 0; i < ctx.allCars.length; i++) {
+      const other = ctx.allCars[i];
+      if (!other || other === car || other.exploded || other.inPitLane || other.speedKmh < 120.0) continue;
+      let dsG = other.s - car.s;
+      if (dsG < -TRACK_GAME_LENGTH * 0.5) dsG += TRACK_GAME_LENGTH;
+      if (dsG > TRACK_GAME_LENGTH * 0.5) dsG -= TRACK_GAME_LENGTH;
+      const distAheadM = dsG * mPerGameM;
+      const latSepM = Math.abs(other.lateralOffset - car.lateralOffset);
+      if (distAheadM > 4.8 && distAheadM < 48.0 && latSepM < 2.45) {
+        const wake = (1.0 - (distAheadM - 4.8) / 43.2) * (1.0 - latSepM / 2.45);
+        if (wake > rawSlip) {
+          rawSlip = wake;
+          if (wake > 0.14) car.inSlipstream = true;
+        }
+      }
+    }
+  }
+  const shapedWake = rawSlip > 0.01
+    ? Math.pow(clamp(rawSlip, 0.0, 1.25), 0.72)
+    : (car.inSlipstream ? 0.68 : 0.0);
+
+  car.towReservoir = finiteOr(car.towReservoir, 0.0);
+  if (shapedWake >= car.towReservoir) {
+    car.towReservoir = Math.min(1.15, car.towReservoir + (shapedWake - car.towReservoir) * Math.min(1.0, safeDt * 7.5));
+  } else if (throttleIn > 0.60 && brakeIn < 0.08 && car.speedKmh > 170.0 && !car.inPitLane) {
+    // Carry slingshot momentum for ~1.6s after pulling out of the wake to complete the pass!
+    car.towReservoir = Math.max(0.0, car.towReservoir - safeDt * 0.62);
+  } else {
+    car.towReservoir = Math.max(0.0, car.towReservoir - safeDt * 2.8);
+  }
+  const activeTow = Math.max(shapedWake, car.towReservoir);
+  if (activeTow > 0.16 && !car.inPitLane && car.speedKmh > 140.0) {
+    car.inSlipstream = true;
+  }
+
+  // Slipstream / DRS tow reduces aero drag and raises top speed by +15..18 km/h (up to 331-334 km/h)!
   const rearWingLossKmh = isClassic ? 0.0 : clamp(finiteOr(car.damage?.rearWing, 0), 0, 1) * 22.0;
-  const towGainKmh = 15.0 + modDrsBonusKmh;
-  const slipBoostKmh = car.gear >= maxTopGear - 1 ? car.slipstreamFactor * towGainKmh : car.slipstreamFactor * 5.0;
+  const slingshotPulloutBonus = (car.towReservoir > shapedWake + 0.08 && Math.abs(steerIn) > 0.05) ? 2.2 : 0.0;
+  const towGainKmh = 15.6 + slingshotPulloutBonus + modDrsBonusKmh;
+  const slipBoostKmh = car.gear >= maxTopGear - 1 ? activeTow * towGainKmh : activeTow * 6.5;
   const careerCapBonusKmh = car.gear >= maxTopGear ? modTopKmh : modTopKmh * 0.25;
   const aeroTopKmh = Math.max(
     120.0,
-    (is8Speed ? 316.0 : (is6Speed ? 312.0 : 308.0)) + car.slipstreamFactor * towGainKmh + modTopKmh + 16.0 - rearWingLossKmh
+    (is8Speed ? 316.0 : (is6Speed ? 312.0 : 308.0)) + activeTow * towGainKmh + modTopKmh + 16.0 - rearWingLossKmh
   );
   const effectiveGearCapKmh = Math.max(85.0, gearTopKmh + slipBoostKmh + careerCapBonusKmh - rearWingLossKmh);
 
@@ -699,8 +880,19 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
       const aeroHeadroom = Math.max(0.08, 1.0 - Math.pow(aeroRatio, 2.25));
 
       // Mechanical rear-tire traction limit at low speed + Venturi ground-effect downforce boost at mid speed
+      // + exhilarating aero-tow closing surge when drafting in slipstream wake!
       const downforceTraction = 0.88 + 0.20 * Math.sin(Math.min(1.0, car.speedKmh / 210.0) * Math.PI);
-      let rawDrive = effThrottleIn * 14.0 * torqueMult * modPower * muLong * fuelMassMult * downforceTraction * aeroHeadroom;
+      const slipstreamSurge = (car.speedKmh > 145.0 && activeTow > 0.05) ? (1.0 + activeTow * 0.22) : 1.0;
+      let rawDrive =
+        effThrottleIn *
+        14.0 *
+        torqueMult *
+        modPower *
+        muLong *
+        fuelMassMult *
+        downforceTraction *
+        aeroHeadroom *
+        slipstreamSurge;
 
       // Smooth asymptotic soft-taper only when approaching a non-upshifting ceiling (G8, Manual cap, VSC, Pit)
       const willAutoUpshift = car.gearboxMode === 'AUTO_8SPD' && car.gear < 8 && !hardSpeedLimited;
@@ -740,9 +932,9 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
     accelMps2 -= effBrakeIn * brakePower;
   }
 
-  // Curb & Off-road Grass Drag
+  // Curb & Off-road Grass Drag (minimal drag on apex kerbs so corner-exit momentum stays crisp)
   if (car.onCurb) {
-    accelMps2 -= 1.1;
+    accelMps2 -= 0.42;
   } else if (car.onGrass) {
     accelMps2 -= 6.0 + (car.speedKmh > 135 ? (car.speedKmh - 135) * 0.15 : 0);
   }
@@ -760,7 +952,7 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
       if (car.gear > 2 && car.speedKmh <= Math.max(96.0, EIGHT_SPEED_DOWNSHIFT[car.gear - 2])) {
         car.gear -= 1;
         car.shiftCooldown = 0.11;
-        car.revBlipTimer = 0.095;
+        car.revBlipTimer = 0.11;
         if (callbacks.onGearShift) callbacks.onGearShift(car, car.gear, 'DOWN');
       } else if (car.gear === 2 && car.speedKmh <= 50.0) {
         car.gear = 1;
@@ -772,10 +964,12 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
         if (callbacks.onGearShift) callbacks.onGearShift(car, 2, 'UP');
       }
     } else {
-      // Mid-apex hold: prevent short-shifting when turning hard on partial throttle
+      // Mid-apex hold: prevent short-shifting when turning hard on partial throttle.
+      // Braking downshift bias: under heavy braking, downshift slightly earlier into the 10,800-13,800 RPM peak torque band!
       const cornerHoldOffset = (Math.abs(steerIn) > 0.62 && effThrottleIn < 0.65) ? 3.0 : 0.0;
+      const brakeDownshiftBias = effBrakeIn > 0.25 ? effBrakeIn * 6.5 : 0.0;
       const upshiftSpd = car.gear < 8 ? EIGHT_SPEED_UPSHIFT[car.gear - 1] + cornerHoldOffset : Infinity;
-      const downshiftSpd = car.gear > 1 ? EIGHT_SPEED_DOWNSHIFT[car.gear - 2] : -1;
+      const downshiftSpd = car.gear > 1 ? EIGHT_SPEED_DOWNSHIFT[car.gear - 2] + brakeDownshiftBias : -1;
 
       if (car.gear < 8 && effThrottleIn > 0.16 && effBrakeIn < 0.20 && car.speedKmh >= upshiftSpd) {
         car.gear += 1;
@@ -783,10 +977,11 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
         if (callbacks.onGearShift) callbacks.onGearShift(car, car.gear, 'UP');
       } else if (car.gear > 1 && car.speedKmh <= downshiftSpd) {
         car.gear -= 1;
-        car.shiftCooldown = 0.115;
-        car.revBlipTimer = 0.105;
+        car.shiftCooldown = 0.11;
+        car.revBlipTimer = 0.125;
+        car.cornerExitTorqueTimer = 0.28;
         if (callbacks.onGearShift) callbacks.onGearShift(car, car.gear, 'DOWN');
-        if (car.speedKmh > 120 && effBrakeIn > 0.30 && callbacks.onBackfire) {
+        if (car.speedKmh > 115 && effBrakeIn > 0.25 && callbacks.onBackfire) {
           callbacks.onBackfire(car);
         }
       }
@@ -794,11 +989,11 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
   }
 
   // --------------------------------------------------------------------------
-  // REALISTIC MECHANICAL GEAR-RATIO SAWTOOTH RPM SYNTHESIS (3,800 -> 12,850+ RPM)
+  // REALISTIC MECHANICAL GEAR-RATIO SAWTOOTH RPM SYNTHESIS (3,800 -> 13,800 RPM)
   // --------------------------------------------------------------------------
   let targetRpm;
   if (car.overRevTimer > 0) {
-    targetRpm = 13450 + Math.sin(nowMs * 0.12) * 300;
+    targetRpm = 13650 + Math.sin(nowMs * 0.12) * 240;
   } else if (is8Speed) {
     const gIdx = clamp(car.gear - 1, 0, 7);
     const gTop = EIGHT_SPEED_TOPS[gIdx];
@@ -811,29 +1006,32 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
       mechRpm = Math.max(launchClutchFloor, wheelRpm);
     } else {
       // G2..G8: Crisp mechanical gear-ratio sawtooth from EIGHT_SPEED_ENTRY_RPM (8,880..9,980)
-      // up to ~12,720-12,840 RPM at gTop, and up to ~13,180 RPM in G8 DRS/Slipstream tow!
+      // up to ~12,720-12,840 RPM at gTop, and up to ~13,350 RPM in G8 DRS/Slipstream tow!
       const vEntry = EIGHT_SPEED_UPSHIFT[gIdx - 1];
       const entryRpm = EIGHT_SPEED_ENTRY_RPM[gIdx];
       const peakRpm = gIdx === 7 ? F1_TOP_GEAR_RPM : F1_SHIFT_PEAK_RPM;
       if (car.speedKmh >= gTop) {
-        mechRpm = peakRpm + (car.speedKmh - gTop) * 22.0;
+        mechRpm = peakRpm + (car.speedKmh - gTop) * 24.0;
       } else if (car.speedKmh >= vEntry) {
         const span = Math.max(8.0, gTop - vEntry);
         mechRpm = entryRpm + ((car.speedKmh - vEntry) / span) * (peakRpm - entryRpm);
       } else {
-        mechRpm = 3800 + (car.speedKmh / Math.max(20.0, vEntry)) * (entryRpm - 3800);
+        // True mechanical gear-ratio RPM during corner braking & apex rotation (keeps revs in 9,400-11,400 RPM)
+        const directWheelRpm = (car.speedKmh / gTop) * peakRpm;
+        const entryMapRpm = 3800 + (car.speedKmh / Math.max(20.0, vEntry)) * (entryRpm - 3800);
+        mechRpm = Math.max(entryMapRpm, directWheelRpm * 0.96);
       }
     }
 
-    // Smooth bell-shaped drive-by-wire throttle blip on corner downshifts!
-    const blipEnv = car.revBlipTimer > 0 ? Math.sin((car.revBlipTimer / 0.105) * Math.PI) : 0.0;
-    const blipBoost = blipEnv * 1380;
+    // Crisp drive-by-wire throttle blip on corner downshifts into peak torque band (10,800-13,800 RPM)!
+    const blipEnv = car.revBlipTimer > 0 ? Math.sin((car.revBlipTimer / 0.125) * Math.PI) : 0.0;
+    const blipBoost = blipEnv * (1620 + effBrakeIn * 420);
 
     // Gentle high-RPM soft flutter only when riding top-gear / limiter ceiling
     const atCeiling = car.speedKmh >= effectiveCap - 1.2 && throttleIn > 0.5 && (car.gear === 8 || car.gearboxMode !== 'AUTO_8SPD' || hardSpeedLimited);
     const limiterFlutter = atCeiling ? Math.sin(nowMs * 0.10) * 155 : 0;
 
-    targetRpm = clamp(mechRpm + blipBoost + limiterFlutter, 3600, 13320);
+    targetRpm = clamp(mechRpm + blipBoost + limiterFlutter, 3600, 13800);
   } else if (is6Speed) {
     const gIdx = clamp(car.gear - 1, 0, 5);
     const gTop = SIX_SPEED_TOPS[gIdx];
@@ -844,19 +1042,47 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
       : (car.speedKmh >= vEntry
         ? entryRpm + ((car.speedKmh - vEntry) / Math.max(8, gTop - vEntry)) * (F1_TOP_GEAR_RPM - entryRpm)
         : 3800 + (car.speedKmh / Math.max(20, vEntry)) * (entryRpm - 3800));
-    const blipBoost = car.revBlipTimer > 0 ? Math.sin((car.revBlipTimer / 0.11) * Math.PI) * 1300 : 0;
-    targetRpm = clamp(mechRpm + blipBoost, 3600, 13250);
+    const blipBoost = car.revBlipTimer > 0 ? Math.sin((car.revBlipTimer / 0.125) * Math.PI) * 1550 : 0;
+    targetRpm = clamp(mechRpm + blipBoost, 3600, 13650);
   } else {
     const normGearRatio = Math.min(1.04, car.speedKmh / Math.max(60, gearTopKmh));
     const revBounce = car.speedKmh >= gearTopKmh - 1.0 && throttleIn > 0.5
       ? Math.sin(nowMs * 0.09) * 280
       : 0;
-    targetRpm = clamp(3600 + normGearRatio * 9150 + revBounce, 3600, 13200);
+    targetRpm = clamp(3600 + normGearRatio * 9150 + revBounce, 3600, 13400);
   }
 
-  // Fast ~45ms seamless-shift dog-ring drop on upshift; responsive mechanical tracking in-gear
-  const rpmRate = (targetRpm < car.rpm && car.shiftCooldown > 0.04) ? 62.0 : 52.0;
+  // Instantaneous rev-match blip snap on downshifts; ~45ms seamless dog-ring drop on upshifts
+  const rpmRate = car.revBlipTimer > 0.02
+    ? 78.0
+    : ((targetRpm < car.rpm && car.shiftCooldown > 0.04) ? 62.0 : 52.0);
   car.rpm += (targetRpm - car.rpm) * Math.min(1, safeDt * rpmRate);
+
+  // Split-Turbo + MGU-H Boost Gauge (0.0..2.4 bar) & Hybrid MGU-K ERS State (0.0..1.0)
+  const exhaustEnthalpy = clamp((car.rpm - 4100.0) / 8300.0, 0.0, 1.06);
+  const antiLagFloorBar = car.revBlipTimer > 0.0 ? 0.62 : (effThrottleIn > 0.05 ? 0.18 : 0.0);
+  const targetBoostBar = clamp(Math.max(antiLagFloorBar, effThrottleIn * exhaustEnthalpy * 2.40), 0.0, 2.40);
+  const boostRate = targetBoostBar >= finiteOr(car.turboBoostBar, 0.0) ? 7.2 : 12.5;
+  car.turboBoostBar = clamp(
+    finiteOr(car.turboBoostBar, 0.0) + (targetBoostBar - finiteOr(car.turboBoostBar, 0.0)) * Math.min(1, safeDt * boostRate),
+    0.0,
+    2.40
+  );
+
+  car.ersCharge = finiteOr(car.ersCharge, 1.0);
+  if (!isClassic && !car.inPitLane) {
+    if (effBrakeIn > 0.14 && car.speedKmh > 65.0) {
+      car.ersCharge = Math.min(1.0, car.ersCharge + effBrakeIn * 0.11 * safeDt);
+      car.ersDeploying = false;
+    } else if (effThrottleIn > 0.78 && car.speedKmh > 85.0 && car.ersCharge > 0.02) {
+      car.ersCharge = Math.max(0.0, car.ersCharge - 0.042 * safeDt);
+      car.ersDeploying = true;
+    } else {
+      car.ersDeploying = false;
+    }
+  } else {
+    car.ersDeploying = false;
+  }
 
   // --------------------------------------------------------------------------
   // 4. PLANTED MOBILE STEERING, DOWNFORCE GRIP & ZERO STRAIGHTAWAY YANK
@@ -871,9 +1097,19 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
   const fastCornerFactor = clamp((car.speedKmh - 150) / 140, 0, 1);
   const frontAeroEff = isClassic ? 1.0 : (1.0 - clamp(finiteOr(car.damage?.frontWing, 0), 0, 1) * 0.40 * fastCornerFactor);
 
-  // Subtle trail-braking front axle bite into corner apexes
-  const trailBrakeBite = (effBrakeIn > 0.05 && car.speedKmh > 65 && car.speedKmh < 235)
-    ? 1.0 + Math.min(0.06, effBrakeIn * 0.08)
+  // Low-speed Ackermann turn-in bite (< 135 km/h for hairpins/chicanes) + trail-braking front axle bite
+  // + high-speed stability calm (> 250 km/h for 130R / Maggotts-Becketts / Fuji 100R) + slingshot pass authority!
+  const hairpinTurnInBite = car.speedKmh < 138.0
+    ? 1.0 + (1.0 - clamp(car.speedKmh / 138.0, 0.0, 1.0)) * 0.22
+    : 1.0;
+  const highSpeedStability = (car.isPlayer && car.speedKmh > 250.0 && Math.abs(curvature) < 0.22)
+    ? 1.0 - clamp((car.speedKmh - 250.0) / 120.0, 0.0, 0.12)
+    : 1.0;
+  const slingshotSteerAuthority = (activeTow > 0.15 && Math.abs(steerIn) > 0.05 && Math.abs(curvature) < 0.15)
+    ? 1.0 + activeTow * 0.14
+    : 1.0;
+  const trailBrakeBite = (effBrakeIn > 0.05 && car.speedKmh > 55 && car.speedKmh < 245)
+    ? 1.0 + Math.min(0.08, effBrakeIn * 0.10)
     : 1.0;
 
   // Tire lateral grip factor (~1.00-1.03 on fresh dry slicks, softening progressively on wet/worn rubber)
@@ -887,32 +1123,53 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
     ? Math.sin(nowMs * 0.024) * car.damage.rearWing * 0.05 * brakeIn
     : 0.0;
 
+  const baseSpeedSteerScale = Math.min(28.5, Math.max(13.5, nextSpeedMps * 0.60) * hairpinTurnInBite) * highSpeedStability;
   const steerLatRate =
     nonLinSteer *
     steerAuthority *
     frontAeroEff *
     trailBrakeBite *
     tireSteerGrip *
-    Math.min(28.5, nextSpeedMps * 0.60);
+    slingshotSteerAuthority *
+    baseSpeedSteerScale;
 
   const centrifugalPush = curvature === 0.0 ? 0.0 : -curvature * (nextSpeedMps * nextSpeedMps) * 0.00315;
 
-  // High-speed Venturi aero downforce stabilizes sweepers; overspeeding tight hairpins or cliffed tires drifts wide
-  const aeroLatBonus = 1.0 + 0.24 * Math.min(1.0, (nextSpeedMps / 82.0) * (nextSpeedMps / 82.0)) * frontAeroEff;
-  const latGripCeilingMps = muLat * 8.4 * aeroLatBonus;
-  const rawCornerLoadMps = Math.abs(centrifugalPush) + Math.abs(steerLatRate) * 0.22;
+  // High-speed Venturi aero downforce stabilizes fast sweepers (> 250 km/h); overspeeding tight hairpins drifts wide
+  const aeroLatBonus = 1.0 + 0.32 * Math.min(1.15, (nextSpeedMps / 78.0) * (nextSpeedMps / 78.0)) * frontAeroEff;
+  const latGripCeilingMps = muLat * 8.55 * aeroLatBonus;
+  const rawCornerLoadMps = Math.abs(centrifugalPush) + Math.abs(steerLatRate) * 0.20;
   const slipExcessMps = Math.max(0, rawCornerLoadMps - latGripCeilingMps);
-  const slipExcessG = slipExcessMps / 8.4;
+  const slipExcessG = slipExcessMps / 8.55;
 
   const understeerDrift = (slipExcessMps > 0 && curvature !== 0.0)
-    ? Math.sign(centrifugalPush) * slipExcessMps * 0.82
+    ? Math.sign(centrifugalPush) * slipExcessMps * 0.78
     : 0.0;
 
-  const targetLatVel = steerLatRate + centrifugalPush + understeerDrift + suspensionPull * 6.0 + rearBrakeTwitch * 5.0;
+  // Tactile FIA apex kerb hook: banked inside kerb gently keeps the car hooked toward the track without spin-out
+  const curbApexHook = (car.onCurb && !car.onGrass && Math.abs(car.lateralOffset) > 1.0)
+    ? -Math.sign(car.lateralOffset) * Math.min(1.35, nextSpeedMps * 0.020)
+    : 0.0;
 
-  // Crisp pneumatic-trail self-aligning damping on straightaways for 100% zero drift!
+  const targetLatVel =
+    steerLatRate +
+    centrifugalPush +
+    understeerDrift +
+    curbApexHook +
+    suspensionPull * 6.0 +
+    rearBrakeTwitch * 5.0;
+
+  // Crisp pneumatic-trail self-aligning torque:
+  // - 100% zero straightaway drift when steerIn === 0 && curvature === 0
+  // - Snappy counter-steer damping (24.5) when flicking L->R->L through chicanes or pulling out for a slingshot pass!
   const onStraightNeutral = steerIn === 0.0 && curvature === 0.0 && suspensionPull === 0.0 && rearBrakeTwitch === 0.0;
-  const latDampRate = onStraightNeutral ? 22.0 : 15.5;
+  const isCounterSteering = (targetLatVel * car.lateralVel) < -0.35 || (Math.abs(steerIn) < 0.05 && Math.abs(car.lateralVel) > 0.4);
+  const latDampRate = onStraightNeutral
+    ? 22.0
+    : (isCounterSteering ? 24.5 : (activeTow > 0.15 ? 19.5 : 16.5));
+
+  // Sanitize any external wheel-to-wheel collision impulse before integrating so sidepod rubs never glitch
+  car.lateralVel = clamp(car.lateralVel, -16.5, 16.5);
   car.lateralVel += (targetLatVel - car.lateralVel) * Math.min(1, safeDt * latDampRate);
 
   if (onStraightNeutral && Math.abs(car.lateralVel) < 0.025) {
@@ -926,6 +1183,31 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
     car.relYaw = clamp((targetPitLat - car.lateralOffset) * 0.08, -0.30, 0.30);
   } else {
     car.lateralOffset += car.lateralVel * safeDt;
+
+    // Ultra-clean, non-glitchy wheel-to-wheel sidepod rubbing restitution (if allCars available in ctx)
+    if (Array.isArray(ctx.allCars)) {
+      for (let i = 0; i < ctx.allCars.length; i++) {
+        const other = ctx.allCars[i];
+        if (!other || other === car || other.exploded || other.inPitLane) continue;
+        let dsRub = other.s - car.s;
+        if (dsRub > TRACK_GAME_LENGTH * 0.5) dsRub -= TRACK_GAME_LENGTH;
+        if (dsRub < -TRACK_GAME_LENGTH * 0.5) dsRub += TRACK_GAME_LENGTH;
+        const absLongM = Math.abs(dsRub * mPerGameM);
+        const dLat = car.lateralOffset - other.lateralOffset;
+        const minSideSep = 1.92;
+        if (absLongM < 4.35 && Math.abs(dLat) < minSideSep) {
+          const pushSign = dLat >= 0 ? 1.0 : -1.0;
+          const overlap = minSideSep - Math.abs(dLat);
+          // Smooth spring separation + low-bounce restitution (e = 0.16), preserving >95% forward speed!
+          car.lateralOffset += pushSign * overlap * 0.52;
+          const relLatV = car.lateralVel - finiteOr(other.lateralVel, 0.0);
+          if (relLatV * pushSign < 0) {
+            car.lateralVel = finiteOr(other.lateralVel, 0.0) - relLatV * 0.16 + pushSign * 1.15;
+          }
+          car.speedKmh = Math.max(45.0, car.speedKmh - overlap * 8.5 * safeDt);
+        }
+      }
+    }
 
     // Pit-Wall & Armco Guardrail Clamping:
     // - Main Straight Pit Wall (s >= 948 || s <= 75): clamp right side at ROAD_HALF_WIDTH + 0.72 so cars
@@ -974,8 +1256,87 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
     ? 0.0
     : (centrifugalPush * 0.24) + nonLinSteer * (nextSpeedMps / 38.0);
 
+  // --------------------------------------------------------------------------
+  // 4B. FRONT-AXLE SELF-ALIGNING TORQUE (SAT) & 3D SUSPENSION PITCH/ROLL/HEAVE
+  // --------------------------------------------------------------------------
+  if (onStraightNeutral && Math.abs(car.lateralVel) < 0.04) {
+    car.selfAligningTorque = 0.0;
+  } else {
+    // Pneumatic trail peaks at small slip angles and fades as front tires saturate into understeer
+    const pneumaticTrail = Math.cos(clamp(Math.abs(frontSlipAngleRad) * 4.0, 0.0, 1.48));
+    const centeringTorque = -nonLinSteer * 0.38 * pneumaticTrail * clamp(muLat, 0.45, 1.20);
+    // Rear oversteer / wet-kerb slide catch torque: steers into unexpected lateral/oversteer slide
+    const slideMismatch = (car.lateralVel - steerLatRate * 0.85) / Math.max(14.0, nextSpeedMps * 0.42);
+    const oversteerDelta = rearSlipAngleRad - frontSlipAngleRad;
+    const catchTorque = clamp(-slideMismatch * 0.55 + oversteerDelta * 1.15, -0.75, 0.75);
+    const lowSpdGate = clamp(car.speedKmh / 22.0, 0.0, 1.0);
+    car.selfAligningTorque = clamp((centeringTorque + catchTorque) * lowSpdGate, -1.0, 1.0);
+  }
+
+  // 3D Chassis Pitch Dynamics: +0.028 rad nose-dive under heavy braking, -0.020 rad rear squat under launch/ERS punch
+  const targetPitchFromG = car.longG < 0.0
+    ? clamp((-car.longG / 4.55) * 0.028, 0.0, 0.028)
+    : clamp(-(car.longG / 1.42) * 0.020, -0.020, 0.0);
+  const shiftPitchNod = (car.shiftCooldown > 0.07 && car.revBlipTimer <= 0.0) ? -0.0032 : 0.0;
+  const sawtoothPhase = car.totalDistanceGameM * 22.5;
+  const kerbSawWave = car.onCurb ? Math.sin(sawtoothPhase) : 0.0;
+  const targetPitchRad = clamp(targetPitchFromG + shiftPitchNod + kerbSawWave * 0.0024, -0.024, 0.030);
+
+  // 2nd-order damped pitch spring (wn = 22 rad/s, zeta = 0.82)
+  car.chassisPitchVel = finiteOr(car.chassisPitchVel, 0.0);
+  car.chassisPitchRad = finiteOr(car.chassisPitchRad, 0.0);
+  const pitchAccel = 484.0 * (targetPitchRad - car.chassisPitchRad) - 36.0 * car.chassisPitchVel;
+  car.chassisPitchVel = clamp(car.chassisPitchVel + pitchAccel * safeDt, -0.85, 0.85);
+  car.chassisPitchRad = clamp(car.chassisPitchRad + car.chassisPitchVel * safeDt, -0.026, 0.031);
+  if (onStraightNeutral && Math.abs(targetPitchRad) < 0.0005 && Math.abs(car.chassisPitchRad) < 0.0004) {
+    car.chassisPitchRad = 0.0;
+    car.chassisPitchVel = 0.0;
+  }
+
+  // 3D Chassis Roll Dynamics: lateral G body roll + asymmetric sawtooth FIA kerb lift on Left or Right wheels!
+  const onLeftKerb = car.onCurb && car.lateralOffset < 0;
+  const onRightKerb = car.onCurb && car.lateralOffset > 0;
+  const kerbRollLift = onLeftKerb
+    ? (0.0115 + 0.0042 * kerbSawWave)
+    : (onRightKerb ? -(0.0115 + 0.0042 * kerbSawWave) : 0.0);
+  const targetRollRad = onStraightNeutral && !car.onCurb
+    ? 0.0
+    : clamp(-clamp(car.latG / 4.2, -1.0, 1.0) * 0.026 + kerbRollLift, -0.042, 0.042);
+
+  car.chassisRollVel = finiteOr(car.chassisRollVel, 0.0);
+  car.chassisRollRad = finiteOr(car.chassisRollRad, 0.0);
+  const rollAccel = 676.0 * (targetRollRad - car.chassisRollRad) - 42.5 * car.chassisRollVel;
+  car.chassisRollVel = clamp(car.chassisRollVel + rollAccel * safeDt, -1.10, 1.10);
+  car.chassisRollRad = clamp(car.chassisRollRad + car.chassisRollVel * safeDt, -0.045, 0.045);
+  if (onStraightNeutral && !car.onCurb && Math.abs(car.chassisRollRad) < 0.0004) {
+    car.chassisRollRad = 0.0;
+    car.chassisRollVel = 0.0;
+  }
+
+  // Venturi aero compression + 4-Corner Wheel Suspension Compression [fl, fr, rl, rr] in [0..1]
+  const aeroSquatNorm = 0.26 * Math.min(1.15, (car.speedKmh / 316.0) * (car.speedKmh / 316.0));
+  car.chassisHeaveM = -aeroSquatNorm * 0.032 + (car.onCurb ? Math.abs(kerbSawWave) * 0.006 : 0.0);
+  const pitchFrontDelta = (car.chassisPitchRad / 0.028) * 0.24;
+  const rollLeftDelta = -(car.chassisRollRad / 0.032) * 0.22;
+  const leftKerbBump = onLeftKerb ? (0.16 + 0.11 * kerbSawWave) : 0.0;
+  const rightKerbBump = onRightKerb ? (0.16 + 0.11 * kerbSawWave) : 0.0;
+
+  const compFL = clamp(0.25 + aeroSquatNorm * 0.42 + pitchFrontDelta + rollLeftDelta + leftKerbBump, 0.0, 1.0);
+  const compFR = clamp(0.25 + aeroSquatNorm * 0.42 + pitchFrontDelta - rollLeftDelta + rightKerbBump, 0.0, 1.0);
+  const compRL = clamp(0.25 + aeroSquatNorm * 0.58 - pitchFrontDelta + rollLeftDelta + leftKerbBump, 0.0, 1.0);
+  const compRR = clamp(0.25 + aeroSquatNorm * 0.58 - pitchFrontDelta - rollLeftDelta + rightKerbBump, 0.0, 1.0);
+  car.wheelCompression[0] = compFL;
+  car.wheelCompression[1] = compFR;
+  car.wheelCompression[2] = compRL;
+  car.wheelCompression[3] = compRR;
+  car.tires.FL.compression = compFL;
+  car.tires.FR.compression = compFR;
+  car.tires.RL.compression = compRL;
+  car.tires.RR.compression = compRR;
+
+  const curbTactileRumble = (car.onCurb && car.speedKmh > 65.0) ? 0.22 : 0.0;
   car.skidIntensity = clamp(
-    (scrapedWall ? 0.78 : 0.0) +
+    (scrapedWall ? 0.78 : curbTactileRumble) +
       slipExcessG * 0.92 +
       (effBrakeIn > 0.85 && nextSpeedMps > 25 ? Math.max(0, 1.12 - muLong) * 0.72 : 0),
     0.0,

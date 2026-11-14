@@ -4,6 +4,8 @@
    ========================================================================== */
 
 :root {
+  --app-w: 100vw;
+  --app-h: 100vh;
   --bg-glass: rgba(7, 12, 22, 0.82);
   --bg-glass-strong: rgba(6, 10, 19, 0.94);
   --border-subtle: rgba(135, 185, 255, 0.25);
@@ -13,6 +15,13 @@
   --accent-gold: #ffd600;
   --text-main: #f4f8ff;
   --text-dim: #9ab0cc;
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-w: 100dvw;
+    --app-h: 100dvh;
+  }
 }
 
 * {
@@ -26,8 +35,9 @@
 }
 
 html, body {
-  width: 100%;
-  height: 100%;
+  width: var(--app-w);
+  height: var(--app-h);
+  max-height: var(--app-h);
   overflow: hidden;
   background: #050811;
   color: var(--text-main);
@@ -38,7 +48,11 @@ html, body {
 
 #webgl-container {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: var(--app-w);
+  height: var(--app-h);
+  max-height: var(--app-h);
   z-index: 1;
 }
 
@@ -1485,8 +1499,13 @@ body.arcade-shader-active #arcade-scanlines {
    ========================================================================== */
 #mobile-controls-layer {
   position: fixed;
-  inset: 0;
-  z-index: 24;
+  top: 0;
+  left: 0;
+  width: var(--app-w);
+  height: var(--app-h);
+  max-height: var(--app-h);
+  z-index: 32;
+  transform: none !important;
   pointer-events: none;
 }
 
@@ -3438,20 +3457,648 @@ body.retro-1982-active #right-telemetry-dock {
   top: calc(max(6px, env(safe-area-inset-top)) + 106px);
 }
 
-@media (max-height: 460px) {
+@media (max-height: 560px) and (orientation: landscape) {
   body.retro-1982-active .hud-quick-actions {
-    top: calc(max(4px, env(safe-area-inset-top)) + 56px);
+    top: calc(max(4px, env(safe-area-inset-top)) + 52px);
   }
   body.retro-1982-active #right-telemetry-dock {
-    top: calc(max(4px, env(safe-area-inset-top)) + 85px);
+    top: calc(max(4px, env(safe-area-inset-top)) + 80px);
   }
 }
 
-@media (max-width: 580px) and (min-height: 461px) {
+@media (max-width: 680px) and (orientation: portrait), (max-width: 540px) {
   body.retro-1982-active .hud-quick-actions {
-    top: calc(max(6px, env(safe-area-inset-top)) + 112px);
+    top: calc(max(6px, env(safe-area-inset-top)) + 102px);
   }
   body.retro-1982-active #right-telemetry-dock {
-    top: calc(max(6px, env(safe-area-inset-top)) + 146px);
+    top: calc(max(6px, env(safe-area-inset-top)) + 132px);
+  }
+}
+
+/* ==========================================================================
+   PIXEL 11 PRO & REAL-PHONE DYNAMIC VIEWPORT + ZERO-OVERLAP OVERHAUL (#45/#47)
+   Targets:
+   - Pixel 11 Pro Portrait: 412x915 fullscreen & 412x765 Chrome-cropped (~20:9)
+   - Pixel 11 Pro Landscape: 915x412 fullscreen & 915x335 Chrome-cropped
+   - Compact Portrait 360x560, Compact Landscape 640x300, iPhone Pro/Max
+   ========================================================================== */
+
+/* 1. Lock every full-screen layer to dynamic visualViewport (--app-w / --app-h) */
+#pre-race-menu,
+#race-hud,
+#mobile-controls-layer,
+.garage-backdrop,
+.modal-backdrop,
+#replay-overlay {
+  width: var(--app-w);
+  height: var(--app-h);
+  max-height: var(--app-h);
+}
+
+#mobile-controls-layer {
+  z-index: 32 !important;
+  transform: none !important;
+}
+
+/* Lift bottom touch zones cleanly above Android gesture bar & iOS Home Bar */
+#touch-wheel-zone,
+#touch-arrow-zone,
+#touch-pedal-assembly {
+  bottom: max(18px, calc(env(safe-area-inset-bottom, 0px) + 12px));
+}
+
+/* Prevent flex/grid children on Showroom from overflowing tight phone viewports */
+#pre-race-menu,
+.showroom-stage-spacer,
+.showroom-bottom-dock,
+.circuit-showcase-strip,
+.track-card,
+.showroom-launch-pod {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Smooth finger scrolling in Garage, Career, Modals & Pit Strategy Drawer on phones */
+.garage-drawer,
+.career-drawer,
+.modal-box,
+#pit-strategy-drawer {
+  max-height: calc(var(--app-h) - 16px);
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
+.garage-drawer,
+.career-drawer {
+  height: calc(var(--app-h) - 16px);
+  margin: auto 0;
+  border-radius: 16px 0 0 16px;
+}
+
+.garage-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
+.modal-box,
+#pit-strategy-drawer {
+  overflow-y: auto;
+}
+
+.garage-scroll button,
+.garage-scroll input,
+.garage-scroll label,
+.modal-box button,
+#pit-strategy-drawer button {
+  touch-action: manipulation;
+}
+
+/* 2. Shared Phone & Tablet Compact HUD (Portrait <= 680px OR Landscape <= 560px) */
+@media (max-width: 900px), (max-height: 560px) {
+  .minimap-card {
+    width: 88px;
+    height: 62px;
+    border-radius: 9px;
+    padding: 2px;
+  }
+  .minimap-header {
+    top: 3px;
+    left: 5px;
+    right: 5px;
+  }
+  .minimap-circuit-tag {
+    font-size: 0.46rem;
+  }
+  .minimap-gps-dot {
+    font-size: 0.42rem;
+  }
+  .hud-quick-actions .quick-pill {
+    padding: 3px 6px;
+    min-height: 26px;
+    font-size: 0.62rem;
+    border-radius: 7px;
+  }
+}
+
+@media (max-width: 680px), (max-height: 560px) {
+  /* Hide redundant quick pills reachable via Pause/Settings so top sub-row NEVER collides with Minimap! */
+  #btn-live-fullscreen,
+  #btn-live-hand,
+  #btn-live-replay {
+    display: none !important;
+  }
+  .hud-quick-actions {
+    max-width: 192px;
+    gap: 3px;
+  }
+
+  /* Ultra-compact Right Telemetry Dock (single-row 4-tire strip + fuel bar) */
+  #right-telemetry-dock {
+    width: clamp(130px, 34vw, 156px);
+    gap: 3px;
+  }
+  #telemetry-2026-panel {
+    padding: 4px 6px;
+    gap: 2px;
+    border-radius: 8px;
+  }
+  .tel-row-head {
+    font-size: 0.50rem;
+  }
+  .comp-pill {
+    padding: 0 5px;
+    font-size: 0.48rem;
+  }
+  .tires-4grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 2px;
+  }
+  .tire-cell {
+    padding: 1px 2px 3px;
+    justify-content: center;
+    font-size: 0.49rem;
+    border-radius: 4px;
+  }
+  .tire-cell .t-corner,
+  .tire-cell .t-temp {
+    display: none;
+  }
+  .fuel-bar-wrap {
+    height: 4px;
+  }
+  .weather-mini {
+    display: none !important;
+  }
+  .dmg-row {
+    display: none !important;
+  }
+  .pit-action-row {
+    gap: 3px;
+  }
+  #btn-request-box,
+  #btn-toggle-pit-strategy {
+    padding: 3px 5px;
+    min-height: 22px;
+    font-size: 0.54rem;
+    border-radius: 6px;
+  }
+}
+
+/* Show damage row on taller portrait phones ONLY when a part is yellow/red damaged */
+@media (max-width: 680px) and (min-height: 680px) {
+  .dmg-row:has(.dmg-chip[style*="255"]) {
+    display: flex !important;
+    font-size: 0.46rem;
+    gap: 2px;
+  }
+}
+
+/* 3. PIXEL 11 PRO & ALL PORTRAIT PHONES (412x915, 412x765, 390x844, 360x560) */
+@media (max-width: 680px) and (orientation: portrait), (max-width: 540px) {
+  #pre-race-menu {
+    padding: max(6px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom)) 10px;
+  }
+  .showroom-topbar {
+    flex-direction: column;
+    align-items: stretch;
+    flex-wrap: nowrap;
+    gap: 4px;
+  }
+  .brand-kicker {
+    font-size: 0.50rem;
+  }
+  .brand-title-row {
+    gap: 6px;
+  }
+  .showroom-title {
+    font-size: clamp(1.16rem, 5.2vw, 1.46rem);
+  }
+  .showroom-circuit-pill {
+    font-size: 0.54rem;
+    padding: 2px 8px;
+  }
+  .showroom-career-pill {
+    display: none !important;
+  }
+  .showroom-top-actions {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    gap: 5px;
+  }
+  .glass-action-pill {
+    min-height: 30px;
+    padding: 4px 9px;
+    font-size: 0.64rem;
+  }
+  #btn-open-garage .pill-label,
+  #btn-menu-audio .pill-label,
+  #btn-launch-1982-direct .pill-label {
+    display: none !important;
+  }
+  .orbit-hint-chip {
+    font-size: 0.54rem;
+    padding: 3px 9px;
+  }
+  .showroom-bottom-dock {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  .circuit-showcase-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 5px;
+  }
+  .track-card {
+    padding: 4px 6px;
+    gap: 1px;
+    border-radius: 9px;
+  }
+  .tc-svg {
+    height: 17px;
+  }
+  .tc-name,
+  .tc-desc,
+  .tc-len {
+    display: none !important;
+  }
+  .tc-short {
+    display: block !important;
+    font-size: 0.62rem;
+  }
+  .showroom-launch-pod {
+    padding: 6px 8px;
+    gap: 5px;
+    border-radius: 11px;
+  }
+  .setup-summary-bar {
+    padding: 3px 6px;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .sum-chip {
+    font-size: 0.54rem;
+    padding: 1px 5px;
+  }
+  .launch-btn {
+    min-height: 40px;
+    padding: 8px 12px;
+    font-size: 0.92rem;
+  }
+
+  /* Crisp 6-Column 2-Row Broadcast Top Bar + Zero-Collision Sub-Header */
+  .top-hud-bar {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 3px;
+    padding: max(5px, env(safe-area-inset-top)) 8px 4px 8px;
+  }
+  .hud-stat {
+    min-width: 0;
+    padding: 2px 6px;
+    border-radius: 7px;
+  }
+  .hud-stat.stat-score { grid-column: span 2; }
+  .hud-stat.center-timer { grid-column: span 2; }
+  .hud-stat.stat-pos { grid-column: span 2; }
+  .hud-stat.stat-lap { grid-column: span 3; }
+  .hud-stat.speed-cluster { grid-column: span 3; }
+  .stat-lbl {
+    font-size: 0.48rem;
+  }
+  .stat-val,
+  .gear-big-num {
+    font-size: 0.86rem;
+  }
+  .stat-sub {
+    font-size: 0.50rem;
+  }
+
+  /* Left Minimap (x: 8..100) & Right 5 Quick Pills (x: ~224..404) -> 124px horizontal clearance! */
+  .minimap-card {
+    top: calc(max(5px, env(safe-area-inset-top)) + 86px);
+    left: 8px;
+    width: 92px;
+    height: 64px;
+  }
+  .hud-quick-actions {
+    top: calc(max(5px, env(safe-area-inset-top)) + 86px);
+    right: 8px;
+  }
+  #right-telemetry-dock {
+    top: calc(max(5px, env(safe-area-inset-top)) + 116px);
+    right: 8px;
+    width: clamp(134px, 36vw, 158px);
+  }
+  .caution-banner {
+    top: calc(max(5px, env(safe-area-inset-top)) + 190px);
+    max-width: 92vw;
+    padding: 4px 10px;
+    font-size: 0.64rem;
+  }
+  #engineer-radio-toast {
+    top: calc(max(5px, env(safe-area-inset-top)) + 220px);
+    max-width: 90vw;
+    padding: 4px 11px;
+    font-size: 0.64rem;
+  }
+
+  /* Portrait Touch Wheel, Arrows & Pedals — never collide horizontally even at 320px-412px */
+  #touch-wheel-zone,
+  #touch-arrow-zone,
+  #touch-pedal-assembly {
+    width: clamp(134px, 43vw, 188px);
+    min-width: 0;
+    max-width: 46vw;
+  }
+  #touch-wheel-zone {
+    left: max(2.5%, env(safe-area-inset-left));
+    right: auto;
+    height: clamp(112px, 22dvh, 162px);
+  }
+  #mobile-controls-layer.left-handed #touch-wheel-zone {
+    left: auto;
+    right: max(2.5%, env(safe-area-inset-right));
+  }
+  #touch-arrow-zone {
+    left: max(2.5%, env(safe-area-inset-left));
+    right: auto;
+    height: clamp(92px, 18dvh, 132px);
+  }
+  #mobile-controls-layer.left-handed #touch-arrow-zone {
+    left: auto;
+    right: max(2.5%, env(safe-area-inset-right));
+  }
+  #touch-pedal-assembly {
+    right: max(2.5%, env(safe-area-inset-right));
+    left: auto;
+    height: clamp(112px, 22dvh, 162px);
+  }
+  #mobile-controls-layer.left-handed #touch-pedal-assembly {
+    right: auto;
+    left: max(2.5%, env(safe-area-inset-left));
+  }
+  .wheel-ring-outer {
+    width: min(100%, 152px);
+    max-height: calc(100% - 14px);
+  }
+  .control-caption {
+    font-size: 0.48rem;
+  }
+
+  /* Drawers & Career Grids on Portrait */
+  .garage-drawer,
+  .garage-drawer.career-drawer {
+    width: min(440px, 96vw);
+  }
+  .career-teams-grid {
+    grid-template-columns: 1fr;
+  }
+  .career-stats {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .modal-actions {
+    flex-direction: column;
+  }
+  #replay-transport-bar {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .replay-timeline {
+    order: -1;
+    flex: 1 1 100%;
+  }
+}
+
+/* Short Portrait (e.g. 360x560): hide orbit hint & wheel caption to maximize 3D viewport */
+@media (max-width: 680px) and (max-height: 640px) and (orientation: portrait) {
+  .orbit-hint-chip,
+  .control-caption {
+    display: none !important;
+  }
+  .launch-btn {
+    min-height: 36px;
+    padding: 6px 10px;
+    font-size: 0.86rem;
+  }
+}
+
+/* 4. PIXEL 11 PRO & ALL LANDSCAPE PHONES (915x412, 915x335, 844x390, 932x430, 640x300) */
+@media (max-height: 560px) and (orientation: landscape), (min-width: 541px) and (max-height: 480px) {
+  #pre-race-menu {
+    padding: max(4px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  }
+  .showroom-topbar {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .showroom-brand {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .showroom-top-actions {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    gap: 4px;
+  }
+  .showroom-title {
+    font-size: clamp(1.06rem, 3.6dvh, 1.32rem);
+  }
+  .showroom-circuit-pill {
+    padding: 2px 8px;
+    font-size: 0.54rem;
+  }
+  .showroom-career-pill,
+  .orbit-hint-chip {
+    display: none !important;
+  }
+  .glass-action-pill {
+    min-height: 28px;
+    padding: 3px 8px;
+    font-size: 0.64rem;
+  }
+  .glass-action-pill .pill-label {
+    display: none !important;
+  }
+  .showroom-bottom-dock {
+    grid-template-columns: minmax(0, 1.85fr) minmax(205px, 0.85fr);
+    gap: 6px;
+    align-items: end;
+  }
+  .circuit-showcase-strip {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 4px;
+  }
+  .track-card {
+    padding: 3px 4px;
+    gap: 1px;
+    border-radius: 8px;
+  }
+  .tc-svg {
+    height: clamp(14px, 4.4dvh, 20px);
+  }
+  .tc-name,
+  .tc-desc,
+  .tc-len {
+    display: none !important;
+  }
+  .tc-short {
+    display: block !important;
+    font-size: 0.56rem;
+  }
+  .showroom-launch-pod {
+    padding: 4px 6px;
+    gap: 3px;
+    border-radius: 10px;
+  }
+  .setup-summary-bar {
+    padding: 2px 5px;
+    gap: 3px;
+  }
+  .sum-chip {
+    padding: 1px 4px;
+    font-size: 0.50rem;
+  }
+  .sum-edit {
+    font-size: 0.50rem;
+  }
+  .launch-btn {
+    min-height: clamp(30px, 9.5dvh, 36px);
+    padding: 4px 10px;
+    font-size: 0.84rem;
+  }
+
+  /* Single-Row Top Broadcast Bar + Ultra-High Telemetry Dock (ends <= y=138px!) */
+  .top-hud-bar {
+    display: flex;
+    padding: max(3px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) 3px max(10px, env(safe-area-inset-left));
+    gap: 4px;
+  }
+  .hud-stat {
+    padding: 2px 6px;
+    border-radius: 6px;
+  }
+  .stat-lbl {
+    font-size: 0.46rem;
+  }
+  .stat-val,
+  .gear-big-num {
+    font-size: 0.82rem;
+  }
+  .stat-sub {
+    font-size: 0.48rem;
+  }
+  .minimap-card {
+    top: calc(max(3px, env(safe-area-inset-top)) + 39px);
+    left: max(8px, env(safe-area-inset-left));
+    width: 88px;
+    height: 60px;
+  }
+  .hud-quick-actions {
+    top: calc(max(3px, env(safe-area-inset-top)) + 39px);
+    right: max(8px, env(safe-area-inset-right));
+  }
+  #right-telemetry-dock {
+    top: calc(max(3px, env(safe-area-inset-top)) + 67px);
+    right: max(8px, env(safe-area-inset-right));
+    width: clamp(136px, 18vw, 158px);
+    gap: 2px;
+  }
+  .caution-banner {
+    top: calc(max(3px, env(safe-area-inset-top)) + 39px);
+    padding: 3px 9px;
+    font-size: 0.62rem;
+  }
+  #engineer-radio-toast {
+    top: calc(max(3px, env(safe-area-inset-top)) + 66px);
+    padding: 3px 10px;
+    font-size: 0.60rem;
+  }
+
+  /* Landscape Touch Wheel, Arrows & Pedals — sits cleanly in y=195..325px below Telemetry Dock */
+  #touch-wheel-zone,
+  #touch-arrow-zone,
+  #touch-pedal-assembly {
+    width: clamp(136px, 22vw, 196px);
+    min-width: 0;
+    max-width: 28vw;
+    height: clamp(92px, 34dvh, 144px);
+    bottom: max(14px, calc(env(safe-area-inset-bottom, 0px) + 10px));
+  }
+  #touch-wheel-zone,
+  #touch-arrow-zone {
+    left: max(2%, env(safe-area-inset-left));
+    right: auto;
+  }
+  #mobile-controls-layer.left-handed #touch-wheel-zone,
+  #mobile-controls-layer.left-handed #touch-arrow-zone {
+    left: auto;
+    right: max(2%, env(safe-area-inset-right));
+  }
+  #touch-pedal-assembly {
+    right: max(2%, env(safe-area-inset-right));
+    left: auto;
+  }
+  #mobile-controls-layer.left-handed #touch-pedal-assembly {
+    right: auto;
+    left: max(2%, env(safe-area-inset-left));
+  }
+  .wheel-ring-outer {
+    width: min(100%, 134px);
+    max-height: 100%;
+  }
+  .control-caption {
+    display: none !important;
+  }
+
+  /* Compact Drawers, Modals & Replay Transport on 335px-430px Landscape */
+  .garage-drawer.career-drawer {
+    width: min(620px, 96vw);
+  }
+  .career-teams-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .team-perk,
+  .cal-name {
+    display: none;
+  }
+  .career-calendar {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .pause-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .pause-actions .launch-btn {
+    grid-column: 1 / -1;
+  }
+  .modal-box {
+    padding: 10px 14px;
+  }
+  .results-table {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 5px;
+  }
+  #replay-transport-bar {
+    gap: 4px;
+    padding: 4px 6px;
+  }
+  .replay-btn {
+    min-height: 28px;
+    min-width: 30px;
+    padding: 2px 6px;
+    font-size: 0.62rem;
+  }
+}
+
+/* Ultra-short Chrome-cropped Landscape (e.g. Pixel 11 Pro 915x335 & 640x300) */
+@media (max-height: 380px) and (orientation: landscape) {
+  .brand-wing-row {
+    display: none;
   }
 }

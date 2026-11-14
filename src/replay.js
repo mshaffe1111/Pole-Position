@@ -118,12 +118,21 @@ export class ReplayDirector {
     this._flybyBuffetTimer = 0;
     this._flybyBuffetStrength = 0;
 
-    // Camera smoothing, cut detection & FOV restoration
+    // Camera smoothing, cut detection, FOV restoration & Auto TV Director state
     this._savedCameraFov = null;
     this._currentFov = 58;
     this._cameraJustCut = true;
     this._orbitAngle = 0.58;
     this._heliPhase = 0.0;
+    this.autoDirector = options.autoDirector !== undefined ? !!options.autoDirector : true;
+    this._directorActiveMode = 0;
+    this._directorCutHoldTimer = 0;
+    this._lastActionEval = {
+      score: 0,
+      recommendedMode: 0,
+      reason: 'TRACKSIDE',
+      nearestRivalDistM: Infinity,
+    };
 
     // Per-car VFX continuity caches (brake rotor thermal glow, gearshift backfires, tire compounds)
     this._recBrakeGlow = new Map();
@@ -172,6 +181,15 @@ export class ReplayDirector {
     this._cameraJustCut = true;
     this._orbitAngle = 0.58;
     this._heliPhase = 0.0;
+    this.autoDirector = true;
+    this._directorActiveMode = 0;
+    this._directorCutHoldTimer = 0;
+    this._lastActionEval = {
+      score: 0,
+      recommendedMode: 0,
+      reason: 'TRACKSIDE',
+      nearestRivalDistM: Infinity,
+    };
 
     this._recBrakeGlow.clear();
     this._prevInterpGears.clear();
@@ -486,16 +504,112 @@ export class ReplayDirector {
   }
 
   setCameraMode(idx) {
+    if (idx === 'TV_DIRECTOR' || idx === 'AUTO') {
+      this.autoDirector = true;
+      idx = 0;
+    }
     const count = REPLAY_CAMERA_MODES.length;
     const next = ((Math.floor(finiteOr(idx, 0)) % count) + count) % count;
-    if (next !== this.cameraModeIdx) {
+    if (next !== this.cameraModeIdx || this._directorActiveMode !== next) {
       this.cameraModeIdx = next;
+      this._directorActiveMode = next;
+      this._directorCutHoldTimer = 0;
       this._cameraJustCut = true;
       this._activeTrackCamIdx = -1;
       this._flybyFiredForCamId = -1;
       this._flybyBuffetTimer = 0;
     }
     return this.cameraModeIdx;
+  }
+
+  setAutoDirector(enabled = true) {
+    this.autoDirector = !!enabled;
+    this._directorCutHoldTimer = 0;
+    if (!this.autoDirector) {
+      this._directorActiveMode = this.cameraModeIdx;
+    }
+    return this.autoDirector;
+  }
+
+  toggleAutoDirector() {
+    return this.setAutoDirector(!this.autoDirector);
+  }
+
+  // Live broadcast action-intensity scorer for Action-Driven Auto TV Director cutting
+  scoreActionIntensity(focusCar, focusFrame = null, allCars = this._interpCarPool) {
+    if (!focusCar || focusCar.exploded) {
+      return {
+        score: 0,
+        recommendedMode: 0,
+        reason: 'TRACKSIDE',
+        nearestRivalDistM: Infinity,
+      };
+    }
+
+    let nearestRivalDistM = Infinity;
+    let nearestSignedDeltaS = Infinity;
+    const carsArr = Array.isArray(allCars) ? allCars : this._interpCarPool;
+    const n = carsArr.length;
+
+    for (let i = 0; i < n; i++) {
+      const other = carsArr[i];
+      if (!other || other === focusCar || other.id === focusCar.id || other.exploded) continue;
+      const dS = signedWrapDeltaS(other.s - focusCar.s);
+      const dLat = (other.lateralOffset || 0) - (focusCar.lateralOffset || 0);
+      const distM = Math.hypot(dS, dLat * 0.85);
+      if (distM < nearestRivalDistM) {
+        nearestRivalDistM = distM;
+        nearestSignedDeltaS = dS;
+      }
+    }
+
+    const speedKmh = focusCar.speedKmh || 0;
+    const brakeIn = focusCar.brakeInput || 0;
+    const skid = focusCar.skidIntensity || 0;
+    const onCurb = !!focusCar.onCurb;
+    const drsHighSpeed = speedKmh > 290 || (!!focusCar.drsActive && speedKmh > 265);
+    const absCurv = Math.abs(focusFrame?.curvature || 0);
+
+    let score = 10;
+    let recommendedMode = 0;
+    let reason = 'TRACKSIDE';
+
+    // 1. Close wheel-to-wheel rival battle (< 12m): highest broadcast priority!
+    if (nearestRivalDistM < 12.0) {
+      const closeness01 = clamp(1.0 - nearestRivalDistM / 12.0, 0, 1);
+      score = 72 + closeness01 * 28;
+      if (nearestSignedDeltaS < -0.75) {
+        // Rival charging right behind our diffuser -> Rear-Wing Exhaust Action Cam!
+        recommendedMode = 4;
+        reason = 'WHEEL_TO_WHEEL_DEFENSE';
+      } else {
+        // Attacking rival ahead / side-by-side -> Onboard Halo T-Cam!
+        recommendedMode = 2;
+        reason = 'WHEEL_TO_WHEEL_ATTACK';
+      }
+    } else if ((brakeIn > 0.58 && speedKmh > 95) || skid > 0.32) {
+      // 2. Heavy braking zone / tire lockup skid -> Onboard T-Cam or Nose Kerb Cam!
+      score = 54 + Math.max(brakeIn, skid) * 24;
+      recommendedMode = onCurb ? 3 : 2;
+      reason = 'HEAVY_BRAKING_SKID';
+    } else if (onCurb && speedKmh > 105) {
+      // 3. Aggressive apex kerb riding -> Razor-low Nose Wing Kerb Cam!
+      score = 48 + clamp((speedKmh - 105) / 200, 0, 1) * 16;
+      recommendedMode = 3;
+      reason = 'APEX_KERB_RIDING';
+    } else if (drsHighSpeed) {
+      // 4. High-speed DRS zone (> 290 km/h) or fast sweeper -> Heli Aerial Pursuit or Trackside TV Cam!
+      score = 42 + clamp((speedKmh - 275) / 55, 0, 1) * 18;
+      recommendedMode = (absCurv > 0.042 || nearestRivalDistM < 26.0) ? 1 : 0;
+      reason = recommendedMode === 1 ? 'HIGH_SPEED_SWEEPER' : 'HIGH_SPEED_DRS';
+    }
+
+    const res = this._lastActionEval;
+    res.score = Math.round(score);
+    res.recommendedMode = recommendedMode;
+    res.reason = reason;
+    res.nearestRivalDistM = nearestRivalDistM;
+    return res;
   }
 
   cycleCameraMode(step = 1) {
@@ -729,6 +843,10 @@ export class ReplayDirector {
     const currentTimeSec = clamp(this.playheadSec - firstTime, 0, durationSec);
     const progress01 = durationSec > 1e-6 ? clamp(currentTimeSec / durationSec, 0, 1) : 0;
     const frameLap = alpha < 0.5 ? f0.currentLap : f1.currentLap;
+    const activeCamLabel =
+      this.cameraModeIdx === 0 && this.autoDirector && this._directorActiveMode !== 0
+        ? `TV DIRECTOR • ${this.getCameraLabel(this._directorActiveMode)}`
+        : this.getCameraLabel();
 
     return {
       active: this.isPlaying,
@@ -738,7 +856,10 @@ export class ReplayDirector {
       durationSec,
       progress01,
       cameraModeIdx: this.cameraModeIdx,
-      cameraLabel: this.getCameraLabel(),
+      directorCameraIdx: this._directorActiveMode,
+      cameraLabel: activeCamLabel,
+      actionScore: this._lastActionEval.score,
+      actionReason: this._lastActionEval.reason,
       focusCarIndex: safeFocusIdx,
       focusCarId: focusCar ? focusCar.id : '',
       focusCarName: focusCar ? focusCar.name : '',
@@ -980,12 +1101,46 @@ export class ReplayDirector {
     const carPos = focusFrame.pos;
     const isPortrait = (camera.aspect || 1.5) < 0.85;
     const speedNorm = clamp((focusCar.speedKmh || 0) / 320.0, 0, 1.08);
-    const mode = this.cameraModeIdx;
+
+    // Evaluate live action intensity for Action-Driven Auto TV Director cutting
+    const actionEval = this.scoreActionIntensity(focusCar, focusFrame, this._interpCarPool);
+    let mode = this.cameraModeIdx;
+
+    if (this.cameraModeIdx === 0 && this.autoDirector) {
+      this._ensureTrackCameras(track);
+      const previewSel = this._selectActiveTracksideCamera(focusCar.s);
+      const flybyDeltaS = previewSel?.cam
+        ? Math.abs(signedWrapDeltaS(previewSel.cam.s - focusCar.s))
+        : 999;
+
+      if (!this.paused) {
+        this._directorCutHoldTimer = Math.max(0, this._directorCutHoldTimer - rawDt);
+      }
+
+      // Hold or return to Trackside TV Cam right during a < 22m fly-by pass (unless in a < 10m wheel-to-wheel duel)
+      const inFlybyWindow = flybyDeltaS < 22.0 && actionEval.nearestRivalDistM >= 10.0;
+      let desiredDirMode = 0;
+      if (!inFlybyWindow && actionEval.score >= 46 && actionEval.recommendedMode !== 0) {
+        desiredDirMode = actionEval.recommendedMode;
+      }
+
+      if (desiredDirMode !== this._directorActiveMode) {
+        const urgentWheelToWheel = actionEval.nearestRivalDistM < 12.0 && desiredDirMode !== 0;
+        if (this._directorCutHoldTimer <= 0 || urgentWheelToWheel || inFlybyWindow) {
+          this._directorActiveMode = desiredDirMode;
+          this._directorCutHoldTimer = urgentWheelToWheel ? 2.1 : 1.65;
+          this._cameraJustCut = true;
+        }
+      }
+      mode = this._directorActiveMode;
+    } else {
+      this._directorActiveMode = this.cameraModeIdx;
+    }
 
     camera.up.set(0, 1, 0);
 
     // ------------------------------------------------------------------------
-    // MODE 0: FOM TRACKSIDE TV CAM (Dynamic Telephoto 26°..52°..58° + Doppler Fly-By!)
+    // MODE 0: FOM TRACKSIDE TV CAM (Cinema Zoom 58° -> 38°, <18m Shake & Fly-By!)
     // ------------------------------------------------------------------------
     if (mode === 0) {
       this._ensureTrackCameras(track);
@@ -994,6 +1149,7 @@ export class ReplayDirector {
         const activeCam = sel.cam;
         const deltaS = signedWrapDeltaS(activeCam.s - focusCar.s);
         const absDeltaS = Math.abs(deltaS);
+        const distWorldM = activeCam.pos.distanceTo(carPos);
 
         // Reset fly-by trigger if car was scrubbed well away from this camera station
         if (this._flybyFiredForCamId === activeCam.id && absDeltaS > 18.0) {
@@ -1009,39 +1165,44 @@ export class ReplayDirector {
           !focusCar.exploded
         ) {
           this._flybyFiredForCamId = activeCam.id;
-          this._flybyBuffetTimer = 0.24;
-          this._flybyBuffetStrength = clamp(focusCar.speedKmh / 315, 0.2, 1.0) * 0.032;
+          this._flybyBuffetTimer = 0.28;
+          this._flybyBuffetStrength = clamp(focusCar.speedKmh / 310, 0.25, 1.0) * 0.036;
           callbacks?.onFlyby?.(focusCar.speedKmh);
         }
 
         this._camDesiredPos.copy(activeCam.pos);
 
-        // Subtle high-speed aerodynamic pressure shudder on the lens right at closest pass
+        // Subtle high-speed camera shake when the car blasts past within 18m + closest-pass impulse shudder
+        const minPassDistM = Math.min(distWorldM, absDeltaS);
+        let shakeY = 0;
+        let shakeX = 0;
+        if (!this.paused && minPassDistM < 18.0 && focusCar.speedKmh > 45 && !focusCar.exploded) {
+          const prox18 = clamp(1.0 - minPassDistM / 18.0, 0, 1);
+          const spdScale = clamp(focusCar.speedKmh / 300.0, 0.2, 1.15);
+          const proxAmp = prox18 * prox18 * spdScale * 0.038;
+          const phase = this.playheadSec * 128.0;
+          shakeY += Math.sin(phase) * proxAmp;
+          shakeX += Math.cos(phase * 0.84) * proxAmp * 0.65;
+        }
         if (!this.paused && this._flybyBuffetTimer > 0) {
           this._flybyBuffetTimer = Math.max(0, this._flybyBuffetTimer - rawDt);
-          const env = (this._flybyBuffetTimer / 0.24) * this._flybyBuffetStrength;
-          this._camDesiredPos.y += Math.sin(this._flybyBuffetTimer * 135.0) * env;
-          this._camDesiredPos.x += Math.cos(this._flybyBuffetTimer * 108.0) * env * 0.6;
+          const env = (this._flybyBuffetTimer / 0.28) * this._flybyBuffetStrength;
+          shakeY += Math.sin(this._flybyBuffetTimer * 135.0) * env;
+          shakeX += Math.cos(this._flybyBuffetTimer * 108.0) * env * 0.6;
         }
+        this._camDesiredPos.y += shakeY;
+        this._camDesiredPos.x += shakeX;
 
-        // Lead the car's nose slightly like a veteran FOM broadcast cameraman
+        // Whip-pan framing: lead nose on approach (+deltaS) and swing smoothly onto rear diffuser on exit (-deltaS)
+        const whipLeadM = clamp(deltaS * 0.042, -0.75, 1.75);
         this._camDesiredLook
           .copy(carPos)
-          .addScaledVector(this._carUp, 0.68)
-          .addScaledVector(this._carFwd, 1.35);
+          .addScaledVector(this._carUp, 0.68 + shakeY * 0.35)
+          .addScaledVector(this._carFwd, whipLeadM);
 
-        // Dynamic Telephoto Box-Lens Zoom:
-        // Widens to 58° right at closest approach (~11-18m), 52° at mid-range (~52m),
-        // and narrows smoothly from 52° down to 26° at distance (~220m+)!
-        const distWorldM = activeCam.pos.distanceTo(carPos);
-        let targetFov;
-        if (distWorldM <= 52.0) {
-          const uNear = smoothstep01((distWorldM - 16.5) / (52.0 - 16.5));
-          targetFov = lerp(58.0, 52.0, uNear);
-        } else {
-          const uFar = smoothstep01((distWorldM - 52.0) / (215.0 - 52.0));
-          targetFov = lerp(52.0, 26.0, uFar);
-        }
+        // Cinema Zoom-In: smooth focal-length zoom-in from FOV 58° afar (>= 135m) to 38° at closest pass (<= 14.5m)!
+        const zoomU = smoothstep01((distWorldM - 14.5) / (135.0 - 14.5));
+        const targetFov = lerp(38.0, 58.0, zoomU);
 
         camera.position.copy(this._camDesiredPos);
 
@@ -1049,10 +1210,10 @@ export class ReplayDirector {
           this._camSmoothedLook.copy(this._camDesiredLook);
           this._currentFov = targetFov;
         } else {
-          // Faster whip-pan tracking near closest pass so the car stays framed cleanly
-          const panSpeed = distWorldM < 30.0 ? 26.0 : 14.5;
+          // Accelerated whip-pan tracking near closest pass (< 28m) so high-speed fly-bys stay framed cleanly
+          const panSpeed = distWorldM < 28.0 ? 28.5 : 14.5;
           const panAlpha = 1.0 - Math.exp(-rawDt * panSpeed);
-          const zoomAlpha = 1.0 - Math.exp(-rawDt * 9.5);
+          const zoomAlpha = 1.0 - Math.exp(-rawDt * 10.5);
           this._camSmoothedLook.lerp(this._camDesiredLook, panAlpha);
           this._currentFov = lerp(this._currentFov, targetFov, zoomAlpha);
         }

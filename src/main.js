@@ -20,25 +20,34 @@ import {
   PRO_2026_LENGTHS,
   AI_DRIVER_ROSTER,
   WEATHER_REGIMES,
-} from './config.js';
-import { FujiTrack } from './track.js';
-import { AssetLibrary, FormulaCarRig, PitCrewDiorama, EffectsManager } from './models.js';
-import { WeatherSystem } from './weather.js';
-import { createVehicleState, stepVehiclePhysics240Hz, shiftGear } from './physics.js';
-import { RaceSystemsController } from './pit_damage_caution.js';
-import { SpatialAIController } from './ai.js';
-import { ProceduralAudioEngine } from './audio.js';
-import { ErgonomicControls } from './controls.js';
-import { TelemetryHUD, formatLapTimeArcade, ordinalSuffix } from './hud.js';
-import { Retro1982Renderer } from './retro1982.js';
-import { ReplayDirector } from './replay.js';
+  PIT_LANE_CONFIG,
+} from './config.js?v=20261114aplus';
+import { FujiTrack } from './track.js?v=20261114aplus';
+import * as ModelsModule from './models.js?v=20261114aplus';
+import { AssetLibrary, FormulaCarRig, PitCrewDiorama, EffectsManager } from './models.js?v=20261114aplus';
+import { WeatherSystem } from './weather.js?v=20261114aplus';
+import { createVehicleState, stepVehiclePhysics240Hz, shiftGear } from './physics.js?v=20261114aplus';
+import { RaceSystemsController } from './pit_damage_caution.js?v=20261114aplus';
+import { SpatialAIController } from './ai.js?v=20261114aplus';
+import { ProceduralAudioEngine } from './audio.js?v=20261114aplus';
+import { ErgonomicControls } from './controls.js?v=20261114aplus';
+import { TelemetryHUD, formatLapTimeArcade, ordinalSuffix } from './hud.js?v=20261114aplus';
+import { Retro1982Renderer } from './retro1982.js?v=20261114aplus';
+import { ReplayDirector } from './replay.js?v=20261114aplus';
 import {
   CareerManager,
   TEAM_CATALOG,
   CHAMPIONSHIP_CALENDAR,
   CAR_SETUP_OPTIONS,
   formatCredits,
-} from './career.js';
+} from './career.js?v=20261114aplus';
+
+const LIVE_CAMERA_LABELS = [
+  '🎥 01 • CHASE CAM',
+  '🎥 02 • HALO T-CAM',
+  '🎥 03 • COCKPIT VIEW',
+  '🎥 04 • NOSE WING CAM',
+];
 
 const PREFS_STORAGE_KEY = 'rp_f1_prefs_v3';
 
@@ -73,12 +82,15 @@ class PolePosition2026Game {
     };
 
     this.state = GAME_STATES.PRE_RACE_MENU;
-    this.cameraModeIdx = 0; // 0: Chase, 1: T-Cam Cockpit, 2: 1982 High Arcade
+    this.cameraModeIdx = 0; // 0: Chase, 1: Halo T-Cam, 2: First-Person Cockpit View, 3: Nose Wing Cam
+    this.cameraIndex = 0;
     this.lockedRaceWeatherId = 'HOT_SUNNY';
 
-    // Interactive Showroom Hero Orbit state
-    this.showroomYawOffset = 0.42;
+    // Interactive Showroom Hero Orbit state (~32° diagonal down pit straight toward Gantry, Grandstands & Mt. Fuji!)
+    this._showroomOrbitAngle = Math.PI - 0.56;
+    this.showroomYawOffset = this._showroomOrbitAngle;
     this.showroomPitchOffset = 0.0;
+    this._userDraggedShowroom = false;
     this._orbitDragPointer = null;
     this._orbitLastX = 0;
     this._orbitLastY = 0;
@@ -111,9 +123,14 @@ class PolePosition2026Game {
 
     this._camPos = new THREE.Vector3(0, 4, -10);
     this._camLook = new THREE.Vector3(0, 1.0, 0);
+    this._camCarFwd = new THREE.Vector3(0, 0, 1);
+    this._camCarRight = new THREE.Vector3(1, 0, 0);
+    this._camCarUp = new THREE.Vector3(0, 1, 0);
+    this._camDesiredPos = new THREE.Vector3();
+    this._camDesiredLook = new THREE.Vector3();
     this._speedVignetteEl = null;
 
-    // Pause, Instant Replay & Career session flags
+    // Pause, Instant Replay, Career, Macro Sector Splits & Living Stadium Crowd state
     this.paused = false;
     this._replayFromPodium = false;
     this._replayScrubbing = false;
@@ -121,6 +138,13 @@ class PolePosition2026Game {
     this._lastCareerResult = null;
     this._careerTab = 'TEAMS';
     this._lastCrowdCheerSec = -10;
+    this.crowdExcitement = 0.28;
+    this._prevMacroSectorIdx = 0;
+    this._macroSectorStartSec = 0;
+    this._pitWheelGunSoundAccum = 0;
+    this._pitJackDropPlayed = false;
+    this._pitCrewTeamRig = null;
+    this._lastDrsCrowdBlastSec = -10;
 
     // Persisted player preferences (speed unit, assists, mixer)
     this.prefs = {
@@ -178,6 +202,7 @@ class PolePosition2026Game {
     this.raceSystems = new RaceSystemsController(this.track, this.effects);
     this.aiController = new SpatialAIController(this.track, this.weather, this.raceSystems);
     this.pitCrewDiorama = new PitCrewDiorama(this.scene, this.assets, this.track);
+    this._initOrSyncPitCrewTeamRig(0xe41c24);
     this.audio = new ProceduralAudioEngine();
 
     // Phase 2 flagship systems: Career R&D, 1:1 1982 Namco renderer & 60Hz TV replay director
@@ -185,6 +210,7 @@ class PolePosition2026Game {
     this.retro1982 = new Retro1982Renderer(document.getElementById('webgl-container'));
     this.retro1982.setVisible(false);
     this.replay = new ReplayDirector();
+    this._syncViewportMetrics();
 
     this.hud = new TelemetryHUD(this.track, this.raceSystems, {
       onClutchButton: () => this._handleClutchTap(),
@@ -209,15 +235,8 @@ class PolePosition2026Game {
       },
       onClutchTap: () => this._handleClutchTap(),
       onToggleVisualStyle: () => this.toggleVisualStyle(),
-      onCycleCamera: () => {
-        if (this.replay.isPlaying) {
-          this.replay.cycleCameraMode(1);
-          return;
-        }
-        this.cameraModeIdx = (this.cameraModeIdx + 1) % 3;
-        const names = ['DYNAMIC CHASE CAM', 'F1 T-CAM COCKPIT', '1982 HIGH ARCADE CAM'];
-        this.hud.showCenterCallout(names[this.cameraModeIdx], 1100, '#00e5ff');
-      },
+      onCycleCamera: () => this._cycleLiveCamera(),
+      onVisorTearOff: () => this._onVisorTearOff(),
       onTogglePitDrawer: () => {
         if (this.config.mode === '2026_UPDATED') this.hud.togglePitDrawer();
       },
@@ -263,64 +282,112 @@ class PolePosition2026Game {
     requestAnimationFrame((ts) => this._frameLoop(ts));
   }
 
+  _getViewportSize() {
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    const w = Math.max(1, Math.round((vv && vv.width) || window.innerWidth || 1));
+    const h = Math.max(1, Math.round((vv && vv.height) || window.innerHeight || 1));
+    return { w, h };
+  }
+
+  _syncViewportMetrics() {
+    const { w, h } = this._getViewportSize();
+    const rootStyle = document.documentElement?.style;
+    if (rootStyle) {
+      rootStyle.setProperty('--app-w', `${w}px`);
+      rootStyle.setProperty('--app-h', `${h}px`);
+    }
+    const nextDpr = Math.min(window.devicePixelRatio || 1, 2);
+    const aspect = w / h;
+    if (this.camera) {
+      this.camera.aspect = aspect;
+      if (!this.replay?.isPlaying) {
+        this.camera.fov = aspect < 0.58 ? 82 : (aspect < 0.85 ? 74 : 60);
+      }
+      this.camera.updateProjectionMatrix();
+    }
+    if (this.renderer) {
+      this.renderer.setPixelRatio(nextDpr);
+      this.renderer.setSize(w, h);
+    }
+    if (this.composer) {
+      this.composer.setPixelRatio(nextDpr);
+      this.composer.setSize(w, h);
+    }
+    if (this.bloomPass) {
+      this.bloomPass.resolution.set(w, h);
+    }
+    if (this.retro1982) {
+      this.retro1982.resize(w, h);
+    }
+  }
+
   _setupRendererAndPostProcessing() {
     const container = document.getElementById('webgl-container');
+    const { w: initW, h: initH } = this._getViewportSize();
     this.renderer = new THREE.WebGLRenderer({
       antialias: window.devicePixelRatio < 2,
       powerPreference: 'high-performance',
     });
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.renderer.setPixelRatio(dpr);
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.setSize(initW, initH);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.06;
+    this.renderer.toneMappingExposure = 1.0;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.FogExp2(0xb0dbff, 0.00014);
+    this.scene.fog = new THREE.FogExp2(0x88b8eb, 0.00045);
 
-    const aspect = window.innerWidth / window.innerHeight;
-    this.camera = new THREE.PerspectiveCamera(aspect < 0.85 ? 70 : 60, aspect, 0.35, 7200);
+    const aspect = initW / initH;
+    this.camera = new THREE.PerspectiveCamera(
+      aspect < 0.58 ? 82 : (aspect < 0.85 ? 74 : 60),
+      aspect,
+      0.32,
+      7200
+    );
 
     // AAA Post-Processing: WebGL2 4x MSAA HalfFloat RenderTarget + RenderPass + UnrealBloomPass + OutputPass
     const msaaSamples = this.renderer.capabilities.isWebGL2 ? 4 : 0;
     const composerTarget = new THREE.WebGLRenderTarget(
-      Math.max(1, Math.floor(window.innerWidth * dpr)),
-      Math.max(1, Math.floor(window.innerHeight * dpr)),
+      Math.max(1, Math.floor(initW * dpr)),
+      Math.max(1, Math.floor(initH * dpr)),
       { type: THREE.HalfFloatType, samples: msaaSamples }
     );
 
     this.composer = new EffectComposer(this.renderer, composerTarget);
     this.renderPass = new RenderPass(this.scene, this.camera);
     this.bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth, window.innerHeight),
-      0.32, // Rich neon/sun/brake-disc HDR glow without washing out UI
-      0.46,
-      0.84
+      new THREE.Vector2(initW, initH),
+      0.28, // Selective HDR bloom ONLY on true emissives > 1.08 (brake glow, LEDs, afterburner, sun) — never white paint/concrete!
+      0.35,
+      1.08
     );
+    this.bloomPass.threshold = 1.08;
+    this.bloomPass.strength = 0.28;
+    this.bloomPass.radius = 0.35;
     this.outputPass = new OutputPass();
     this.composer.addPass(this.renderPass);
     this.composer.addPass(this.bloomPass);
     this.composer.addPass(this.outputPass);
     this.composer.setPixelRatio(dpr);
-    this.composer.setSize(window.innerWidth, window.innerHeight);
+    this.composer.setSize(initW, initH);
 
-    window.addEventListener('resize', () => {
-      const w = Math.max(1, window.innerWidth);
-      const h = Math.max(1, window.innerHeight);
-      const nextDpr = Math.min(window.devicePixelRatio || 1, 2);
-      this.camera.aspect = w / h;
-      this.camera.fov = this.camera.aspect < 0.85 ? 70 : 60;
-      this.camera.updateProjectionMatrix();
-      this.renderer.setPixelRatio(nextDpr);
-      this.renderer.setSize(w, h);
-      this.composer.setPixelRatio(nextDpr);
-      this.composer.setSize(w, h);
-      this.bloomPass.resolution.set(w, h);
-    });
+    this._syncViewportMetrics();
+
+    const onVpChange = () => this._syncViewportMetrics();
+    window.addEventListener('resize', onVpChange, { passive: true });
+    window.addEventListener('orientationchange', () => {
+      onVpChange();
+      setTimeout(onVpChange, 120);
+      setTimeout(onVpChange, 320);
+    }, { passive: true });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', onVpChange, { passive: true });
+      window.visualViewport.addEventListener('scroll', onVpChange, { passive: true });
+    }
   }
 
   _activeTotalLaps() {
@@ -663,6 +730,9 @@ class PolePosition2026Game {
           const dy = e.clientY - this._orbitLastY;
           this._orbitLastX = e.clientX;
           this._orbitLastY = e.clientY;
+          if (Math.abs(dx) > 1.5 || Math.abs(dy) > 1.5) {
+            this._userDraggedShowroom = true;
+          }
           this.showroomYawOffset -= dx * 0.0075;
           this.showroomPitchOffset = Math.max(-0.22, Math.min(0.55, this.showroomPitchOffset + dy * 0.004));
         }
@@ -747,11 +817,9 @@ class PolePosition2026Game {
       );
       syncMenuUI();
     });
-    document.getElementById('btn-live-cam')?.addEventListener('click', () => {
-      this.cameraModeIdx = (this.cameraModeIdx + 1) % 3;
-      const names = ['DYNAMIC CHASE CAM', 'F1 T-CAM COCKPIT', '1982 HIGH ARCADE CAM'];
-      this.hud.showCenterCallout(names[this.cameraModeIdx], 1000, '#00e5ff');
-    });
+    document.getElementById('btn-live-cam')?.addEventListener('click', () => this._cycleLiveCamera());
+    document.getElementById('btn-camera')?.addEventListener('click', () => this._cycleLiveCamera());
+    window.addEventListener('f1-visor-tearoff', () => this._onVisorTearOff());
     document.getElementById('btn-live-mute')?.addEventListener('click', () => {
       this.audio.setMuted(!this.audio.muted);
       this._unlockAndSyncAudioButton();
@@ -959,6 +1027,7 @@ class PolePosition2026Game {
     const rig = this.playerCar ? this.carRigs.get(this.playerCar.id) : null;
     if (rig?.setLivery) rig.setLivery({ ...team.livery, compound: this.playerCar?.compound || this.config.startingCompound });
     this.pitCrewDiorama?.setLivery?.(team.livery);
+    this._initOrSyncPitCrewTeamRig(team.livery?.primary ?? team.primaryHex ?? 0xe41c24);
     if (this.playerCar) this.playerCar.liveryHex = team.primaryHex;
     this._syncCareerBadges();
   }
@@ -1232,10 +1301,17 @@ class PolePosition2026Game {
     const ok = this.replay.enterReplay(this._replayFromPodium ? 15 : 12, this.camera);
     if (!ok) return;
     this.physicsAccumulator = 0;
+    this.camera.up.set(0, 1, 0);
+    if (Math.abs(this.camera.near - 0.32) > 0.01) {
+      this.camera.near = 0.32;
+      this.camera.updateProjectionMatrix();
+    }
+    this.weather?.updateCockpitVisorRain?.(this.camera, false, 0, 0.016);
     document.body.classList.add('replay-active');
     const ov = document.getElementById('replay-overlay');
     if (ov) ov.style.display = 'flex';
     this.retro1982.setVisible(false);
+    this._syncPlayerCockpitHelmetVisibility();
   }
 
   _exitReplay() {
@@ -1291,10 +1367,146 @@ class PolePosition2026Game {
     );
   }
 
+  _initOrSyncPitCrewTeamRig(teamColorHex = 0xe41c24) {
+    if (typeof ModelsModule.createPitCrewTeamRig === 'function') {
+      if (!this._pitCrewTeamRig) {
+        try {
+          this._pitCrewTeamRig = ModelsModule.createPitCrewTeamRig(teamColorHex, this.assets, this.track);
+          const rigNode = this._pitCrewTeamRig?.group || this._pitCrewTeamRig?.root || (this._pitCrewTeamRig?.isObject3D ? this._pitCrewTeamRig : null);
+          if (rigNode && !rigNode.parent) {
+            this.scene.add(rigNode);
+          }
+          if (rigNode && this.pitCrewDiorama?.group) {
+            this.pitCrewDiorama.group.visible = false;
+          }
+        } catch (err) {
+          console.warn('[PitCrewTeamRig] Fallback to PitCrewDiorama:', err);
+          this._pitCrewTeamRig = null;
+        }
+      } else if (typeof this._pitCrewTeamRig.setLivery === 'function') {
+        this._pitCrewTeamRig.setLivery({ primary: teamColorHex });
+      } else if (typeof this._pitCrewTeamRig.setTeamColor === 'function') {
+        this._pitCrewTeamRig.setTeamColor(teamColorHex);
+      }
+    }
+    this._repositionPitCrewTeamRig();
+  }
+
+  _repositionPitCrewTeamRig() {
+    if (!this._pitCrewTeamRig || !this.track) return;
+    if (typeof this._pitCrewTeamRig.repositionForTrack === 'function') {
+      this._pitCrewTeamRig.repositionForTrack(this.track);
+      return;
+    }
+    const rigNode = this._pitCrewTeamRig.group || this._pitCrewTeamRig.root || (this._pitCrewTeamRig.isObject3D ? this._pitCrewTeamRig : null);
+    if (rigNode) {
+      const boxLat = (PIT_LANE_CONFIG.lateralOffset ?? 13.0) + 3.2;
+      const bf = this.track.sampleAt(PIT_LANE_CONFIG.playerBoxS ?? 20, boxLat);
+      const yaw = Math.atan2(bf.tangent.z, bf.tangent.x);
+      rigNode.position.copy(bf.pos);
+      rigNode.rotation.set(0, -yaw, 0);
+    }
+  }
+
+  _cycleLiveCamera() {
+    if (this.replay?.isPlaying) {
+      this.replay.cycleCameraMode(1);
+      return;
+    }
+    this.cameraModeIdx = (this.cameraModeIdx + 1) % 4;
+    this.cameraIndex = this.cameraModeIdx;
+    this._syncPlayerCockpitHelmetVisibility();
+    const label = LIVE_CAMERA_LABELS[this.cameraModeIdx] || LIVE_CAMERA_LABELS[0];
+    const liveCamBtn = document.getElementById('btn-live-cam');
+    if (liveCamBtn) {
+      liveCamBtn.title = `${label} — Tap or press C to cycle`;
+    }
+    this.hud?.showCenterCallout(label, 1150, '#00e5ff');
+  }
+
+  _onVisorTearOff() {
+    if (this.state === GAME_STATES.PRE_RACE_MENU || this.paused || this.replay?.isPlaying) return;
+    this.weather?.triggerVisorTearOff?.();
+    if (this.cameraModeIdx === 2 && (this.weather?.grooveMoisture > 0.05 || this.lockedRaceWeatherId === 'LIGHT_DRIZZLE' || this.lockedRaceWeatherId === 'MONSOON_STORM')) {
+      this.hud?.showCenterCallout('✨ VISOR TEAR-OFF!', 850, '#00e5ff');
+    }
+  }
+
+  _isLiveCockpit3DActive() {
+    return (
+      this.cameraModeIdx === 2 &&
+      !this._isRetroRendererActive() &&
+      !this.replay?.isPlaying &&
+      this.state !== GAME_STATES.PRE_RACE_MENU &&
+      this.state !== GAME_STATES.RACE_RESULTS &&
+      this.state !== GAME_STATES.PIT_STOP
+    );
+  }
+
+  _syncPlayerCockpitHelmetVisibility() {
+    if (!this.playerCar) return;
+    const isCockpitAny =
+      this.cameraModeIdx === 2 &&
+      this.state !== GAME_STATES.PRE_RACE_MENU &&
+      this.state !== GAME_STATES.RACE_RESULTS &&
+      this.state !== GAME_STATES.PIT_STOP &&
+      !this.replay?.isPlaying;
+    this.playerCar.cameraIndex = this.cameraModeIdx;
+    this.playerCar.isCockpitView = isCockpitAny;
+
+    const rig = this.carRigs.get(this.playerCar.id);
+    if (!rig || !rig.root) return;
+
+    const hideHelmet = this._isLiveCockpit3DActive();
+    if (!rig._cockpitHelmetNodes) {
+      const helmetNodes = [];
+      rig.root.traverse((node) => {
+        if (!node || node === rig.root) return;
+        const nm = String(node.name || '');
+        const matNm = String(node.material?.name || '');
+        const combined = `${nm} ${matNm}`;
+        if (
+          /driverhelmet|driver_helmet|helmet|visor|driverhead|driver_head/i.test(combined) &&
+          !/halo|wheel|arm|glove|dash|mirror|wing|body|chassis|crew/i.test(combined)
+        ) {
+          helmetNodes.push(node);
+        }
+      });
+      rig._cockpitHelmetNodes = helmetNodes;
+    }
+
+    for (let i = 0; i < rig._cockpitHelmetNodes.length; i++) {
+      rig._cockpitHelmetNodes[i].visible = !hideHelmet;
+    }
+  }
+
+  _computeNearGrandstandFactor(s) {
+    if (!Number.isFinite(s)) return 0;
+    const sw = ((s % TRACK_GAME_LENGTH) + TRACK_GAME_LENGTH) % TRACK_GAME_LENGTH;
+    // Main Straight 3-block stadium tribune spans s in [912..1000] U [0..124]
+    let best = 0;
+    if (sw >= 912 || sw <= 124) {
+      const dEdge = sw >= 912 ? Math.min(1, (sw - 912) / 28) : Math.min(1, (124 - sw) / 28);
+      best = Math.max(best, 0.35 + 0.65 * dEdge);
+    }
+    const cornerStands = this.track?.trackDef?.cornerTribunes;
+    if (Array.isArray(cornerStands)) {
+      for (let i = 0; i < cornerStands.length; i++) {
+        let ds = Math.abs(sw - cornerStands[i].s);
+        if (ds > TRACK_GAME_LENGTH * 0.5) ds = TRACK_GAME_LENGTH - ds;
+        if (ds < 46) {
+          best = Math.max(best, 1.0 - ds / 46);
+        }
+      }
+    }
+    return Math.max(0, Math.min(1, best));
+  }
+
   _switchActiveCircuit(trackId) {
     this.track.loadCircuit(trackId);
     this.effects.clearAllDebris();
     this.pitCrewDiorama.repositionForTrack(this.track);
+    this._repositionPitCrewTeamRig();
     this.hud.refreshTrackMinimap();
   }
 
@@ -1351,9 +1563,16 @@ class PolePosition2026Game {
   }
 
   _cheerCrowd(intensity = 0.8) {
-    if (this.elapsedSec - this._lastCrowdCheerSec < 2.5) return;
+    const boost = Math.max(0.2, Math.min(1.0, Number(intensity) || 0.8));
+    this.crowdExcitement = Math.min(1.0, Math.max(this.crowdExcitement, 0.35 + boost * 0.65));
+    this.track?.triggerCrowdExcitement?.(boost);
+    if (this.elapsedSec - this._lastCrowdCheerSec < 2.2) return;
     this._lastCrowdCheerSec = this.elapsedSec;
-    this.audio.playCrowdCheer?.(intensity);
+    if (typeof this.audio.playCrowdCheerSurge === 'function') {
+      this.audio.playCrowdCheerSurge(boost);
+    } else {
+      this.audio.playCrowdCheer?.(boost);
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -1370,19 +1589,45 @@ class PolePosition2026Game {
   _spawnShowroomScene() {
     this._clearGridMeshes();
     this.state = GAME_STATES.PRE_RACE_MENU;
+    this._userDraggedShowroom = false;
+    this.showroomYawOffset = this._showroomOrbitAngle;
+    this.showroomPitchOffset = 0.0;
     this._refreshShowroomLighting();
     this._buildCarsForSession(8, true, this.config.startingCompound);
 
-    // Park the gleaming #1 Hero F1 Car on Pole Position under the Start Gantry!
+    // Park the gleaming #1 Hero F1 Car on Pole Position angled slightly for hero 3/4 presentation,
+    // framed along a ~32° diagonal vista down the pit straight toward the Starting Gantry, Grandstands, Sakura & Mt. Fuji!
     if (this.playerCar) {
-      this.playerCar.s = 993.5;
-      this.playerCar.lateralOffset = -3.0;
+      this.playerCar.s = 992.5;
+      this.playerCar.lateralOffset = -2.8;
       this.playerCar.speedKmh = 0;
-      this.playerCar.relYaw = 0;
+      this.playerCar.relYaw = -0.18;
+      this.playerCar.steerAngleRad = -0.16;
+      this.playerCar.steerInput = -0.34;
       const pFr = this.track.sampleAt(this.playerCar.s, this.playerCar.lateralOffset);
-      this._camLook.copy(pFr.pos).add(new THREE.Vector3(0, 0.68, 0));
-      this.camera.position.copy(pFr.pos).add(new THREE.Vector3(-4.6, 1.72, -4.4));
+      const { w: vpW, h: vpH } = this._getViewportSize();
+      const aspect = vpW / vpH;
+      const baseDist = 5.35;
+      const radius = aspect < 0.60 ? baseDist * 1.44 : (aspect < 0.85 ? baseDist * 1.22 : baseDist);
+      const lookY = aspect < 0.60 ? 0.26 : (aspect < 0.85 ? 0.44 : 0.76);
+      const fwdYaw = Math.atan2(pFr.tangent.z, pFr.tangent.x);
+      const camAng = fwdYaw + this.showroomYawOffset;
+
+      this.camera.up.set(0, 1, 0);
+      this._camLook
+        .copy(pFr.pos)
+        .addScaledVector(pFr.tangent, 1.35)
+        .addScaledVector(pFr.right, -0.55);
+      this._camLook.y += lookY;
+
+      this.camera.position.set(
+        pFr.pos.x + Math.cos(camAng) * radius,
+        pFr.pos.y + (aspect < 0.85 ? 1.46 : 1.30),
+        pFr.pos.z + Math.sin(camAng) * radius
+      );
+      this.camera.lookAt(this._camLook);
     }
+    this._syncPlayerCockpitHelmetVisibility();
     this._syncScreenLayers();
   }
 
@@ -1491,6 +1736,7 @@ class PolePosition2026Game {
     if (team) {
       playerRig.setLivery?.({ ...team.livery, compound: startComp });
       this.pitCrewDiorama?.setLivery?.(team.livery);
+      this._initOrSyncPitCrewTeamRig(team.livery?.primary ?? team.primaryHex ?? 0xe41c24);
       this.playerCar.liveryHex = team.primaryHex;
       this.playerCar.teamName = team.shortName;
     }
@@ -1552,6 +1798,10 @@ class PolePosition2026Game {
     this.raceSystems.resetForNewSession(startComp, 1, this._sessionCareerModifiers());
     this.track.setPuddles1982Mode(false);
     this.replay.reset();
+    this.hud.resetSectorSplits?.();
+    this._prevMacroSectorIdx = 0;
+    this._macroSectorStartSec = 0;
+    this.crowdExcitement = 0.35;
 
     this._buildCarsForSession(totalCars, false, startComp);
 
@@ -1637,7 +1887,11 @@ class PolePosition2026Game {
     this.raceSystems.resetForNewSession(startComp, totalLaps, this._sessionCareerModifiers());
     this.track.setPuddles1982Mode(this.config.mode === '1982_ORIGINAL');
     this.replay.reset();
+    this.hud.resetSectorSplits?.();
     this.hud.syncBoxButtonState();
+    this._prevMacroSectorIdx = 2;
+    this._macroSectorStartSec = 0;
+    this.crowdExcitement = 0.55;
 
     this._buildCarsForSession(totalCars, false, startComp);
 
@@ -1741,12 +1995,19 @@ class PolePosition2026Game {
           .filter((c) => !c.isPlayer && Number.isFinite(c.bestLapTime) && c.bestLapTime > 0)
           .reduce((m, c) => Math.min(m, c.bestLapTime), Infinity);
         const pBest = this.playerCar.bestLapTime;
+        const cleanRace =
+          (this.playerCar.timePenaltiesSec || 0) <= 0 &&
+          (this.playerCar.damage?.frontWing || 0) < 0.25 &&
+          (this.playerCar.damage?.rearWing || 0) < 0.25 &&
+          (this.playerCar.damage?.suspension || 0) < 0.25;
         this._lastCareerResult = this.career.recordRaceWeekendResult({
           trackId: this.config.trackId,
           finishPos: playerRank,
           gridPos: this.qualifiedGridSlot,
           fastestLap: !!(pBest && pBest > 0 && pBest <= bestAi),
           overtakes: this.overtakesCount,
+          cleanRace,
+          pitStops: this.playerCar.pitStopsCompleted || 0,
           arcadeScore: Math.floor(this.score),
           standings: standings.map((c) => ({
             id: c.id, name: c.name, short: c.short, isPlayer: c.isPlayer, bestLapTime: c.bestLapTime,
@@ -1841,6 +2102,15 @@ class PolePosition2026Game {
     const cr = this._lastCareerResult;
     if (banner) {
       if (cr) {
+        const sponsorChips = Array.isArray(cr.sponsorBonuses) && cr.sponsorBonuses.length > 0
+          ? cr.sponsorBonuses.map((sb) => {
+              if (typeof sb === 'string') return `<span class="pcb-chip cash">🎯 ${escapeHtml(sb)}</span>`;
+              const lbl = sb?.label || sb?.title || sb?.name || 'SPONSOR BONUS';
+              const amt = sb?.bonus ?? sb?.payout ?? sb?.amount ?? 0;
+              const amtStr = amt > 0 ? ` +${escapeHtml(formatCredits(amt))}` : '';
+              return `<span class="pcb-chip cash">🎯 ${escapeHtml(lbl)}${amtStr}</span>`;
+            }).join('')
+          : '';
         const finale = cr.seasonCompleted
           ? `<div class="pcb-finale">${escapeHtml(cr.seasonFinaleBanner || (cr.crownedWorldChampion ? '👑 WORLD CHAMPION!' : 'SEASON COMPLETE'))}</div>`
           : '';
@@ -1852,6 +2122,7 @@ class PolePosition2026Game {
             <span class="pcb-chip rank">CHAMPIONSHIP P${cr.playerChampionshipRank} • ${cr.playerSeasonPoints} PTS</span>
             ${cr.gotPole ? '<span class="pcb-chip">POLE +</span>' : ''}
             ${cr.gotFastestLap ? '<span class="pcb-chip">FASTEST LAP +</span>' : ''}
+            ${sponsorChips}
           </div>
           ${finale}`;
         banner.style.display = 'block';
@@ -1934,7 +2205,10 @@ class PolePosition2026Game {
     const inReplay = !!this.replay?.isPlaying;
     const simFrozen = this.paused || inReplay;
 
-    // 1. Poll Mobile Multi-Touch + Keyboard + Gamepad Controls
+    // 1. Poll Mobile Multi-Touch + Keyboard + Gamepad Controls (+ Physics SAT Feedback)
+    if (this.playerCar && this.state !== GAME_STATES.PRE_RACE_MENU && !simFrozen) {
+      this.controls.applyPhysicsFeedback?.(this.playerCar, rawDt);
+    }
     this.controls.update(rawDt, this.playerCar);
     if (this.playerCar && this.state !== GAME_STATES.PRE_RACE_MENU && !simFrozen) {
       this.playerCar.steerInput = this.controls.steer;
@@ -2004,6 +2278,7 @@ class PolePosition2026Game {
 
     // 4. CAMERA FIRST (live director or TV replay director) so sky dome / weather / shadows
     //    are positioned from THIS frame's camera — zero 1-frame skybox lag.
+    this._syncPlayerCockpitHelmetVisibility();
     let replayState = null;
     if (inReplay) {
       replayState = this.replay.updatePlayback(rawDt, {
@@ -2021,7 +2296,7 @@ class PolePosition2026Game {
       this._updateCameraDirector(rawDt);
     }
 
-    // 5. Focus Shadow Target, Weather, Track Shaders, Marshal Flags, Pit Crew & VFX
+    // 5. Focus Shadow Target, Weather, Cockpit Visor Rain, Track Shaders, Marshal Flags, Pit Crew & VFX
     let focusPos = this.camera.position;
     if (inReplay && replayState?.focusWorldPos) {
       focusPos = replayState.focusWorldPos;
@@ -2032,6 +2307,13 @@ class PolePosition2026Game {
     this.weather.update(rawDt, this.camera.position, focusPos, this.config.visualStyle, {
       onThunder: () => this.audio.playThunderRumble(),
     });
+    const isCockpit3D = this._isLiveCockpit3DActive();
+    this.weather.updateCockpitVisorRain?.(
+      this.camera,
+      isCockpit3D,
+      this.playerCar?.speedKmh || 0,
+      rawDt
+    );
 
     this.track.updateVisualState(this.weather.grooveMoisture, this.config.visualStyle, this.elapsedSec);
     this.track.updateMarshalFlags(
@@ -2044,18 +2326,56 @@ class PolePosition2026Game {
     if (!simFrozen) {
       if (playerServicing && this.state === GAME_STATES.RACING) {
         this.state = GAME_STATES.PIT_STOP;
+        this._pitWheelGunSoundAccum = 0;
+        this._pitJackDropPlayed = false;
       } else if (!playerServicing && this.state === GAME_STATES.PIT_STOP) {
         this.state = GAME_STATES.RACING;
+        this._pitWheelGunSoundAccum = 0;
+        this._pitJackDropPlayed = false;
       }
     }
 
     const pitProgress = playerServicing && this.playerCar.pitStopTotalDuration > 0
       ? Math.max(0, Math.min(1, 1 - this.playerCar.pitStopTimer / this.playerCar.pitStopTotalDuration))
       : 0;
+    const pitSubPhase = playerServicing
+      ? (this.playerCar.pitServiceSubPhase || this.raceSystems.getPitServiceSubPhase?.(this.playerCar) || '')
+      : '';
+    if (playerServicing && !simFrozen && !inReplay) {
+      if (pitProgress >= 0.14 && pitProgress <= 0.80) {
+        this._pitWheelGunSoundAccum += rawDt;
+        if (this._pitWheelGunSoundAccum >= 0.38) {
+          this._pitWheelGunSoundAccum = 0;
+          if (typeof this.audio.playPitWheelGunBurst === 'function') {
+            this.audio.playPitWheelGunBurst();
+          } else {
+            this.audio.playWheelGunWhir?.();
+          }
+        }
+      }
+      if (pitProgress >= 0.84 && !this._pitJackDropPlayed) {
+        this._pitJackDropPlayed = true;
+        this.audio.playPitJackDrop?.();
+      }
+    }
     this.pitCrewDiorama.update(playerServicing && !inReplay, pitProgress, this.elapsedSec);
+    if (this._pitCrewTeamRig) {
+      const pitRigState = {
+        active: playerServicing && !inReplay,
+        progress: pitProgress,
+        subPhase: pitSubPhase,
+        elapsedSec: this.elapsedSec,
+        car: this.playerCar,
+      };
+      if (typeof ModelsModule.updatePitCrewTeamRig === 'function') {
+        ModelsModule.updatePitCrewTeamRig(this._pitCrewTeamRig, pitRigState, rawDt);
+      } else if (typeof this._pitCrewTeamRig.update === 'function') {
+        this._pitCrewTeamRig.update(playerServicing && !inReplay, pitProgress, this.elapsedSec);
+      }
+    }
     if (!this.paused) this.effects.update(rawDt);
 
-    // 6. Sync All 3D Car Rigs & Persistent Tire Skidmarks (replay director drives rigs itself)
+    // 6. Sync All 3D Car Rigs (+ 2nd-Order Physics Pitch/Roll/Wheel-Heave) & Persistent Tire Skidmarks
     if (!inReplay) {
       const rigDt = this.paused ? 0 : rawDt;
       for (const car of this.allCars) {
@@ -2065,14 +2385,34 @@ class PolePosition2026Game {
         const fr = this.track.sampleAt(car.s, car.lateralOffset);
         rig.updateTransformAndVFX(car, fr, this.weather.grooveMoisture, rigDt, this.elapsedSec);
 
+        // Blend true 240Hz 2nd-order suspension pitch, roll & 4-corner wheel compression onto 3D rig
+        if (rig.chassisTiltGroup) {
+          if (Number.isFinite(car.chassisPitchRad)) {
+            rig.chassisTiltGroup.rotation.x = car.chassisPitchRad + (car.pitJackLift || 0) * 0.042;
+          }
+          if (Number.isFinite(car.chassisRollRad)) {
+            rig.chassisTiltGroup.rotation.z = car.chassisRollRad;
+          }
+        }
+        if (Array.isArray(car.wheelCompression) && Array.isArray(rig.wheels)) {
+          for (let wi = 0; wi < rig.wheels.length && wi < 4; wi++) {
+            const wObj = rig.wheels[wi];
+            if (!wObj?.steerPivot) continue;
+            if (wObj.baseSteerY === undefined) wObj.baseSteerY = wObj.steerPivot.position.y;
+            const compM = Math.max(-0.04, Math.min(0.055, Number(car.wheelCompression[wi]) || 0));
+            wObj.steerPivot.position.y = wObj.baseSteerY + compM;
+          }
+        }
+
         if (!this.paused && car.skidIntensity > 0.42 && car.speedKmh > 40 && !car.exploded && Math.random() < 0.45) {
           const yaw = Math.atan2(fr.tangent.z, fr.tangent.x) + car.relYaw;
           this.track.addSkidmark(fr.pos, yaw);
         }
       }
+      this._syncPlayerCockpitHelmetVisibility();
     }
 
-    // 7. Speed Tunnel Vignette & Audio Update
+    // 7. Speed Tunnel Vignette, Living Stadium Crowd Doppler & Cockpit-Aware Audio Update
     if (this._speedVignetteEl) {
       if (this.state === GAME_STATES.PRE_RACE_MENU || !this.playerCar || inReplay || this.paused) {
         this._speedVignetteEl.style.opacity = '0';
@@ -2086,12 +2426,34 @@ class PolePosition2026Game {
     const activePlay =
       (this.state === GAME_STATES.QUALIFYING || this.state === GAME_STATES.RACING || this.state === GAME_STATES.PIT_STOP) &&
       !this.controlsLocked && !simFrozen;
+    const retroActive = this._isRetroRendererActive();
+    const isCockpitAudio =
+      this.cameraModeIdx === 2 &&
+      !inShowroom &&
+      !inReplay &&
+      this.state !== GAME_STATES.RACE_RESULTS &&
+      this.state !== GAME_STATES.PIT_STOP;
+
+    if (!simFrozen && !inShowroom && this.playerCar) {
+      const nearGrandstand = this._computeNearGrandstandFactor(this.playerCar.s);
+      if (this.playerCar.speedKmh > 296 && nearGrandstand > 0.65 && this.elapsedSec - this._lastDrsCrowdBlastSec > 7.5) {
+        this._lastDrsCrowdBlastSec = this.elapsedSec;
+        this.crowdExcitement = Math.min(1.0, Math.max(this.crowdExcitement, 0.78));
+        this.track?.triggerCrowdExcitement?.(0.55);
+      } else {
+        const targetBaseline = this.state === GAME_STATES.GRID_LINEUP ? 0.55 : (0.24 + Math.min(0.28, (this.playerCar.speedKmh / 330) * 0.28));
+        this.crowdExcitement += (targetBaseline - this.crowdExcitement) * Math.min(1, rawDt * 0.55);
+      }
+      this.audio.updateCrowdAmbience?.(this.playerCar.speedKmh, nearGrandstand, this.crowdExcitement);
+    }
+
     this.audio.updateContinuous(
       this.playerCar || { rpm: 0 },
       this.config.mode === '1982_ORIGINAL' ? 0 : this.weather.grooveMoisture,
       activePlay || (this.state === GAME_STATES.GRID_LINEUP && !simFrozen),
       this.config.visualStyle,
-      inShowroom || simFrozen
+      inShowroom || simFrozen,
+      isCockpitAudio
     );
 
     let playerPos = 1;
@@ -2124,7 +2486,6 @@ class PolePosition2026Game {
     }
 
     // 8. Render: 1:1 1982 Namco raster renderer, or MSAA HDR Bloom Composer / direct renderer
-    const retroActive = this._isRetroRendererActive();
     if (retroActive !== this.retro1982.isVisible()) {
       this.retro1982.setVisible(retroActive);
     }
@@ -2141,11 +2502,12 @@ class PolePosition2026Game {
       else if (this.state === GAME_STATES.QUALIFYING && this.controlsLocked) {
         gantryLit = Math.max(0, 4 - Math.ceil(this.countdownTimer));
       }
-      this.retro1982.renderFrame({
+      const retroPayload = {
         track: this.track,
         playerCar: this.playerCar,
         allCars: this.allCars,
         weather: this.weather,
+        raceSystems: this.raceSystems,
         state: this.state,
         score: this.score,
         topScore: this.topScore,
@@ -2160,7 +2522,21 @@ class PolePosition2026Game {
         centerCallout: calloutTxt,
         elapsedSec: this.elapsedSec,
         crtScanlines: true,
-      });
+        cameraIndex: this.cameraModeIdx,
+        cameraModeIdx: this.cameraModeIdx,
+        pitServiceSubPhase: pitSubPhase,
+        pitStopProgress: pitProgress,
+        sectorDeltaPopup: this.hud.getActiveSectorDeltaPopup?.() || null,
+        crowdExcitement: this.crowdExcitement,
+        yellowSectors: this.raceSystems.getActiveYellowSectorSet(),
+        vscActive: !!this.raceSystems.vscActive,
+        lookApexNormalized: this.controls?.lookApexNormalized || 0,
+      };
+      if (typeof this.retro1982.renderFrame === 'function') {
+        this.retro1982.renderFrame(retroPayload);
+      } else if (typeof this.retro1982.render === 'function') {
+        this.retro1982.render(retroPayload);
+      }
     } else if (this.config.visualStyle === '2026_PBR' || inReplay) {
       this.composer.render();
     } else {
@@ -2248,12 +2624,16 @@ class PolePosition2026Game {
       onCompoundVisualChanged: (car) => {
         this.carRigs.get(car.id)?.setCompound(car.compound);
       },
+      onEngineerWarning: (msg) => {
+        this.hud.showEngineerRadio(msg);
+      },
       onLapCrossed: (car) => this._onCarCrossedLine(car, isQuali, isRacing, totalLaps),
     };
 
     const physCtx = {
       track: this.track,
       weather: this.weather,
+      allCars: this.allCars,
       mode: isShowroom ? '2026_UPDATED' : this.config.mode,
       raceLengthId: this.config.raceLengthId,
       isQualifying: isQuali,
@@ -2304,11 +2684,27 @@ class PolePosition2026Game {
         this._checkTopScore();
       }
 
-      // +50 pts + Doppler Pass Whoosh when overtaking rivals!
+      // +50 pts + Doppler Pass Whoosh when overtaking or slicing closely past rivals!
       if (isRacing && !this.playerCar.exploded) {
+        const mPerGameM = this.track.realMetersPerGameMeter || 4.54;
         let nowRivalsAhead = 0;
         for (const c of this.allCars) {
-          if (!c.isPlayer && c.totalDistanceGameM > this.playerCar.totalDistanceGameM) nowRivalsAhead++;
+          if (c.isPlayer) continue;
+          if (c.totalDistanceGameM > this.playerCar.totalDistanceGameM) nowRivalsAhead++;
+          if (c._whooshCooldown > 0) c._whooshCooldown = Math.max(0, c._whooshCooldown - dt);
+          if (!c.exploded && !c.inPitLane && !this.playerCar.inPitLane && !(c._whooshCooldown > 0)) {
+            let ds = c.s - this.playerCar.s;
+            if (ds > TRACK_GAME_LENGTH * 0.5) ds -= TRACK_GAME_LENGTH;
+            if (ds < -TRACK_GAME_LENGTH * 0.5) ds += TRACK_GAME_LENGTH;
+            const absLongM = Math.abs(ds) * mPerGameM;
+            const absLatM = Math.abs(c.lateralOffset - this.playerCar.lateralOffset);
+            const relKmh = Math.abs(this.playerCar.speedKmh - c.speedKmh);
+            if (absLongM < 4.2 && absLatM > 1.25 && absLatM < 4.4 && relKmh > 18) {
+              c._whooshCooldown = 1.65;
+              const pan = Math.max(-0.9, Math.min(0.9, (c.lateralOffset - this.playerCar.lateralOffset) / 3.5));
+              this.audio.playOvertakeWhoosh?.(Math.max(30, relKmh), pan);
+            }
+          }
         }
         if (nowRivalsAhead < prevRivalsAhead) {
           const passed = prevRivalsAhead - nowRivalsAhead;
@@ -2317,11 +2713,31 @@ class PolePosition2026Game {
           this.passingBonus += pts;
           this.score += pts;
           this._checkTopScore();
-          this.audio.playOvertakeWhoosh(Math.max(36, this.playerCar.speedKmh * 0.22));
+          this.audio.playOvertakeWhoosh?.(Math.max(36, this.playerCar.speedKmh * 0.22));
           if (nowRivalsAhead === 0) {
             this._cheerCrowd(0.95);
-            this.hud.showCenterCallout('🏆 P1 — INTO THE LEAD!', 1500, '#ffd600');
+            this.hud.showCenterCallout(`🏆 P1 — INTO THE LEAD! (+${pts} PTS)`, 1450, '#ffd600');
+          } else {
+            this._cheerCrowd(0.68);
+            const newPos = nowRivalsAhead + 1;
+            this.hud.showCenterCallout(`⚡ +${pts} PTS PASS! • ${ordinalSuffix(newPos)}`, 1050, '#00e676');
           }
+        }
+      }
+
+      // 3-Macro-Sector Split Delta Timing (S1: 0..333.3, S2: 333.3..666.7, S3: 666.7..1000)
+      if (this.playerCar && !this.playerCar.exploded && this.playerCar.totalDistanceGameM > 2.0) {
+        const pSw = ((this.playerCar.s % TRACK_GAME_LENGTH) + TRACK_GAME_LENGTH) % TRACK_GAME_LENGTH;
+        const curMacroSec = pSw < 333.33 ? 0 : (pSw < 666.67 ? 1 : 2);
+        if (curMacroSec !== this._prevMacroSectorIdx) {
+          if (curMacroSec === (this._prevMacroSectorIdx + 1) % 3) {
+            const splitDur = this.sessionElapsedSec - this._macroSectorStartSec;
+            if (splitDur > 2.5 && splitDur < 95.0) {
+              this.hud.recordSectorSplit?.(this._prevMacroSectorIdx + 1, splitDur);
+            }
+          }
+          this._prevMacroSectorIdx = curMacroSec;
+          this._macroSectorStartSec = this.sessionElapsedSec;
         }
       }
 
@@ -2365,8 +2781,10 @@ class PolePosition2026Game {
     }
 
     const completedLapSec = car.currentLapTime;
+    const prevBestSec = car.bestLapTime;
+    const isPersonalBest = !prevBestSec || completedLapSec < prevBestSec;
     car.lastLapTime = completedLapSec;
-    if (!car.bestLapTime || completedLapSec < car.bestLapTime) {
+    if (isPersonalBest) {
       car.bestLapTime = completedLapSec;
     }
     car.currentLapTime = 0;
@@ -2384,22 +2802,23 @@ class PolePosition2026Game {
         return;
       }
 
+      const bestTag = (isPersonalBest && prevBestSec) ? ' • 🟣 BEST LAP!' : '';
       if (this.config.mode === '1982_ORIGINAL') {
         this.masterTimerSec += CLASSIC_1982_RULES.extendedPlayBonusSec;
         this.hud.showCenterCallout(
-          `EXTENDED PLAY! +58s • LAP ${formatLapTimeArcade(completedLapSec)}`,
-          2200,
-          '#00ff88'
+          `EXTENDED PLAY! +58s • LAP ${formatLapTimeArcade(completedLapSec)}${bestTag}`,
+          2100,
+          isPersonalBest && prevBestSec ? '#e040fb' : '#00ff88'
         );
         this.audio.playStartBeep(true);
       } else {
         const isFinal = car.lap === totalLaps;
         this.hud.showCenterCallout(
           isFinal
-            ? `🔔 FINAL LAP! (${formatLapTimeArcade(completedLapSec)})`
-            : `LAP ${car.lap}/${totalLaps} • ${formatLapTimeArcade(completedLapSec)}`,
-          2000,
-          isFinal ? '#ffd600' : '#00e5ff'
+            ? `🔔 FINAL LAP! (${formatLapTimeArcade(completedLapSec)}${bestTag})`
+            : `LAP ${car.lap}/${totalLaps} • ${formatLapTimeArcade(completedLapSec)}${bestTag}`,
+          1950,
+          isFinal ? '#ffd600' : (isPersonalBest && prevBestSec ? '#e040fb' : '#00e5ff')
         );
         if (isFinal) {
           this.audio.speakAnnouncement('Final lap! Push to the line!', true);
@@ -2411,114 +2830,279 @@ class PolePosition2026Game {
   }
 
   // --------------------------------------------------------------------------
-  // 3D SHOWROOM HERO ORBIT, PIT BROADCAST & DYNAMIC CHASE CAMERA DIRECTOR
+  // 3D SHOWROOM HERO ORBIT, PIT BROADCAST & 4-CAMERA COCKPIT / CHASE DIRECTOR
+  // (0: Chase Cam, 1: Halo T-Cam, 2: First-Person Cockpit View, 3: Nose Wing Cam)
   // --------------------------------------------------------------------------
   _updateCameraDirector(dt) {
     if (!this.playerCar) return;
     const pFr = this.track.sampleAt(this.playerCar.s, this.playerCar.lateralOffset);
+    const { w: vpW, h: vpH } = this._getViewportSize();
+    const aspect = vpW / vpH;
 
-    // 1. AAA Gran Turismo / F1 Showroom Low-Angle Hero Orbit on Start Screen!
+    // 1. AAA Gran Turismo / F1 Showroom Low-Angle Hero Vista on Start Screen!
+    //    Defaults to ~32° diagonal down the pit straight toward the Starting Gantry,
+    //    packed colorful 3D Grandstands, lush 3D Sakura/Pine trees & snow-capped Mt. Fuji!
     if (this.state === GAME_STATES.PRE_RACE_MENU) {
+      this.camera.up.set(0, 1, 0);
+      if (Math.abs(this.camera.near - 0.32) > 0.01) {
+        this.camera.near = 0.32;
+        this.camera.updateProjectionMatrix();
+      }
       if (this._orbitDragPointer === null) {
-        this.showroomYawOffset += dt * 0.24; // Smooth cinematic auto-orbit when not dragging
+        if (!this._userDraggedShowroom) {
+          this.showroomYawOffset = this._showroomOrbitAngle + Math.sin(this.elapsedSec * 0.30) * 0.14;
+        } else {
+          this.showroomYawOffset += dt * 0.05;
+        }
         this.showroomPitchOffset += (0.0 - this.showroomPitchOffset) * Math.min(1, dt * 1.8);
       }
       const fwdYaw = Math.atan2(pFr.tangent.z, pFr.tangent.x);
       const camAng = fwdYaw + this.showroomYawOffset;
-      const isPortrait = (window.innerWidth / window.innerHeight) < 0.85;
-      const radius = isPortrait ? 6.6 : 5.5;
-      const height = 1.42 + this.showroomPitchOffset + Math.sin(this.elapsedSec * 0.65) * 0.24;
+      const baseDist = 5.35;
+      const radius = aspect < 0.60 ? baseDist * 1.44 : (aspect < 0.85 ? baseDist * 1.22 : baseDist);
+      const height = (aspect < 0.85 ? 1.46 : 1.30) + this.showroomPitchOffset + Math.sin(this.elapsedSec * 0.55) * 0.12;
 
-      const targetPos = new THREE.Vector3(
+      this._camDesiredPos.set(
         pFr.pos.x + Math.cos(camAng) * radius,
         pFr.pos.y + height,
         pFr.pos.z + Math.sin(camAng) * radius
       );
-      const lookTarget = new THREE.Vector3(pFr.pos.x, pFr.pos.y + 0.64, pFr.pos.z);
+      // Aim down the pit straight slightly ahead-left of the #1 car so car + Gantry + Grandstands + Mt. Fuji frame together
+      const lookY = aspect < 0.60 ? 0.26 : (aspect < 0.85 ? 0.44 : 0.76);
+      const vistaBlend = this._userDraggedShowroom ? 0.25 : 1.0;
+      this._camDesiredLook
+        .copy(pFr.pos)
+        .addScaledVector(pFr.tangent, 1.35 * vistaBlend)
+        .addScaledVector(pFr.right, -0.55 * vistaBlend);
+      this._camDesiredLook.y += lookY;
 
-      const desiredFov = isPortrait ? 60 : 49;
+      const desiredFov = aspect < 0.58 ? 76 : (aspect < 0.85 ? 64 : 47);
       if (Math.abs(this.camera.fov - desiredFov) > 0.2) {
         this.camera.fov += (desiredFov - this.camera.fov) * Math.min(1, dt * 6);
         this.camera.updateProjectionMatrix();
       }
 
-      this.camera.position.lerp(targetPos, Math.min(1, dt * 6.5));
-      this._camLook.lerp(lookTarget, Math.min(1, dt * 8.0));
+      this.camera.position.lerp(this._camDesiredPos, Math.min(1, dt * 6.5));
+      this._camLook.lerp(this._camDesiredLook, Math.min(1, dt * 8.0));
       this.camera.lookAt(this._camLook);
       return;
     }
 
     // 2. Post-Race Podium Orbit Camera
     if (this.state === GAME_STATES.RACE_RESULTS) {
+      this.camera.up.set(0, 1, 0);
+      if (Math.abs(this.camera.near - 0.32) > 0.01) {
+        this.camera.near = 0.32;
+        this.camera.updateProjectionMatrix();
+      }
       const ang = this.elapsedSec * 0.55;
-      const target = pFr.pos.clone().add(new THREE.Vector3(Math.cos(ang) * 9.0, 3.3, Math.sin(ang) * 9.0));
-      this.camera.position.lerp(target, Math.min(1, dt * 4));
+      const podRadius = aspect < 0.60 ? 11.8 : (aspect < 0.85 ? 10.2 : 9.0);
+      this._camDesiredPos.set(
+        pFr.pos.x + Math.cos(ang) * podRadius,
+        pFr.pos.y + 3.3,
+        pFr.pos.z + Math.sin(ang) * podRadius
+      );
+      this.camera.position.lerp(this._camDesiredPos, Math.min(1, dt * 4));
       this.camera.lookAt(pFr.pos.x, pFr.pos.y + 0.85, pFr.pos.z);
       return;
     }
 
     // 3. Dedicated Pit Box Crew Broadcast Angle
     if (this.state === GAME_STATES.PIT_STOP) {
-      const pitCamPos = pFr.pos
-        .clone()
-        .addScaledVector(pFr.tangent, 6.2)
-        .addScaledVector(pFr.right, -4.4)
-        .add(new THREE.Vector3(0, 3.2, 0));
-      this.camera.position.lerp(pitCamPos, Math.min(1, dt * 6.5));
-      this._camLook.lerp(pFr.pos.clone().add(new THREE.Vector3(0, 0.75, 0)), Math.min(1, dt * 8));
+      this.camera.up.set(0, 1, 0);
+      if (Math.abs(this.camera.near - 0.32) > 0.01) {
+        this.camera.near = 0.32;
+        this.camera.updateProjectionMatrix();
+      }
+      const pitScale = aspect < 0.65 ? 1.25 : 1.0;
+      this._camDesiredPos
+        .copy(pFr.pos)
+        .addScaledVector(pFr.tangent, 6.2 * pitScale)
+        .addScaledVector(pFr.right, -4.4 * pitScale);
+      this._camDesiredPos.y += 3.2;
+      this._camDesiredLook.set(pFr.pos.x, pFr.pos.y + 0.75, pFr.pos.z);
+      this.camera.position.lerp(this._camDesiredPos, Math.min(1, dt * 6.5));
+      this._camLook.lerp(this._camDesiredLook, Math.min(1, dt * 8));
       this.camera.lookAt(this._camLook);
       return;
     }
 
-    // 4. Active Racing / Qualifying Camera Modes (0: Chase, 1: T-Cam Cockpit, 2: 1982 High Arcade)
-    let backDist = 6.5;
-    let upHeight = 2.32;
-    let lookAhead = 22.0;
+    // 4. Active Racing / Qualifying 4-Camera Modes:
+    //    0: Chase Cam | 1: Halo T-Cam | 2: First-Person Cockpit View | 3: Nose Wing Cam
+    const isNarrowPortrait = aspect < 0.85;
+    const camIdx = ((this.cameraModeIdx % 4) + 4) % 4;
+    const isOnboardRigid = camIdx === 1 || camIdx === 2 || camIdx === 3;
+    const targetNear = camIdx === 2 ? 0.08 : (isOnboardRigid ? 0.14 : 0.32);
 
-    if (this.cameraModeIdx === 1) {
-      backDist = 0.55;
-      upHeight = 1.18;
-      lookAhead = 34.0;
-    } else if (this.cameraModeIdx === 2 || this.config.visualStyle === '1982_ARCADE') {
-      backDist = 8.2;
-      upHeight = 3.20;
-      lookAhead = 26.0;
+    // Deterministic high-frequency kerb buzz + >240 km/h aero micro-vibration
+    const spdNorm = Math.max(0, (this.playerCar.speedKmh - 240) / 110);
+    const kerbScale = camIdx === 2 ? 0.016 : (isOnboardRigid ? 0.024 : 0.046);
+    const aeroScale = camIdx === 2 ? 0.006 : (isOnboardRigid ? 0.010 : 0.015);
+    const kerbAmp = this.playerCar.onCurb && this.playerCar.speedKmh > 40 ? kerbScale : 0;
+    const aeroAmp = spdNorm * aeroScale;
+    const vibY = Math.sin(this.elapsedSec * 58.0) * kerbAmp + Math.cos(this.elapsedSec * 43.0) * aeroAmp;
+    const vibLat = Math.cos(this.elapsedSec * 51.0) * (kerbAmp * 0.45 + aeroAmp * 0.35);
+
+    const drsHighSpeed = !this.playerCar.inPitLane && this.playerCar.speedKmh > 285;
+    const drsSurgeTarget = (this.playerCar.inSlipstream ? 3.2 : 0) + (drsHighSpeed ? 1.8 : 0);
+    this._camDrsFovSurge = (this._camDrsFovSurge || 0) + (drsSurgeTarget - (this._camDrsFovSurge || 0)) * Math.min(1, dt * 5.5);
+
+    if (isOnboardRigid) {
+      // Exact 3D car-attached basis (track spline + yaw + 240Hz chassisPitchRad & chassisRollRad)
+      const relYaw = this.playerCar.relYaw || 0;
+      const cosY = Math.cos(relYaw);
+      const sinY = Math.sin(relYaw);
+      this._camCarFwd
+        .copy(pFr.tangent)
+        .multiplyScalar(cosY)
+        .addScaledVector(pFr.right, sinY)
+        .normalize();
+      this._camCarRight.crossVectors(this._camCarFwd, pFr.normal).normalize();
+      this._camCarUp.copy(pFr.normal).normalize();
+
+      const pitchRad = Number.isFinite(this.playerCar.chassisPitchRad)
+        ? this.playerCar.chassisPitchRad
+        : ((this.playerCar.brakeInput || 0) * 0.025 - (this.playerCar.throttleInput || 0) * 0.013);
+      const rollRad = Number.isFinite(this.playerCar.chassisRollRad)
+        ? this.playerCar.chassisRollRad
+        : (-(this.playerCar.latG || 0) * 0.021);
+
+      const rawLookApex = Number.isFinite(this.controls?.lookApexNormalized)
+        ? this.controls.lookApexNormalized
+        : (this.playerCar.steerInput || 0) * 0.65;
+      this._camCockpitApex = (this._camCockpitApex || 0) + (rawLookApex - (this._camCockpitApex || 0)) * Math.min(1, dt * 11.0);
+
+      let baseFov;
+      if (camIdx === 2) {
+        // First-Person Cockpit Helmet Eye-Point: 0.36m behind animated 3D SteeringWheel & Nomex gloves,
+        // framing OLED CockpitDash, Titanium Halo, WingMirrors & front 18-inch slicks!
+        baseFov = aspect < 0.58 ? 82 : (aspect < 0.85 ? 76 : 68);
+        const apexYawRad = this._camCockpitApex * 0.24;
+        const lookDist = 28.0;
+
+        this._camDesiredPos
+          .copy(pFr.pos)
+          .addScaledVector(this._camCarFwd, 0.16)
+          .addScaledVector(this._camCarRight, vibLat * 0.45)
+          .addScaledVector(this._camCarUp, 0.635 + vibY * 0.45);
+
+        this._camDesiredLook
+          .copy(pFr.pos)
+          .addScaledVector(this._camCarFwd, lookDist * Math.cos(apexYawRad))
+          .addScaledVector(this._camCarRight, lookDist * Math.sin(apexYawRad))
+          .addScaledVector(this._camCarUp, 0.57 - pitchRad * 24.0 + vibY * 0.35);
+
+        this.camera.up
+          .copy(this._camCarUp)
+          .addScaledVector(this._camCarRight, Math.sin(rollRad * 1.15))
+          .normalize();
+      } else if (camIdx === 1) {
+        // Broadcast F1 Halo Roll-Hoop T-Cam
+        baseFov = aspect < 0.58 ? 82 : (aspect < 0.85 ? 74 : 62);
+        const apexYawRad = this._camCockpitApex * 0.12;
+        const lookDist = 34.0;
+
+        this._camDesiredPos
+          .copy(pFr.pos)
+          .addScaledVector(this._camCarFwd, -0.08)
+          .addScaledVector(this._camCarRight, vibLat * 0.55)
+          .addScaledVector(this._camCarUp, 0.96 + vibY * 0.65);
+
+        this._camDesiredLook
+          .copy(pFr.pos)
+          .addScaledVector(this._camCarFwd, lookDist * Math.cos(apexYawRad))
+          .addScaledVector(this._camCarRight, lookDist * Math.sin(apexYawRad))
+          .addScaledVector(this._camCarUp, (isNarrowPortrait ? 0.54 : 0.68) - pitchRad * 20.0);
+
+        this.camera.up
+          .copy(this._camCarUp)
+          .addScaledVector(this._camCarRight, Math.sin(rollRad * 0.85))
+          .normalize();
+      } else {
+        // Low-Slung Front Nose Wing Camera (ultra-fast ground-effect rush between front slicks!)
+        baseFov = aspect < 0.58 ? 84 : (aspect < 0.85 ? 76 : 66);
+        const apexYawRad = this._camCockpitApex * 0.10;
+        const lookDist = 32.0;
+
+        this._camDesiredPos
+          .copy(pFr.pos)
+          .addScaledVector(this._camCarFwd, 1.68)
+          .addScaledVector(this._camCarRight, vibLat * 0.55)
+          .addScaledVector(this._camCarUp, 0.29 + vibY * 0.75);
+
+        this._camDesiredLook
+          .copy(pFr.pos)
+          .addScaledVector(this._camCarFwd, lookDist * Math.cos(apexYawRad))
+          .addScaledVector(this._camCarRight, lookDist * Math.sin(apexYawRad))
+          .addScaledVector(this._camCarUp, 0.34 - pitchRad * 22.0);
+
+        this.camera.up
+          .copy(this._camCarUp)
+          .addScaledVector(this._camCarRight, Math.sin(rollRad * 0.95))
+          .normalize();
+      }
+
+      const speedFovBoost = (this.playerCar.speedKmh / 320) * (camIdx === 2 ? 5.5 : 8.0) + this._camDrsFovSurge * 0.75;
+      const desiredFov = Math.min(94, baseFov + speedFovBoost);
+      let projDirty = false;
+      if (Math.abs(this.camera.near - targetNear) > 0.005) {
+        this.camera.near = targetNear;
+        projDirty = true;
+      }
+      if (Math.abs(this.camera.fov - desiredFov) > 0.15) {
+        this.camera.fov += (desiredFov - this.camera.fov) * Math.min(1, dt * 7.5);
+        projDirty = true;
+      }
+      if (projDirty) this.camera.updateProjectionMatrix();
+
+      this.camera.position.copy(this._camDesiredPos);
+      this.camera.lookAt(this._camDesiredLook);
+      return;
     }
 
-    const baseFov = (window.innerWidth / window.innerHeight) < 0.85 ? 68 : 58;
-    const speedFovBoost = (this.playerCar.speedKmh / 320) * (this.playerCar.inSlipstream ? 11.5 : 8.0);
-    const desiredFov = baseFov + speedFovBoost;
+    // Mode 0: Dynamic Broadcast Chase Camera
+    this.camera.up.set(0, 1, 0);
+    const backDist = isNarrowPortrait ? (aspect < 0.58 ? 7.65 : 7.05) : 6.5;
+    const upHeight = isNarrowPortrait ? (aspect < 0.58 ? 2.58 : 2.45) : 2.32;
+    const lookAhead = isNarrowPortrait ? 24.0 : 22.0;
+    const lookHeight = isNarrowPortrait ? 0.62 : 1.02;
+
+    const baseFov = aspect < 0.58 ? 82 : (aspect < 0.85 ? 74 : 58);
+    const speedFovBoost = (this.playerCar.speedKmh / 320) * (this.playerCar.inSlipstream ? 10.5 : 7.5) + this._camDrsFovSurge;
+    const desiredFov = Math.min(95, baseFov + speedFovBoost);
+    let chaseProjDirty = false;
+    if (Math.abs(this.camera.near - targetNear) > 0.005) {
+      this.camera.near = targetNear;
+      chaseProjDirty = true;
+    }
     if (Math.abs(this.camera.fov - desiredFov) > 0.15) {
       this.camera.fov += (desiredFov - this.camera.fov) * Math.min(1, dt * 6);
-      this.camera.updateProjectionMatrix();
+      chaseProjDirty = true;
     }
+    if (chaseProjDirty) this.camera.updateProjectionMatrix();
 
-    const curbShakeY = this.playerCar.onCurb && this.playerCar.speedKmh > 40
-      ? (Math.random() - 0.5) * 0.08
-      : 0;
+    // Smooth apex look-ahead + subtle lateral chase-cam swing into corners
+    const apexSwing = -this.playerCar.steerInput * (isNarrowPortrait ? 0.44 : 0.55);
+    const lookAheadFr = this.track.sampleAt(this.playerCar.s + lookAhead, this.playerCar.lateralOffset);
+    const curveHint = Math.max(-1.2, Math.min(1.2, (lookAheadFr.curvature || 0) * 180));
+    const targetApexLookLat = this.playerCar.steerInput * 1.35 + curveHint * 0.75;
+    this._camApexLookLat = (this._camApexLookLat || 0) + (targetApexLookLat - (this._camApexLookLat || 0)) * Math.min(1, dt * 7.5);
 
-    // Subtle lateral apex lean into corners for visceral chase-cam flow
-    const apexSwing = -this.playerCar.steerInput * 0.55;
-
-    const desiredPos = pFr.pos
-      .clone()
+    this._camDesiredPos
+      .copy(pFr.pos)
       .addScaledVector(pFr.tangent, -backDist)
-      .addScaledVector(pFr.right, apexSwing)
-      .addScaledVector(pFr.normal, upHeight + curbShakeY);
+      .addScaledVector(pFr.right, apexSwing + vibLat)
+      .addScaledVector(pFr.normal, upHeight + vibY);
 
-    const desiredLook = pFr.pos
-      .clone()
+    this._camDesiredLook
+      .copy(pFr.pos)
       .addScaledVector(pFr.tangent, lookAhead)
-      .addScaledVector(pFr.normal, 1.02);
+      .addScaledVector(pFr.right, this._camApexLookLat)
+      .addScaledVector(pFr.normal, lookHeight);
 
-    if (this.cameraModeIdx === 1) {
-      this.camera.position.copy(desiredPos);
-      this.camera.lookAt(desiredLook);
-    } else {
-      this.camera.position.lerp(desiredPos, Math.min(1, dt * 16.5));
-      this._camLook.lerp(desiredLook, Math.min(1, dt * 18.5));
-      this.camera.lookAt(this._camLook);
-    }
+    this.camera.position.lerp(this._camDesiredPos, Math.min(1, dt * 16.5));
+    this._camLook.lerp(this._camDesiredLook, Math.min(1, dt * 18.5));
+    this.camera.lookAt(this._camLook);
   }
 }
 

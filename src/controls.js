@@ -11,10 +11,19 @@ const TILT_DEADZONE_DEG = 1.6;
 const TILT_BASE_MAX_DEG = 26.0;
 const GAMEPAD_AXIS_DEADZONE = 0.22;
 const GAMEPAD_TRIGGER_DEADZONE = 0.12;
+const SAT_ACTIVE_ASSIST_BLEND = 0.18;
+const SAT_RELEASE_RETURN_GAIN = 0.52;
+const HIGH_SPEED_STEER_DAMP_MIN = 0.74;
+const VISOR_WIPE_DURATION_SEC = 0.38;
 const VIRTUAL_HID_IGNORE_RE = /vjoy|virtual\s*hid|spacemouse|3dconnexion|headtrack/i;
 
 function clamp(v, min, max) {
   return v < min ? min : (v > max ? max : v);
+}
+
+function smoothstep(edge0, edge1, x) {
+  const t = clamp((x - edge0) / Math.max(1e-5, edge1 - edge0), 0.0, 1.0);
+  return t * t * (3.0 - 2.0 * t);
 }
 
 function expSmoothing(rate, dt) {
@@ -62,6 +71,14 @@ export class ErgonomicControls {
     this._gpPrevShiftDown = false;
     this._gpShiftInitialized = false;
 
+    // Native TouchEvent identifier state (isolates multi-touch thumbs on iOS Safari & Android Chrome)
+    this._hasNativeTouch =
+      typeof window !== 'undefined' &&
+      ('ontouchstart' in window || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0));
+    this._wheelTouchId = null;
+    this._arrowTouchId = null;
+    this._pedalTouchId = null;
+
     // Relative-anchor F1 Wheel pointer state (where thumb lands = 0.0 deg straight!)
     this.wheelPointerId = null;
     this.wheelAnchorX = 0.0;
@@ -91,6 +108,25 @@ export class ErgonomicControls {
     this.pedalPointerId = null;
     this.touchGas = 0.0;
     this.touchBrake = 0.0;
+    this._pedalZoneState = 'NONE';
+    this._fullBrakeLockActive = false;
+    this._lastPedalHapticMs = 0;
+    this._lastCarGear = 1;
+
+    // Physics-Driven Self-Aligning Torque (SAT), Speed Damping, Look-to-Apex & Visor Tear-Off
+    this.selfAligningTorque = 0.0;    // [-1..1] pneumatic-trail + rear-oversteer counter-steer torque
+    this.speedSteerAuthority = 1.0;   // [0.74..1.0] 300+ km/h lock damping factor
+    this.lookApexNormalized = 0.0;    // [-1..1] smooth cockpit/chase look-to-apex yaw signal
+    this.visorTearOffProgress = 1.0;  // [0..1] 0 -> 1 visor wipe sweep (1.0 = clean)
+    this.visorTearOffCount = 0;
+    this._visorGestureTouchId = null;
+    this._visorGestureStartX = 0.0;
+    this._visorGestureStartY = 0.0;
+    this._visorGestureStartMs = 0.0;
+    this._visorLastTapMs = 0.0;
+    this._visorLastTapX = 0.0;
+    this._visorLastTapY = 0.0;
+    this._lastSatVibMs = 0;
 
     // Keyboard state
     this.keys = new Set();
@@ -113,6 +149,8 @@ export class ErgonomicControls {
     this.wheelZoneEl = document.getElementById('touch-wheel-zone');
     this.wheelGraphicEl = document.getElementById('virtual-wheel-graphic');
     this.wheelReadoutEl = document.getElementById('wheel-angle-readout');
+    this.wheelHubEl = this.wheelReadoutEl;
+    this.wheelShiftLedsWrapEl = document.getElementById('wheel-shift-leds');
     this.wheelCaptionEl = this.wheelZoneEl ? this.wheelZoneEl.querySelector('.control-caption') : null;
     this.wheelLedEls = Array.from(document.querySelectorAll('.w-led'));
 
@@ -145,6 +183,7 @@ export class ErgonomicControls {
       this.wheelZoneEl,
       this.arrowZoneEl,
       this.tiltZoneEl,
+      this.pedalAssemblyEl,
       this.pedalZoneEl,
       this.shifterBtnEl,
       this.shiftDownBtnEl,
@@ -154,6 +193,7 @@ export class ErgonomicControls {
       if (!el) continue;
       el.style.userSelect = 'none';
       el.style.webkitUserSelect = 'none';
+      el.style.webkitTouchCallout = 'none';
       if (el !== this.hudControlsEl && el !== this.touchControlsLayerAltEl) {
         el.style.touchAction = 'none';
       }
@@ -163,74 +203,115 @@ export class ErgonomicControls {
       this.hudControlsEl.addEventListener('contextmenu', (e) => e.preventDefault());
     }
 
+    // Ignore synthetic touch pointer events whenever native TouchEvents are active
+    const ignoreTouchPointer = (e) => this._hasNativeTouch && e.pointerType === 'touch';
+
     // ------------------------------------------------------------------------
     // 1A. Relative-Anchor Virtual F1 Steering Wheel (Zero Initial Snap!)
-    //     Also serves as tap-to-calibrate & desktop fallback in TILT mode!
     // ------------------------------------------------------------------------
     const releaseWheelPointer = (pointerId) => {
       if (pointerId !== undefined && pointerId !== this.wheelPointerId) return;
       this.wheelPointerId = null;
-      this.wheelTouchSteer = 0.0;
-      this.wheelZoneEl?.classList.remove('wheel-active');
+      if (this._wheelTouchId === null) {
+        this.wheelTouchSteer = 0.0;
+        this.wheelZoneEl?.classList.remove('wheel-active');
+      }
+    };
+    const releaseWheelTouch = (touchId) => {
+      if (touchId !== undefined && touchId !== this._wheelTouchId) return;
+      this._wheelTouchId = null;
+      if (this.wheelPointerId === null) {
+        this.wheelTouchSteer = 0.0;
+        this.wheelZoneEl?.classList.remove('wheel-active');
+      }
     };
     this._releaseWheelPointer = releaseWheelPointer;
+    this._releaseWheelTouch = releaseWheelTouch;
+
+    const beginWheelTrack = (clientX) => {
+      this.wheelAnchorX = clientX; // Exact thumb landing spot = 0.0° straight ahead!
+      this.wheelTouchSteer = 0.0;
+      this._wheelDownTimeMs = performance.now();
+      this._wheelMaxMovePx = 0.0;
+      this.wheelZoneEl?.classList.add('wheel-active');
+      this._vibrate(6);
+    };
+
+    const moveWheelTrack = (pt) => {
+      this._wheelMaxMovePx = Math.max(this._wheelMaxMovePx, Math.abs(pt.clientX - this.wheelAnchorX));
+      if (this.steeringStyle !== 'TILT' || !this.tiltSensorAvailable || this._wheelMaxMovePx > 10.0) {
+        this._updateWheelFromPointer(pt);
+      }
+    };
+
+    const checkTiltQuickTapRecenter = () => {
+      if (
+        this.steeringStyle === 'TILT' &&
+        this._wheelMaxMovePx < 8.0 &&
+        performance.now() - this._wheelDownTimeMs < 350
+      ) {
+        this.calibrateTiltCenter();
+      }
+    };
 
     if (this.wheelZoneEl) {
-      this.wheelZoneEl.addEventListener('pointerdown', (e) => {
+      // Native Multi-Touch (Phone / Tablet)
+      this.wheelZoneEl.addEventListener('touchstart', (e) => {
         e.preventDefault();
         if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
-        if (this.steeringStyle === 'TILT') {
-          this._requestTiltPermissionFromGesture();
+        if (this.steeringStyle === 'TILT') this._requestTiltPermissionFromGesture();
+        if (this._wheelTouchId === null && this.wheelPointerId === null && e.changedTouches.length > 0) {
+          const t = e.changedTouches[0];
+          this._wheelTouchId = t.identifier;
+          beginWheelTrack(t.clientX);
         }
-        // Ignore extra fingers if a steering thumb is already anchored
-        if (this.wheelPointerId === null) {
+      }, { passive: false });
+
+      // Desktop Mouse / Pen PointerEvents (NO setPointerCapture on touch, NO lostpointercapture!)
+      this.wheelZoneEl.addEventListener('pointerdown', (e) => {
+        if (ignoreTouchPointer(e)) return;
+        e.preventDefault();
+        if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
+        if (this.steeringStyle === 'TILT') this._requestTiltPermissionFromGesture();
+        if (this.wheelPointerId === null && this._wheelTouchId === null) {
           this._clearStalePointerCollision(e.pointerId, 'wheel');
           this.wheelPointerId = e.pointerId;
-          this.wheelAnchorX = e.clientX; // Exact thumb landing spot = 0.0° straight ahead!
-          this.wheelTouchSteer = 0.0;
-          this._wheelDownTimeMs = performance.now();
-          this._wheelMaxMovePx = 0.0;
-          this.wheelZoneEl.classList.add('wheel-active');
-          this._vibrate(6);
-          try {
-            this.wheelZoneEl.setPointerCapture(e.pointerId);
-          } catch (_) {}
+          beginWheelTrack(e.clientX);
+          if (e.pointerType === 'mouse' || e.pointerType === 'pen') {
+            try { this.wheelZoneEl.setPointerCapture(e.pointerId); } catch (_) {}
+          }
         }
       });
 
       this.wheelZoneEl.addEventListener('pointermove', (e) => {
+        if (ignoreTouchPointer(e)) return;
         if (e.pointerId === this.wheelPointerId) {
           e.preventDefault();
-          this._wheelMaxMovePx = Math.max(this._wheelMaxMovePx, Math.abs(e.clientX - this.wheelAnchorX));
-          // In TILT mode with active gyro, ignore tiny resting jitter unless user deliberately drags fallback
-          if (this.steeringStyle !== 'TILT' || !this.tiltSensorAvailable || this._wheelMaxMovePx > 10.0) {
-            this._updateWheelFromPointer(e);
-          }
+          moveWheelTrack(e);
         }
       });
 
       const onWheelEnd = (e) => {
+        if (ignoreTouchPointer(e)) return;
         if (e.pointerId === this.wheelPointerId) {
-          // Quick tap on F1 wheel in TILT mode recalibrates 0° center!
-          if (
-            e.type === 'pointerup' &&
-            this.steeringStyle === 'TILT' &&
-            this._wheelMaxMovePx < 8.0 &&
-            performance.now() - this._wheelDownTimeMs < 350
-          ) {
-            this.calibrateTiltCenter();
-          }
+          if (e.type === 'pointerup') checkTiltQuickTapRecenter();
           releaseWheelPointer(e.pointerId);
         }
       };
       this.wheelZoneEl.addEventListener('pointerup', onWheelEnd);
       this.wheelZoneEl.addEventListener('pointercancel', onWheelEnd);
-      this.wheelZoneEl.addEventListener('lostpointercapture', onWheelEnd);
     }
 
-    // Optional dedicated Tilt Zone / Calibrate Button if present in DOM
+    // Optional dedicated Tilt Zone / Calibrate Button
     if (this.tiltZoneEl) {
+      this.tiltZoneEl.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
+        this._requestTiltPermissionFromGesture();
+        this.calibrateTiltCenter();
+      }, { passive: false });
       this.tiltZoneEl.addEventListener('pointerdown', (e) => {
+        if (ignoreTouchPointer(e)) return;
         e.preventDefault();
         if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
         this._requestTiltPermissionFromGesture();
@@ -252,27 +333,51 @@ export class ErgonomicControls {
     const releaseArrowPointer = (pointerId) => {
       if (pointerId !== undefined && pointerId !== this.arrowPointerId) return;
       this.arrowPointerId = null;
-      this.arrowDir = 0;
-      this.btnLeftEl?.classList.remove('pressed');
-      this.btnRightEl?.classList.remove('pressed');
+      if (this._arrowTouchId === null) {
+        this.arrowDir = 0;
+        this.btnLeftEl?.classList.remove('pressed');
+        this.btnRightEl?.classList.remove('pressed');
+      }
+    };
+    const releaseArrowTouch = (touchId) => {
+      if (touchId !== undefined && touchId !== this._arrowTouchId) return;
+      this._arrowTouchId = null;
+      if (this.arrowPointerId === null) {
+        this.arrowDir = 0;
+        this.btnLeftEl?.classList.remove('pressed');
+        this.btnRightEl?.classList.remove('pressed');
+      }
     };
     this._releaseArrowPointer = releaseArrowPointer;
+    this._releaseArrowTouch = releaseArrowTouch;
 
     if (this.arrowZoneEl) {
-      this.arrowZoneEl.addEventListener('pointerdown', (e) => {
+      this.arrowZoneEl.addEventListener('touchstart', (e) => {
         e.preventDefault();
         if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
-        if (this.arrowPointerId === null) {
+        if (this._arrowTouchId === null && this.arrowPointerId === null && e.changedTouches.length > 0) {
+          const t = e.changedTouches[0];
+          this._arrowTouchId = t.identifier;
+          this._updateArrowFromPointer(t, true);
+        }
+      }, { passive: false });
+
+      this.arrowZoneEl.addEventListener('pointerdown', (e) => {
+        if (ignoreTouchPointer(e)) return;
+        e.preventDefault();
+        if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
+        if (this.arrowPointerId === null && this._arrowTouchId === null) {
           this._clearStalePointerCollision(e.pointerId, 'arrow');
           this.arrowPointerId = e.pointerId;
-          try {
-            this.arrowZoneEl.setPointerCapture(e.pointerId);
-          } catch (_) {}
+          if (e.pointerType === 'mouse' || e.pointerType === 'pen') {
+            try { this.arrowZoneEl.setPointerCapture(e.pointerId); } catch (_) {}
+          }
           this._updateArrowFromPointer(e, true);
         }
       });
 
       this.arrowZoneEl.addEventListener('pointermove', (e) => {
+        if (ignoreTouchPointer(e)) return;
         if (e.pointerId === this.arrowPointerId) {
           e.preventDefault();
           this._updateArrowFromPointer(e, false);
@@ -280,13 +385,13 @@ export class ErgonomicControls {
       });
 
       const onArrowEnd = (e) => {
+        if (ignoreTouchPointer(e)) return;
         if (e.pointerId === this.arrowPointerId) {
           releaseArrowPointer(e.pointerId);
         }
       };
       this.arrowZoneEl.addEventListener('pointerup', onArrowEnd);
       this.arrowZoneEl.addEventListener('pointercancel', onArrowEnd);
-      this.arrowZoneEl.addEventListener('lostpointercapture', onArrowEnd);
     }
 
     // ------------------------------------------------------------------------
@@ -295,33 +400,61 @@ export class ErgonomicControls {
     const releasePedalPointer = (pointerId) => {
       if (pointerId !== undefined && pointerId !== this.pedalPointerId) return;
       this.pedalPointerId = null;
-      this.touchGas = 0.0;
-      this.touchBrake = 0.0;
-      this.gasPedalEl?.classList.remove('active-pedal');
-      this.brakePedalEl?.classList.remove('active-pedal');
+      if (this._pedalTouchId === null) {
+        this.touchGas = 0.0;
+        this.touchBrake = 0.0;
+        this._pedalZoneState = 'NONE';
+        this._fullBrakeLockActive = false;
+        this.gasPedalEl?.classList.remove('active-pedal');
+        this.brakePedalEl?.classList.remove('active-pedal');
+      }
+    };
+    const releasePedalTouch = (touchId) => {
+      if (touchId !== undefined && touchId !== this._pedalTouchId) return;
+      this._pedalTouchId = null;
+      if (this.pedalPointerId === null) {
+        this.touchGas = 0.0;
+        this.touchBrake = 0.0;
+        this._pedalZoneState = 'NONE';
+        this._fullBrakeLockActive = false;
+        this.gasPedalEl?.classList.remove('active-pedal');
+        this.brakePedalEl?.classList.remove('active-pedal');
+      }
     };
     this._releasePedalPointer = releasePedalPointer;
+    this._releasePedalTouch = releasePedalTouch;
 
     if (this.pedalZoneEl) {
-      this.pedalZoneEl.addEventListener('pointerdown', (e) => {
+      this.pedalZoneEl.addEventListener('touchstart', (e) => {
         e.preventDefault();
         if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
-        if (this.steeringStyle === 'TILT') {
-          this._requestTiltPermissionFromGesture();
-        }
+        if (this.steeringStyle === 'TILT') this._requestTiltPermissionFromGesture();
         if (this.callbacks.onClutchTap) this.callbacks.onClutchTap();
-        // Lock exclusively to the pedal thumb so a 3rd finger never steals pedal state
-        if (this.pedalPointerId === null) {
+        if (this._pedalTouchId === null && this.pedalPointerId === null && e.changedTouches.length > 0) {
+          const t = e.changedTouches[0];
+          this._pedalTouchId = t.identifier;
+          this._updatePedalsFromPointer(t);
+        }
+      }, { passive: false });
+
+      this.pedalZoneEl.addEventListener('pointerdown', (e) => {
+        if (ignoreTouchPointer(e)) return;
+        e.preventDefault();
+        if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
+        if (this.steeringStyle === 'TILT') this._requestTiltPermissionFromGesture();
+        if (this.callbacks.onClutchTap) this.callbacks.onClutchTap();
+        if (this.pedalPointerId === null && this._pedalTouchId === null) {
           this._clearStalePointerCollision(e.pointerId, 'pedal');
           this.pedalPointerId = e.pointerId;
-          try {
-            this.pedalZoneEl.setPointerCapture(e.pointerId);
-          } catch (_) {}
+          if (e.pointerType === 'mouse' || e.pointerType === 'pen') {
+            try { this.pedalZoneEl.setPointerCapture(e.pointerId); } catch (_) {}
+          }
           this._updatePedalsFromPointer(e);
         }
       });
 
       this.pedalZoneEl.addEventListener('pointermove', (e) => {
+        if (ignoreTouchPointer(e)) return;
         if (e.pointerId === this.pedalPointerId) {
           e.preventDefault();
           this._updatePedalsFromPointer(e);
@@ -329,22 +462,197 @@ export class ErgonomicControls {
       });
 
       const onPedalEnd = (e) => {
+        if (ignoreTouchPointer(e)) return;
         if (e.pointerId === this.pedalPointerId) {
           releasePedalPointer(e.pointerId);
         }
       };
       this.pedalZoneEl.addEventListener('pointerup', onPedalEnd);
       this.pedalZoneEl.addEventListener('pointercancel', onPedalEnd);
-      this.pedalZoneEl.addEventListener('lostpointercapture', onPedalEnd);
     }
 
-    // Global safety listeners for uncaptured drags, mobile Safari gestures & tab switches
-    window.addEventListener('pointermove', (e) => {
-      if (e.pointerId === this.wheelPointerId) {
-        this._wheelMaxMovePx = Math.max(this._wheelMaxMovePx, Math.abs(e.clientX - this.wheelAnchorX));
-        if (this.steeringStyle !== 'TILT' || !this.tiltSensorAvailable || this._wheelMaxMovePx > 10.0) {
-          this._updateWheelFromPointer(e);
+    // ------------------------------------------------------------------------
+    // 2B. Forgiving Bottom-Corner Thumb Catcher (38px Halo + Lower-Corner Net)
+    // ------------------------------------------------------------------------
+    const inExpandedRect = (el, x, y, padPx) => {
+      if (!el || el.style.display === 'none') return false;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return false;
+      return x >= r.left - padPx && x <= r.right + padPx && y >= r.top - padPx && y <= r.bottom + padPx;
+    };
+
+    const handleForgivingThumbCatch = (e) => {
+      const layer = this.hudControlsEl;
+      if (!layer || layer.style.display === 'none') return;
+      const tgt = e.target;
+      if (tgt && typeof tgt.closest === 'function') {
+        // Skip if already inside a primary control zone or inside any interactive HUD button/drawer/modal
+        if (
+          tgt.closest(
+            '#touch-wheel-zone, #touch-arrow-zone, #touch-pedal-zone, #touch-tilt-zone, ' +
+            '#touch-shifter-btn, #touch-shift-down-btn, #touch-shift-up-btn, ' +
+            'button, a, input, select, textarea, .garage-drawer, .career-drawer, .modal-box, ' +
+            '#pit-strategy-drawer, #pit-stop-overlay, #replay-overlay, .hud-quick-actions, #right-telemetry-dock'
+          )
+        ) {
+          return;
         }
+      }
+
+      const viewW = window.visualViewport?.width || window.innerWidth || 1;
+      const viewH = window.visualViewport?.height || window.innerHeight || 1;
+      const isLeftHanded = this.handedness === 'LEFT_HANDED';
+      const activeSteerEl = this.steeringStyle === 'BUTTONS'
+        ? this.arrowZoneEl
+        : (this.tiltZoneEl && this.steeringStyle === 'TILT' ? this.tiltZoneEl : this.wheelZoneEl);
+
+      let caught = false;
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.identifier === this._wheelTouchId || t.identifier === this._arrowTouchId || t.identifier === this._pedalTouchId) {
+          continue;
+        }
+        const x = t.clientX;
+        const y = t.clientY;
+        const onLayerOrCanvas =
+          tgt === layer ||
+          tgt?.tagName === 'CANVAS' ||
+          tgt?.id === 'webgl-container' ||
+          tgt?.id === 'race-hud';
+
+        const nearPedal =
+          inExpandedRect(this.pedalZoneEl, x, y, 38) ||
+          (onLayerOrCanvas && y >= viewH * 0.54 && (isLeftHanded ? x <= viewW * 0.42 : x >= viewW * 0.58));
+
+        const nearSteer =
+          inExpandedRect(activeSteerEl, x, y, 38) ||
+          (onLayerOrCanvas && y >= viewH * 0.54 && (isLeftHanded ? x >= viewW * 0.58 : x <= viewW * 0.42));
+
+        if (nearPedal && this._pedalTouchId === null && this.pedalPointerId === null) {
+          this._pedalTouchId = t.identifier;
+          if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
+          if (this.steeringStyle === 'TILT') this._requestTiltPermissionFromGesture();
+          if (this.callbacks.onClutchTap) this.callbacks.onClutchTap();
+          this._updatePedalsFromPointer(t);
+          caught = true;
+        } else if (nearSteer) {
+          if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
+          if (this.steeringStyle === 'BUTTONS') {
+            if (this._arrowTouchId === null && this.arrowPointerId === null) {
+              this._arrowTouchId = t.identifier;
+              this._updateArrowFromPointer(t, true);
+              caught = true;
+            }
+          } else {
+            if (this.steeringStyle === 'TILT') this._requestTiltPermissionFromGesture();
+            if (this._wheelTouchId === null && this.wheelPointerId === null) {
+              this._wheelTouchId = t.identifier;
+              beginWheelTrack(x);
+              caught = true;
+            }
+          }
+        } else if (onLayerOrCanvas && y > 54 && y < viewH * 0.48 && this._visorGestureTouchId === null) {
+          // Upper-center cockpit glass zone: double-tap visor tear-off wipe or swipe camera cycle
+          this._visorGestureTouchId = t.identifier;
+          this._visorGestureStartX = x;
+          this._visorGestureStartY = y;
+          this._visorGestureStartMs = performance.now();
+        }
+      }
+
+      if (caught) {
+        e.preventDefault();
+      }
+    };
+
+    if (this.hudControlsEl) {
+      this.hudControlsEl.addEventListener('touchstart', handleForgivingThumbCatch, { passive: false });
+    }
+    window.addEventListener('touchstart', handleForgivingThumbCatch, { passive: false });
+
+    // Desktop double-click on upper race viewport triggers Cockpit Visor Tear-Off
+    window.addEventListener('dblclick', (e) => {
+      const layer = this.hudControlsEl;
+      if (!layer || layer.style.display === 'none') return;
+      const tgt = e.target;
+      if (tgt && (tgt.tagName === 'CANVAS' || tgt.id === 'webgl-container' || tgt.id === 'race-hud')) {
+        const viewH = window.visualViewport?.height || window.innerHeight || 1;
+        if (e.clientY > 54 && e.clientY < viewH * 0.50) {
+          this.triggerVisorTearOff();
+        }
+      }
+    });
+
+    // ------------------------------------------------------------------------
+    // 2C. Global Window Multi-Touch & Pointer Tracking (Seamless Out-of-Box Drag!)
+    // ------------------------------------------------------------------------
+    window.addEventListener('touchmove', (e) => {
+      let matchedActiveTouch = false;
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.identifier === this._wheelTouchId) {
+          moveWheelTrack(t);
+          matchedActiveTouch = true;
+        } else if (t.identifier === this._arrowTouchId) {
+          this._updateArrowFromPointer(t, false);
+          matchedActiveTouch = true;
+        } else if (t.identifier === this._pedalTouchId) {
+          this._updatePedalsFromPointer(t);
+          matchedActiveTouch = true;
+        }
+      }
+      if (matchedActiveTouch) {
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    const onGlobalTouchEnd = (e) => {
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.identifier === this._wheelTouchId) {
+          if (e.type === 'touchend') checkTiltQuickTapRecenter();
+          releaseWheelTouch(t.identifier);
+        }
+        if (t.identifier === this._arrowTouchId) {
+          releaseArrowTouch(t.identifier);
+        }
+        if (t.identifier === this._pedalTouchId) {
+          releasePedalTouch(t.identifier);
+        }
+        if (t.identifier === this._visorGestureTouchId) {
+          this._visorGestureTouchId = null;
+          if (e.type === 'touchend') {
+            const nowMs = performance.now();
+            const dtMs = nowMs - this._visorGestureStartMs;
+            const dx = t.clientX - this._visorGestureStartX;
+            const dy = t.clientY - this._visorGestureStartY;
+            if (dtMs < 360 && Math.abs(dx) >= 54 && Math.abs(dx) > Math.abs(dy) * 1.6) {
+              this.triggerQuickCameraCycle(dx > 0 ? 1 : -1);
+            } else if (dtMs < 280 && Math.hypot(dx, dy) < 26) {
+              if (
+                nowMs - this._visorLastTapMs < 330 &&
+                Math.hypot(t.clientX - this._visorLastTapX, t.clientY - this._visorLastTapY) < 42
+              ) {
+                this._visorLastTapMs = 0;
+                this.triggerVisorTearOff();
+              } else {
+                this._visorLastTapMs = nowMs;
+                this._visorLastTapX = t.clientX;
+                this._visorLastTapY = t.clientY;
+              }
+            }
+          }
+        }
+      }
+    };
+    window.addEventListener('touchend', onGlobalTouchEnd, { passive: false });
+    window.addEventListener('touchcancel', onGlobalTouchEnd, { passive: false });
+
+    // Global safety listeners for desktop mouse/pen uncaptured drags & tab switches
+    window.addEventListener('pointermove', (e) => {
+      if (ignoreTouchPointer(e)) return;
+      if (e.pointerId === this.wheelPointerId) {
+        moveWheelTrack(e);
       } else if (e.pointerId === this.arrowPointerId) {
         this._updateArrowFromPointer(e, false);
       } else if (e.pointerId === this.pedalPointerId) {
@@ -353,6 +661,7 @@ export class ErgonomicControls {
     }, { passive: true });
 
     const onGlobalPointerEnd = (e) => {
+      if (ignoreTouchPointer(e)) return;
       if (e.pointerId === this.wheelPointerId) releaseWheelPointer(e.pointerId);
       if (e.pointerId === this.arrowPointerId) releaseArrowPointer(e.pointerId);
       if (e.pointerId === this.pedalPointerId) releasePedalPointer(e.pointerId);
@@ -362,8 +671,11 @@ export class ErgonomicControls {
 
     const resetAllTransientInputs = () => {
       releaseWheelPointer();
+      releaseWheelTouch();
       releaseArrowPointer();
+      releaseArrowTouch();
       releasePedalPointer();
+      releasePedalTouch();
       this.keys.clear();
     };
     window.addEventListener('blur', resetAllTransientInputs);
@@ -374,33 +686,29 @@ export class ErgonomicControls {
     // ------------------------------------------------------------------------
     // 3. Manual Shifters: 1982 LOW/HIGH Toggle & 8-Speed Sequential Paddles
     // ------------------------------------------------------------------------
-    if (this.shifterBtnEl) {
-      this.shifterBtnEl.addEventListener('pointerdown', (e) => {
+    const bindShifterButton = (btnEl, vibMs, dir) => {
+      if (!btnEl) return;
+      btnEl.addEventListener('touchstart', (e) => {
         e.preventDefault();
         e.stopPropagation();
         if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
-        this._vibrate(16);
-        if (this.callbacks.onShift) this.callbacks.onShift(0);
-      });
-    }
-    if (this.shiftDownBtnEl) {
-      this.shiftDownBtnEl.addEventListener('pointerdown', (e) => {
+        this._vibrate(vibMs);
+        if (this.callbacks.onShift) this.callbacks.onShift(dir);
+      }, { passive: false });
+
+      btnEl.addEventListener('pointerdown', (e) => {
+        if (ignoreTouchPointer(e)) return;
         e.preventDefault();
         e.stopPropagation();
         if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
-        this._vibrate(14);
-        if (this.callbacks.onShift) this.callbacks.onShift(-1);
+        this._vibrate(vibMs);
+        if (this.callbacks.onShift) this.callbacks.onShift(dir);
       });
-    }
-    if (this.shiftUpBtnEl) {
-      this.shiftUpBtnEl.addEventListener('pointerdown', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
-        this._vibrate(14);
-        if (this.callbacks.onShift) this.callbacks.onShift(+1);
-      });
-    }
+    };
+
+    bindShifterButton(this.shifterBtnEl, 16, 0);
+    bindShifterButton(this.shiftDownBtnEl, 14, -1);
+    bindShifterButton(this.shiftUpBtnEl, 14, +1);
   }
 
   // --------------------------------------------------------------------------
@@ -630,6 +938,8 @@ export class ErgonomicControls {
         layer.style.setProperty('--ctrl-opacity', String(opacity));
       }
       layer.style.opacity = String(opacity);
+      // NEVER put a transform on #mobile-controls-layer itself (preserves fixed child coordinates!)
+      layer.style.transform = '';
     }
 
     if (typeof document !== 'undefined' && document.documentElement?.style?.setProperty) {
@@ -774,12 +1084,12 @@ export class ErgonomicControls {
     const height = Math.max(1.0, rect.height || 140.0);
     const width = Math.max(1.0, rect.width || 160.0);
 
-    // Ergonomic vertical modulation: comfortable upper/center press gives full 100% power,
-    // while sliding down into the lower 42% smoothly feathers down to 35% for wet exits
+    // Forgiving phone pedal modulation: comfortable lower-thumb press (>= 22% height) delivers full 100%,
+    // while bottom edge smoothly feathers 60%..100% for wet traction exits
     const yFromBottom = clamp((rect.bottom - e.clientY) / height, 0.0, 1.0);
-    const pressure = yFromBottom >= 0.42
+    const pressure = yFromBottom >= 0.22
       ? 1.0
-      : 0.35 + 0.65 * (yFromBottom / 0.42);
+      : 0.60 + 0.40 * (yFromBottom / 0.22);
 
     let xNorm = clamp((e.clientX - rect.left) / width, 0.0, 1.0);
     if (this.handedness === 'LEFT_HANDED') {
@@ -787,10 +1097,13 @@ export class ErgonomicControls {
     }
 
     // Smooth C1-continuous horizontal rollover bridge (0.40..0.60) for F1 Trail-Braking!
+    let nextZone = 'ROLLOVER';
     if (xNorm <= 0.40) {
+      nextZone = 'BRAKE';
       this.touchBrake = pressure;
       this.touchGas = 0.0;
     } else if (xNorm >= 0.60) {
+      nextZone = 'GAS';
       this.touchGas = pressure;
       this.touchBrake = 0.0;
     } else {
@@ -798,6 +1111,19 @@ export class ErgonomicControls {
       const s = u * u * (3.0 - 2.0 * u);
       this.touchBrake = pressure * Math.pow(1.0 - s, 0.85);
       this.touchGas = pressure * Math.pow(s, 0.85);
+    }
+
+    // Tactile pedal bite haptics: crisp micro-tick on trail-brake rollover crossing or 100% brake lock
+    if (this._pedalZoneState !== 'NONE' && this._pedalZoneState !== nextZone) {
+      this._vibratePedalTick(7);
+    }
+    this._pedalZoneState = nextZone;
+
+    if (this.touchBrake >= 0.98 && !this._fullBrakeLockActive) {
+      this._fullBrakeLockActive = true;
+      this._vibratePedalTick(11);
+    } else if (this.touchBrake < 0.88) {
+      this._fullBrakeLockActive = false;
     }
 
     this.gasPedalEl?.classList.toggle('active-pedal', this.touchGas > 0.05);
@@ -827,7 +1153,9 @@ export class ErgonomicControls {
         } else if (code === 'KeyV') {
           if (this.callbacks.onToggleVisualStyle) this.callbacks.onToggleVisualStyle();
         } else if (code === 'KeyC') {
-          if (this.callbacks.onCycleCamera) this.callbacks.onCycleCamera();
+          if (this.callbacks.onCycleCamera) this.callbacks.onCycleCamera(1);
+        } else if (code === 'KeyX' || code === 'KeyT') {
+          this.triggerVisorTearOff();
         } else if (code === 'KeyR') {
           if (this.callbacks.onToggleReplay) this.callbacks.onToggleReplay();
         } else if (code === 'KeyB') {
@@ -888,8 +1216,10 @@ export class ErgonomicControls {
 
     this.wheelZoneEl?.classList.remove('wheel-active');
     this.wheelPointerId = null;
+    this._wheelTouchId = null;
     this.wheelTouchSteer = 0.0;
     this.arrowPointerId = null;
+    this._arrowTouchId = null;
     this.arrowDir = 0;
     this.arrowRampSteer = 0.0;
     this.btnLeftEl?.classList.remove('pressed');
@@ -1020,10 +1350,101 @@ export class ErgonomicControls {
     return { gpSteer, gpGas, gpBrake };
   }
 
+  // --------------------------------------------------------------------------
+  // PHYSICS-DRIVEN SELF-ALIGNING TORQUE (SAT), LOOK-TO-APEX & VISOR TEAR-OFF
+  // --------------------------------------------------------------------------
+  applyPhysicsFeedback(car, dt = 1.0 / 60.0) {
+    const safeDt = Number.isFinite(dt) ? clamp(dt, 0.0005, 0.1) : (1.0 / 60.0);
+    if (!car || car.exploded || car.inPitLane) {
+      this.selfAligningTorque += (0.0 - this.selfAligningTorque) * expSmoothing(18.0, safeDt);
+      if (Math.abs(this.selfAligningTorque) < 0.002) this.selfAligningTorque = 0.0;
+      this.speedSteerAuthority = 1.0;
+      return {
+        selfAligningTorque: this.selfAligningTorque,
+        speedSteerAuthority: this.speedSteerAuthority,
+      };
+    }
+
+    const speedKmh = Math.max(0.0, Number(car.speedKmh) || 0.0);
+
+    // 1. Read front-axle pneumatic-trail + rear-oversteer SAT from physics (or synthesize cleanly)
+    let targetSat = 0.0;
+    if (Number.isFinite(car.selfAligningTorque)) {
+      targetSat = clamp(car.selfAligningTorque, -1.0, 1.0);
+    } else if (speedKmh > 18.0) {
+      const relYaw = Number(car.relYaw) || 0.0;
+      const steerRef = Number.isFinite(car.steerInput) ? car.steerInput : this.steer;
+      const skidBoost = 1.0 + clamp(Number(car.skidIntensity) || 0.0, 0.0, 1.0) * 0.45;
+      const oversteerCounter = clamp(-relYaw * 2.15 * skidBoost, -0.85, 0.85);
+      const pneumaticTrail = -clamp(steerRef, -1.0, 1.0) * 0.16 * clamp(speedKmh / 240.0, 0.0, 1.0);
+      targetSat = clamp(oversteerCounter + pneumaticTrail, -1.0, 1.0);
+    }
+
+    const lowSpeedGate = clamp((speedKmh - 14.0) / 24.0, 0.0, 1.0);
+    targetSat *= lowSpeedGate;
+    if (Math.abs(targetSat) < 0.012) targetSat = 0.0;
+
+    this.selfAligningTorque += (targetSat - this.selfAligningTorque) * expSmoothing(24.0, safeDt);
+    if (Math.abs(this.selfAligningTorque) < 0.002) {
+      this.selfAligningTorque = 0.0;
+    }
+
+    // 2. Speed-sensitive steering lock damping above 225..335 km/h (full 1.00 lock in <125 km/h hairpins!)
+    const highSpeedBlend = smoothstep(225.0, 335.0, speedKmh);
+    this.speedSteerAuthority = 1.0 - (1.0 - HIGH_SPEED_STEER_DAMP_MIN) * highSpeedBlend;
+
+    return {
+      selfAligningTorque: this.selfAligningTorque,
+      speedSteerAuthority: this.speedSteerAuthority,
+    };
+  }
+
+  triggerVisorTearOff() {
+    this.visorTearOffProgress = 0.0;
+    this.visorTearOffCount += 1;
+    this._vibratePedalTick(12);
+    if (this.callbacks.onVisorTearOff) {
+      this.callbacks.onVisorTearOff(this.visorTearOffCount);
+    }
+    if (typeof window !== 'undefined' && typeof CustomEvent === 'function') {
+      try {
+        window.dispatchEvent(
+          new CustomEvent('f1-visor-tearoff', {
+            detail: { count: this.visorTearOffCount },
+          })
+        );
+      } catch (_) {}
+    }
+    return this.visorTearOffCount;
+  }
+
+  triggerQuickCameraCycle(direction = 1) {
+    this._vibratePedalTick(9);
+    if (this.callbacks.onCycleCamera) {
+      this.callbacks.onCycleCamera(direction);
+    }
+  }
+
+  getLookToApexRad(maxYawDeg = 12.5) {
+    return this.lookApexNormalized * ((maxYawDeg * Math.PI) / 180.0);
+  }
+
   update(dt, playerCar) {
     const safeDt = Number.isFinite(dt) ? clamp(dt, 0.0, 0.1) : (1.0 / 60.0);
     const sens = clamp(this.controlSettings.sensitivity || 1.0, 0.6, 1.5);
-    const rateScale = 0.72 + 0.28 * sens;
+    const speedKmhNow = Math.max(0.0, Number(playerCar?.speedKmh) || 0.0);
+    // Extra front-end turn-in agility in tight hairpins (<125 km/h: Monaco Loews, Fuji Hairpin)
+    const hairpinAgility = speedKmhNow > 12.0 && speedKmhNow < 125.0
+      ? 1.0 + 0.16 * (1.0 - smoothstep(45.0, 125.0, speedKmhNow))
+      : 1.0;
+    const rateScale = (0.72 + 0.28 * sens) * hairpinAgility;
+
+    // 0. Update physics-driven Self-Aligning Torque (SAT) & 300+ km/h speed lock damping
+    this.applyPhysicsFeedback(playerCar, safeDt);
+    const satAssist = Math.abs(this.selfAligningTorque) > 0.025
+      ? this.selfAligningTorque * SAT_ACTIVE_ASSIST_BLEND
+      : 0.0;
+    const authClamp = this.speedSteerAuthority;
 
     // 1. Keyboard progressive turn-in, rapid counter-steer & fast recentering
     const leftDown = this.keys.has('KeyA') || this.keys.has('ArrowLeft');
@@ -1067,28 +1488,68 @@ export class ErgonomicControls {
     // 4. HTML5 Gamepad polling (strict >= 0.22 deadzone prevents virtual HID drift!)
     const { gpSteer, gpGas, gpBrake } = this._pollGamepad();
 
-    // 5. Combine active steering source with smooth self-aligning recentering spring
+    // 5. Combine active steering source with SAT counter-steer help & 300+ km/h lock damping
+    const wheelActive = this.wheelPointerId !== null || this._wheelTouchId !== null;
+    const arrowActive = this.arrowPointerId !== null || this._arrowTouchId !== null;
     const wheelDraggingActively =
-      this.wheelPointerId !== null &&
+      wheelActive &&
       (this.steeringStyle !== 'TILT' || !this.tiltSensorAvailable || this._wheelMaxMovePx > 10.0);
 
     if (wheelDraggingActively) {
-      this.steer += (this.wheelTouchSteer - this.steer) * expSmoothing(28.0, safeDt);
-      if (this.wheelTouchSteer === 0.0 && Math.abs(this.steer) < 0.002) {
+      const targetWheel = this.wheelTouchSteer === 0.0 && Math.abs(satAssist) < 0.02
+        ? 0.0
+        : clamp(this.wheelTouchSteer * authClamp + satAssist, -1.0, 1.0);
+      this.steer += (targetWheel - this.steer) * expSmoothing(28.0 * hairpinAgility, safeDt);
+      if (targetWheel === 0.0 && Math.abs(this.steer) < 0.002) {
         this.steer = 0.0;
       }
-    } else if (this.arrowPointerId !== null || Math.abs(this.arrowRampSteer) > 0.003) {
-      this.steer = this.arrowRampSteer;
+    } else if (arrowActive || Math.abs(this.arrowRampSteer) > 0.003) {
+      this.steer = clamp(this.arrowRampSteer * authClamp + satAssist, -1.0, 1.0);
     } else if (Math.abs(this.kbSteer) > 0.003 || Math.abs(gpSteer) > 0.01) {
-      this.steer = Math.abs(gpSteer) > Math.abs(this.kbSteer) ? gpSteer : this.kbSteer;
+      const baseStick = Math.abs(gpSteer) > Math.abs(this.kbSteer) ? gpSteer : this.kbSteer;
+      this.steer = clamp(baseStick * authClamp + satAssist, -1.0, 1.0);
     } else if (this.steeringStyle === 'TILT' && this.tiltSensorAvailable) {
-      this.steer = this.tiltFilteredSteer;
-    } else if (this.steer !== 0.0) {
-      this.steer += (0.0 - this.steer) * expSmoothing(15.5, safeDt);
-      if (Math.abs(this.steer) < 0.002) this.steer = 0.0;
+      this.steer = clamp(this.tiltFilteredSteer * authClamp + satAssist, -1.0, 1.0);
+    } else {
+      const satReturnTarget = Math.abs(this.selfAligningTorque) > 0.04
+        ? clamp(this.selfAligningTorque * SAT_RELEASE_RETURN_GAIN, -0.65, 0.65)
+        : 0.0;
+      if (this.steer !== 0.0 || satReturnTarget !== 0.0) {
+        this.steer += (satReturnTarget - this.steer) * expSmoothing(15.5, safeDt);
+        if (satReturnTarget === 0.0 && Math.abs(this.steer) < 0.002) this.steer = 0.0;
+      }
     }
 
     this.steer = clamp(this.steer, -1.0, 1.0);
+
+    // 5b. Smooth Cockpit Look-to-Apex signal & Visor Tear-Off wipe progression
+    let apexCurveHint = 0.0;
+    if (playerCar && speedKmhNow > 18.0) {
+      const track = (typeof window !== 'undefined' && window.__RACE_PHANATIC_GAME__?.track) || null;
+      if (track && typeof track.getPhysicsCurvature === 'function') {
+        const mPerG = track.realMetersPerGameMeter || 4.36;
+        const sAhead = (playerCar.s + 28.0 / mPerG) % 1000;
+        apexCurveHint = clamp((track.getPhysicsCurvature(sAhead) || 0.0) * 165.0, -1.0, 1.0);
+      }
+    }
+    const targetLookApex = clamp(
+      this.steer * 0.68 + apexCurveHint * 0.32 - this.selfAligningTorque * 0.14,
+      -1.0,
+      1.0
+    );
+    this.lookApexNormalized += (targetLookApex - this.lookApexNormalized) * expSmoothing(9.5, safeDt);
+    if (Math.abs(targetLookApex) < 0.003 && Math.abs(this.lookApexNormalized) < 0.002) {
+      this.lookApexNormalized = 0.0;
+    }
+
+    if (this.visorTearOffProgress < 1.0) {
+      this.visorTearOffProgress = Math.min(1.0, this.visorTearOffProgress + safeDt / VISOR_WIPE_DURATION_SEC);
+    }
+
+    if (playerCar) {
+      playerCar.lookApexNormalized = this.lookApexNormalized;
+      playerCar.visorTearOffProgress = this.visorTearOffProgress;
+    }
 
     // 6. Combine Pedals + Optional Auto-Throttle & Corner Braking Assist
     const manualGas = Math.max(this.touchGas, kbGas, gpGas);
@@ -1099,17 +1560,21 @@ export class ErgonomicControls {
     this.throttle = clamp(rawGas, 0.0, 1.0);
     this.brake = clamp(Math.max(manualBrake, assistBrake), 0.0, 1.0);
 
-    // 7. Visual Force-Feedback Steering Wheel rotation + curb haptic rumble
-    let ffbJitterDeg = 0.0;
+    // 7. Visual Force-Feedback Steering Wheel rotation + SAT torque cue + curb haptic rumble
+    let ffbJitterDeg = this.selfAligningTorque * 5.2;
     if (playerCar && !playerCar.exploded && playerCar.speedKmh > 30) {
       const nowMs = performance.now();
       if (playerCar.onCurb) {
-        ffbJitterDeg = Math.sin(nowMs * 0.085) * 4.2;
+        ffbJitterDeg += Math.sin(nowMs * 0.085) * 4.2;
         this._vibrateCurbPulse();
       } else if (playerCar.aquaplaneTimer > 0) {
-        ffbJitterDeg = Math.sin(nowMs * 0.06) * 9.0;
-      } else if (playerCar.skidIntensity > 0.35) {
-        ffbJitterDeg = Math.sin(nowMs * 0.05) * 2.8;
+        ffbJitterDeg += Math.sin(nowMs * 0.06) * 9.0;
+      } else if (playerCar.skidIntensity > 0.35 || Math.abs(this.selfAligningTorque) > 0.52) {
+        ffbJitterDeg += Math.sin(nowMs * 0.05) * 2.8;
+        if (Math.abs(this.selfAligningTorque) > 0.55 && nowMs - this._lastSatVibMs > 140) {
+          this._lastSatVibMs = nowMs;
+          this._vibrate(8);
+        }
       }
     }
 
@@ -1119,39 +1584,72 @@ export class ErgonomicControls {
       this.wheelGraphicEl.style.transform = `rotate(${cleanDeg}deg)`;
     }
 
-    if (this.wheelReadoutEl) {
+    const hubEl = this.wheelHubEl || this.wheelReadoutEl;
+    if (hubEl) {
       let gTxt = 'G1';
+      const curGear = playerCar ? Math.max(1, Math.round(playerCar.gear || 1)) : 1;
+      if (playerCar && curGear !== this._lastCarGear) {
+        this._lastCarGear = curGear;
+        if (playerCar.speedKmh > 25) this._vibratePedalTick(9);
+      }
       if (playerCar) {
         if (playerCar.gearboxMode === 'CLASSIC_2SPD') {
-          gTxt = playerCar.gear >= 2 ? 'HI' : 'LO';
+          gTxt = curGear >= 2 ? 'HI' : 'LO';
         } else {
-          const gearNum = clamp(Math.round(playerCar.gear || 1), 1, 8);
-          gTxt = `G${gearNum}`;
+          gTxt = `G${clamp(curGear, 1, 8)}`;
         }
       }
       const steerDegInt = Math.round(this.steer * WHEEL_MAX_LOCK_DEG) || 0;
-      this.wheelReadoutEl.textContent = `${gTxt} • ${steerDegInt}°`;
+      const speedKmh = Number(playerCar?.speedKmh) || 0;
+      const vMs = speedKmh / 3.6;
+      const rawLatG = Number.isFinite(playerCar?.latG)
+        ? Math.abs(playerCar.latG)
+        : Math.abs(this.steer) * ((vMs * vMs) / 260.0);
+
+      if (playerCar?.inPitLane && speedKmh > 5) {
+        hubEl.textContent = `${gTxt} • PIT`;
+      } else if (
+        speedKmh > 45 &&
+        (playerCar?.inSlipstream || playerCar?.drsActive || (speedKmh >= 286 && Math.abs(this.steer) < 0.12))
+      ) {
+        hubEl.textContent = `${gTxt} • DRS`;
+      } else if (speedKmh > 38 && Math.abs(this.steer) >= 0.12 && rawLatG >= 0.45) {
+        hubEl.textContent = `${gTxt} • ${clamp(rawLatG, 0.5, 5.4).toFixed(1)}G`;
+      } else {
+        hubEl.textContent = `${gTxt} • ${steerDegInt}°`;
+      }
     }
 
-    // 8. Update 8-LED F1 Steering Wheel Rim RPM Shift Strip (Green -> Red -> Blue)
+    // 8. Update 8-LED F1 Steering Wheel Rim RPM Shift Strip (.w-led.g -> .w-led.r -> .w-led.b)
     if (this.wheelLedEls.length && playerCar) {
       const totalLeds = this.wheelLedEls.length;
-      const rpm = playerCar.rpm || 0;
-      // Tuned to 2026 F1 8-speed shift window (7,200 -> 12,050 RPM) so all 8 LEDs crest right at upshift!
-      const rpmNorm = clamp((rpm - 7200.0) / 4850.0, 0.0, 1.0);
+      const rpm = Number(playerCar.rpm) || 0;
+      // Progressive F1 tachometer sweep across Green (1-3), Red (4-6), and Blue (7-8) LEDs
+      const rpmNorm = clamp((rpm - 7000.0) / 5100.0, 0.0, 1.0);
       let litCount = Math.round(rpmNorm * totalLeds);
 
-      // Urgent FIA shift-flash strobe when hitting manual redline or over-rev
+      // Rapid blue/full shift-light strobe above 14,300 RPM or at manual redline
+      const highRpmStrobe = rpm >= 14300;
       const needsManualShift =
+        highRpmStrobe ||
         (playerCar.gearboxMode === 'MANUAL_8SPD' && playerCar.gear < 8 && rpm >= 12350) ||
         (playerCar.gearboxMode === 'CLASSIC_2SPD' && playerCar.gear === 1 && rpm >= 12200) ||
         playerCar.overRevTimer > 0;
-      if (needsManualShift && Math.floor(performance.now() / 60) % 2 === 1) {
+      const strobePhaseOff = needsManualShift && Math.floor(performance.now() / 55) % 2 === 1;
+      if (strobePhaseOff) {
         litCount = 0;
+      } else if (highRpmStrobe) {
+        litCount = totalLeds;
+      }
+
+      if (this.wheelShiftLedsWrapEl) {
+        this.wheelShiftLedsWrapEl.classList.toggle('shift-strobe', needsManualShift);
       }
 
       for (let i = 0; i < totalLeds; i++) {
-        this.wheelLedEls[i].classList.toggle('lit', i < litCount);
+        const led = this.wheelLedEls[i];
+        led.classList.toggle('lit', i < litCount);
+        led.classList.toggle('strobe-blue', highRpmStrobe && !strobePhaseOff && led.classList.contains('b'));
       }
     }
 
@@ -1177,6 +1675,15 @@ export class ErgonomicControls {
     try {
       navigator.vibrate(ms);
     } catch (_) {}
+  }
+
+  _vibratePedalTick(ms = 8) {
+    if (!this._canVibrate()) return;
+    const now = performance.now();
+    if (!this._lastPedalHapticMs || now - this._lastPedalHapticMs > 55) {
+      this._lastPedalHapticMs = now;
+      this._vibrate(ms);
+    }
   }
 
   _vibrateCurbPulse() {

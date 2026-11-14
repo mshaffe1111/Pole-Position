@@ -5,6 +5,7 @@
 // ============================================================================
 
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import {
   TRACK_GAME_LENGTH,
   ROAD_HALF_WIDTH,
@@ -48,35 +49,85 @@ function fastHash2D(x, y, seed = 0) {
   return ((h ^ (h >>> 15)) >>> 0) / 4294967296;
 }
 
-// Merge multiple indexed or non-indexed BufferGeometries into one single-draw-call BufferGeometry
+// Merge multiple indexed or non-indexed BufferGeometries (preserving UVs & vertex colors when present)
 function mergeSubGeometries(geos) {
   const posOut = [];
   const normOut = [];
+  const uvOut = [];
+  const colOut = [];
+  let hasAllUv = geos.length > 0;
+  let hasAllCol = geos.length > 0;
+  for (const g of geos) {
+    if (!g.getAttribute('uv')) hasAllUv = false;
+    if (!g.getAttribute('color')) hasAllCol = false;
+  }
+
   for (const g of geos) {
     const pos = g.getAttribute('position');
     const norm = g.getAttribute('normal');
+    const uv = hasAllUv ? g.getAttribute('uv') : null;
+    const col = hasAllCol ? g.getAttribute('color') : null;
     const idx = g.getIndex();
+    const pushVert = (vi) => {
+      posOut.push(pos.getX(vi), pos.getY(vi), pos.getZ(vi));
+      if (norm) normOut.push(norm.getX(vi), norm.getY(vi), norm.getZ(vi));
+      else normOut.push(0, 1, 0);
+      if (uv) uvOut.push(uv.getX(vi), uv.getY(vi));
+      if (col) colOut.push(col.getX(vi), col.getY(vi), col.getZ(vi));
+    };
     if (idx) {
-      for (let i = 0; i < idx.count; i++) {
-        const vi = idx.getX(i);
-        posOut.push(pos.getX(vi), pos.getY(vi), pos.getZ(vi));
-        normOut.push(norm.getX(vi), norm.getY(vi), norm.getZ(vi));
-      }
+      for (let i = 0; i < idx.count; i++) pushVert(idx.getX(i));
     } else {
-      for (let i = 0; i < pos.count; i++) {
-        posOut.push(pos.getX(i), pos.getY(i), pos.getZ(i));
-        normOut.push(norm.getX(i), norm.getY(i), norm.getZ(i));
-      }
+      for (let i = 0; i < pos.count; i++) pushVert(i);
     }
     g.dispose();
   }
   const merged = new THREE.BufferGeometry();
   merged.setAttribute('position', new THREE.Float32BufferAttribute(posOut, 3));
   merged.setAttribute('normal', new THREE.Float32BufferAttribute(normOut, 3));
+  if (hasAllUv && uvOut.length) {
+    merged.setAttribute('uv', new THREE.Float32BufferAttribute(uvOut, 2));
+  }
+  if (hasAllCol && colOut.length) {
+    merged.setAttribute('color', new THREE.Float32BufferAttribute(colOut, 3));
+  }
   return merged;
 }
 
+// Extract sub-mesh BufferGeometries from a named glTF node, baking node-local transforms
+function extractNamedGlbMeshes(gltfScene, nodeName, rotateYRad = 0) {
+  if (!gltfScene) return [];
+  const target = gltfScene.getObjectByName(nodeName);
+  if (!target) return [];
+  target.updateMatrixWorld(true);
+  const invRoot = new THREE.Matrix4().copy(target.matrixWorld).invert();
+  const rotM = rotateYRad !== 0 ? new THREE.Matrix4().makeRotationY(rotateYRad) : null;
+  const parts = [];
+  target.traverse((ch) => {
+    if (!ch.isMesh || !ch.geometry) return;
+    const g = ch.geometry.clone();
+    const rel = new THREE.Matrix4().multiplyMatrices(invRoot, ch.matrixWorld);
+    g.applyMatrix4(rel);
+    if (rotM) g.applyMatrix4(rotM);
+    parts.push({
+      geometry: g,
+      material: ch.material,
+      matName: (ch.material?.name || '').toLowerCase(),
+    });
+  });
+  return parts;
+}
+
+function mergeGlbMeshList(parts) {
+  if (!parts || !parts.length) return null;
+  if (parts.length === 1) return parts[0].geometry.clone();
+  return mergeSubGeometries(parts.map((p) => p.geometry.clone()));
+}
+
 export class FujiTrack {
+  static _envGlbCache = null;
+  static _envGlbPromise = null;
+
   constructor(scene, assets) {
     this.scene = scene;
     this.assets = assets;
@@ -94,6 +145,18 @@ export class FujiTrack {
     this.skidIndex = 0;
     this.maxSkids = 900;
 
+    // Live stadium crowd excitement state (0..2) & shared GPU vertex-animation uniforms
+    this.crowdExcitement = 0.22;
+    this._lastElapsedSec = 0;
+    this._checkeredFlagActive = false;
+    this._lastGantryState = { redCount: 0, greenOn: false, yellowFlash: false };
+    this._forcePuddles1982 = false;
+    this._loadGeneration = 0;
+    this._crowdUniforms = {
+      uTime: { value: 0 },
+      uExcitement: { value: 0.22 },
+    };
+
     // Protect shared GLB template buffers/materials/textures from circuit disposal
     this._protectedGeos = new Set();
     this._protectedMats = new Set();
@@ -105,26 +168,155 @@ export class FujiTrack {
     this.scene.add(this.group);
 
     this.loadCircuit('FUJI_1982');
+    this._ensureBlenderEnvAssetsLoaded();
+  }
+
+  triggerCrowdExcitement(boost = 1.0) {
+    const add = Number.isFinite(boost) ? Math.max(0.15, boost) : 1.0;
+    this.crowdExcitement = Math.min(2.2, this.crowdExcitement + add);
+    this._crowdUniforms.uExcitement.value = this.crowdExcitement;
+  }
+
+  setCheckeredFlag(active = false) {
+    this._checkeredFlagActive = Boolean(active);
+    if (active) this.triggerCrowdExcitement(1.5);
+  }
+
+  _ensureBlenderEnvAssetsLoaded() {
+    if (FujiTrack._envGlbCache) return;
+    if (!FujiTrack._envGlbPromise) {
+      if (typeof window === 'undefined' || typeof fetch === 'undefined') return;
+      const loader = new GLTFLoader();
+      const loadOne = (url) =>
+        new Promise((resolve) => {
+          loader.load(
+            url,
+            (gltf) => resolve(gltf?.scene || null),
+            undefined,
+            () => resolve(null)
+          );
+        });
+
+      FujiTrack._envGlbPromise = Promise.all([
+        loadOne('./assets/models/env_trees_biome.glb'),
+        loadOne('./assets/models/env_signs_gantries_billboards.glb'),
+        loadOne('./assets/models/env_barriers_fencing.glb'),
+        loadOne('./assets/models/env_grandstands_crowds.glb'),
+      ]).then(([treesScene, signsScene, barriersScene, crowdsScene]) => {
+        if (!treesScene && !signsScene && !barriersScene && !crowdsScene) return null;
+        const cache = {};
+
+        // 1. Biome Trees (Deciduous / Sakura / Maple, Pine / Cedar, Palm)
+        const decParts = extractNamedGlbMeshes(treesScene, 'Tree_Deciduous_LOD0');
+        cache.deciduousTrunk = decParts.find((p) => p.matName.includes('bark'))?.geometry || decParts[0]?.geometry || null;
+        cache.deciduousCanopy = decParts.find((p) => p.matName.includes('foliage'))?.geometry || decParts[1]?.geometry || null;
+        cache.barkMap = decParts.find((p) => p.matName.includes('bark'))?.material?.map || null;
+        cache.foliageMap = decParts.find((p) => p.matName.includes('foliage'))?.material?.map || null;
+
+        const pineParts = extractNamedGlbMeshes(treesScene, 'Tree_Pine_LOD0');
+        cache.pineTrunk = pineParts.find((p) => p.matName.includes('bark'))?.geometry || pineParts[0]?.geometry || null;
+        cache.pineCanopy = pineParts.find((p) => p.matName.includes('foliage'))?.geometry || pineParts[1]?.geometry || null;
+
+        const palmParts = extractNamedGlbMeshes(treesScene, 'Tree_Palm_LOD0');
+        cache.palmTrunk = palmParts.find((p) => p.matName.includes('bark'))?.geometry || palmParts[0]?.geometry || null;
+        cache.palmCanopy = palmParts.find((p) => p.matName.includes('foliage'))?.geometry || palmParts[1]?.geometry || null;
+
+        // 2. Signs, Start Gantry & Sponsor Billboards (rotated -PI/2 around Y so +Z faces -X oncoming traffic!)
+        const flipGlbUvY = (geo) => {
+          const uv = geo?.getAttribute('uv');
+          if (!uv) return geo;
+          for (let i = 0; i < uv.count; i++) uv.setY(i, 1.0 - uv.getY(i));
+          uv.needsUpdate = true;
+          return geo;
+        };
+        const brkParts = extractNamedGlbMeshes(signsScene, 'BrakeBoard_300m-convcolonly', -Math.PI * 0.5);
+        cache.brakeFrameGeo = mergeGlbMeshList(brkParts.filter((p) => !p.matName.includes('face')));
+        cache.brakeFaceGeo = flipGlbUvY(brkParts.find((p) => p.matName.includes('face'))?.geometry || null);
+
+        const bbParts = extractNamedGlbMeshes(signsScene, 'Sponsor_Billboard_Rig-convcolonly', -Math.PI * 0.5);
+        cache.billboardFrameGeo = mergeGlbMeshList(bbParts.filter((p) => !p.matName.includes('sponsor_face')));
+        cache.billboardFaceGeo = flipGlbUvY(bbParts.find((p) => p.matName.includes('sponsor_face'))?.geometry || null);
+
+        const ganParts = extractNamedGlbMeshes(signsScene, 'Start_Gantry_Truss-col', -Math.PI * 0.5);
+        cache.gantryTrussGeo = ganParts.find((p) => p.matName.includes('spaceframe'))?.geometry || null;
+
+        // 3. Trackside Barriers & Debris Catch-Fencing
+        const armParts = extractNamedGlbMeshes(barriersScene, 'Barrier_Armco-col');
+        cache.armcoRailGeo = armParts.find((p) => p.matName.includes('armco'))?.geometry || null;
+        cache.armcoPostGeo = armParts.find((p) => p.matName.includes('post'))?.geometry || null;
+
+        const tireParts = extractNamedGlbMeshes(barriersScene, 'Barrier_TireWall-col');
+        cache.tireRedGeo = tireParts.find((p) => p.matName.includes('fiared'))?.geometry || null;
+        cache.tireWhiteGeo = tireParts.find((p) => p.matName.includes('fiawhite'))?.geometry || null;
+        cache.tireStrapGeo = tireParts.find((p) => p.matName.includes('rubber'))?.geometry || null;
+
+        const fenceParts = extractNamedGlbMeshes(barriersScene, 'Barrier_CatchFence');
+        cache.catchFencePostGeo = fenceParts.find((p) => p.matName.includes('post'))?.geometry || null;
+        cache.catchFenceWireGeo = fenceParts.find((p) => p.matName.includes('wire'))?.geometry || null;
+
+        // 4. Grandstands, Articulated 3D Cheering Spectators, Flag Wavers & Trackside Marshals
+        const gsParts = extractNamedGlbMeshes(crowdsScene, 'Grandstand_Tribune-col');
+        cache.grandstandStructGeo = mergeGlbMeshList(gsParts.filter((p) => !p.matName.includes('roof')));
+        cache.grandstandRoofGeo = gsParts.find((p) => p.matName.includes('roof'))?.geometry || null;
+
+        const fanParts = extractNamedGlbMeshes(crowdsScene, 'Spectator_Cheering');
+        cache.spectatorGeo = mergeGlbMeshList(fanParts);
+
+        const fwParts = extractNamedGlbMeshes(crowdsScene, 'Spectator_FlagWaver');
+        cache.flagWaverBodyGeo = mergeGlbMeshList(fwParts.filter((p) => !p.matName.includes('flag')));
+        cache.flagWaverClothGeo = fwParts.find((p) => p.matName.includes('flag'))?.geometry || null;
+
+        const marParts = extractNamedGlbMeshes(crowdsScene, 'Marshal_FlagWaver');
+        cache.marshalBodyGeo = mergeGlbMeshList(marParts.filter((p) => !p.matName.includes('flag')));
+        cache.marshalClothGeo = marParts.find((p) => p.matName.includes('flag'))?.geometry || null;
+
+        FujiTrack._envGlbCache = cache;
+        return cache;
+      });
+    }
+
+    const genAtBoot = this._loadGeneration;
+    FujiTrack._envGlbPromise.then((cache) => {
+      if (!cache || !this.group) return;
+      this._collectProtectedAssetResources();
+      if (this._loadGeneration === genAtBoot) {
+        const savedGantry = { ...this._lastGantryState };
+        const savedPuddles1982 = this._forcePuddles1982;
+        this.loadCircuit(this.currentTrackId);
+        this.setGantryLights(savedGantry.redCount, savedGantry.greenOn, savedGantry.yellowFlash);
+        if (savedPuddles1982) this.setPuddles1982Mode(true);
+      }
+    });
   }
 
   _collectProtectedAssetResources() {
     const templates = this.assets?.templates;
-    if (!templates) return;
-    for (const root of Object.values(templates)) {
-      if (!root || typeof root.traverse !== 'function') continue;
-      root.traverse((node) => {
-        if (node.geometry) this._protectedGeos.add(node.geometry);
-        if (node.material) {
-          const mats = Array.isArray(node.material) ? node.material : [node.material];
-          for (const m of mats) {
-            if (!m) continue;
-            this._protectedMats.add(m);
-            for (const slot of TEXTURE_SLOTS) {
-              if (m[slot]) this._protectedTexs.add(m[slot]);
+    if (templates) {
+      for (const root of Object.values(templates)) {
+        if (!root || typeof root.traverse !== 'function') continue;
+        root.traverse((node) => {
+          if (node.geometry) this._protectedGeos.add(node.geometry);
+          if (node.material) {
+            const mats = Array.isArray(node.material) ? node.material : [node.material];
+            for (const m of mats) {
+              if (!m) continue;
+              this._protectedMats.add(m);
+              for (const slot of TEXTURE_SLOTS) {
+                if (m[slot]) this._protectedTexs.add(m[slot]);
+              }
             }
           }
-        }
-      });
+        });
+      }
+    }
+    const envCache = FujiTrack._envGlbCache;
+    if (envCache) {
+      for (const val of Object.values(envCache)) {
+        if (!val) continue;
+        if (val.isBufferGeometry) this._protectedGeos.add(val);
+        else if (val.isTexture) this._protectedTexs.add(val);
+        else if (val.isMaterial) this._protectedMats.add(val);
+      }
     }
   }
 
@@ -171,9 +363,11 @@ export class FujiTrack {
   }
 
   loadCircuit(trackId) {
+    this._loadGeneration = (this._loadGeneration || 0) + 1;
     this.currentTrackId = TRACK_CATALOG[trackId] ? trackId : 'FUJI_1982';
     this.trackDef = TRACK_CATALOG[this.currentTrackId];
     this._minimapBounds = null;
+    this._checkeredFlagActive = false;
 
     // Cleanly dispose all GPU geometries, materials & procedural textures from previous circuit
     this._disposeCircuitGroup();
@@ -199,6 +393,7 @@ export class FujiTrack {
     this._buildSkidmarkSystem();
     this._buildGrandstands();
     this._buildBiomeLandmarks();
+    this._buildMainStraightScenicVistaTrees();
   }
 
   // --------------------------------------------------------------------------
@@ -411,27 +606,26 @@ export class FujiTrack {
   }
 
   // --------------------------------------------------------------------------
-  // 2. HIGH-RESOLUTION 1024x1024 PROCEDURAL PBR TEXTURES, ROUGHNESS & BUMP MAPS
+  // 2. HIGH-RESOLUTION 1024x1024 DARK BASALT ASPHALT PBR, NORMAL & ROUGHNESS MAPS
   // --------------------------------------------------------------------------
   _createRichMaterials() {
     const isVegas = this.trackDef.theme === 'VEGAS';
     const isMonaco = this.trackDef.theme === 'MONACO';
 
-    // A. Fast Per-Pixel 1024x1024 Asphalt Diffuse + 512x512 Bump & Roughness Maps
+    // A. Deep Dark Charcoal Basalt Asphalt (#1b1d21) + 512x512 Tangent Normal & Roughness Maps
     const c = document.createElement('canvas');
     c.width = 1024;
     c.height = 1024;
     const ctx = c.getContext('2d');
-
     const img = ctx.createImageData(1024, 1024);
     const data = img.data;
 
-    const bumpC = document.createElement('canvas');
-    bumpC.width = 512;
-    bumpC.height = 512;
-    const bctx = bumpC.getContext('2d');
-    const bImg = bctx.createImageData(512, 512);
-    const bData = bImg.data;
+    const normC = document.createElement('canvas');
+    normC.width = 512;
+    normC.height = 512;
+    const nctx = normC.getContext('2d');
+    const nImg = nctx.createImageData(512, 512);
+    const nData = nImg.data;
 
     const roughC = document.createElement('canvas');
     roughC.width = 512;
@@ -440,48 +634,51 @@ export class FujiTrack {
     const rghImg = rghCtx.createImageData(512, 512);
     const rghData = rghImg.data;
 
-    const baseR = isVegas ? 25 : (isMonaco ? 40 : 35);
-    const baseG = isVegas ? 29 : (isMonaco ? 45 : 40);
-    const baseB = isVegas ? 40 : (isMonaco ? 54 : 48);
+    // Deep dark charcoal tarmac (#1b1d21 — ZERO icy blue tint!)
+    const baseR = isVegas ? 22 : (isMonaco ? 30 : 27);
+    const baseG = isVegas ? 24 : (isMonaco ? 32 : 29);
+    const baseB = isVegas ? 29 : (isMonaco ? 36 : 33);
 
-    // Precompute across-track rubbered-in racing groove & off-line marble profile
     const grooveFactorX = new Float32Array(1024);
     for (let x = 0; x < 1024; x++) {
       const u = x / 1023;
-      // Dual racing line rubbering bands centered around u = 0.27 and u = 0.73 + center blend
-      const leftGroove = Math.exp(-((u - 0.27) * (u - 0.27)) / 0.016);
-      const rightGroove = Math.exp(-((u - 0.73) * (u - 0.73)) / 0.016);
-      const midGroove = Math.exp(-((u - 0.50) * (u - 0.50)) / 0.032) * 0.45;
-      grooveFactorX[x] = Math.min(1.0, Math.max(leftGroove, rightGroove) * 0.92 + midGroove);
+      const leftGroove = Math.exp(-((u - 0.27) * (u - 0.27)) / 0.015);
+      const rightGroove = Math.exp(-((u - 0.73) * (u - 0.73)) / 0.015);
+      const midGroove = Math.exp(-((u - 0.50) * (u - 0.50)) / 0.030) * 0.42;
+      grooveFactorX[x] = Math.min(1.0, Math.max(leftGroove, rightGroove) * 0.96 + midGroove);
     }
 
+    const heightGrid = new Float32Array(512 * 512);
     for (let y = 0; y < 1024; y++) {
-      const streak = (fastHash2D(0, y >> 3, 19) - 0.5) * 6.0;
+      const streak = (fastHash2D(0, y >> 3, 19) - 0.5) * 9.5;
       for (let x = 0; x < 1024; x++) {
         const g = grooveFactorX[x];
         const grainFine = fastHash2D(x, y, 7);
         const grainCoarse = fastHash2D(x >> 1, y >> 1, 31);
-        const sparkle = grainFine > 0.965 ? 16 : 0;
+        const macroStone = fastHash2D(x >> 2, y >> 2, 107);
+        const quartzSparkle = grainFine > 0.962 ? 32 : (grainFine > 0.925 ? 15 : 0);
 
-        const delta = (grainFine - 0.5) * 20.0 + (grainCoarse - 0.5) * 14.0 + streak * g + sparkle;
-        const rubberDarken = g * 11.5;
+        const delta =
+          (grainFine - 0.5) * 26.0 +
+          (grainCoarse - 0.5) * 18.0 +
+          (macroStone - 0.5) * 11.0 +
+          streak * g +
+          quartzSparkle * (1.0 - g * 0.55);
+        const rubberDarken = g * 13.5;
 
         const idx = (y * 1024 + x) * 4;
-        data[idx]     = Math.max(10, Math.min(255, Math.round(baseR + delta - rubberDarken)));
-        data[idx + 1] = Math.max(12, Math.min(255, Math.round(baseG + delta - rubberDarken)));
-        data[idx + 2] = Math.max(16, Math.min(255, Math.round(baseB + delta - rubberDarken * 0.92)));
+        data[idx]     = Math.max(7, Math.min(255, Math.round(baseR + delta - rubberDarken)));
+        data[idx + 1] = Math.max(8, Math.min(255, Math.round(baseG + delta - rubberDarken)));
+        data[idx + 2] = Math.max(9, Math.min(255, Math.round(baseB + delta - rubberDarken)));
         data[idx + 3] = 255;
 
         if ((x & 1) === 0 && (y & 1) === 0) {
-          const bIdx = ((y >> 1) * 512 + (x >> 1)) * 4;
-          const bVal = Math.max(0, Math.min(255, Math.round(128 + (grainFine - 0.5) * 115 + (grainCoarse - 0.5) * 65)));
-          bData[bIdx] = bVal;
-          bData[bIdx + 1] = bVal;
-          bData[bIdx + 2] = bVal;
-          bData[bIdx + 3] = 255;
+          const hx = x >> 1;
+          const hy = y >> 1;
+          heightGrid[hy * 512 + hx] = (grainFine * 0.55 + grainCoarse * 0.30 + macroStone * 0.15) * (1.0 - g * 0.36);
 
-          // Rubbered-in groove has lower roughness (satin tire sheen) than coarse aggregate shoulder!
-          const rghVal = Math.max(70, Math.min(248, Math.round(228 - g * 74 + (grainCoarse - 0.5) * 26)));
+          const bIdx = (hy * 512 + hx) * 4;
+          const rghVal = Math.max(115, Math.min(252, Math.round(244 - g * 62 + (grainCoarse - 0.5) * 26)));
           rghData[bIdx] = rghVal;
           rghData[bIdx + 1] = rghVal;
           rghData[bIdx + 2] = rghVal;
@@ -490,36 +687,61 @@ export class FujiTrack {
       }
     }
 
+    // Build crisp 512x512 tangent-space stone-aggregate normal map
+    for (let hy = 0; hy < 512; hy++) {
+      const yPrev = ((hy - 1) & 511) * 512;
+      const yNext = ((hy + 1) & 511) * 512;
+      const yRow = hy * 512;
+      for (let hx = 0; hx < 512; hx++) {
+        const dx = (heightGrid[yRow + ((hx + 1) & 511)] - heightGrid[yRow + ((hx - 1) & 511)]) * 2.45;
+        const dy = (heightGrid[yNext + hx] - heightGrid[yPrev + hx]) * 2.45;
+        const invLen = 1.0 / Math.sqrt(dx * dx + dy * dy + 1.0);
+        const nIdx = (yRow + hx) * 4;
+        nData[nIdx]     = Math.round((-dx * invLen * 0.5 + 0.5) * 255);
+        nData[nIdx + 1] = Math.round((-dy * invLen * 0.5 + 0.5) * 255);
+        nData[nIdx + 2] = Math.round((invLen * 0.5 + 0.5) * 255);
+        nData[nIdx + 3] = 255;
+      }
+    }
+
     ctx.putImageData(img, 0, 0);
-    bctx.putImageData(bImg, 0, 0);
+    nctx.putImageData(nImg, 0, 0);
     rghCtx.putImageData(rghImg, 0, 0);
 
-    // Subtle longitudinal paver joints & rubber tire streaks
-    ctx.fillStyle = 'rgba(8, 10, 15, 0.28)';
-    ctx.fillRect(341, 0, 3, 1024);
+    // Longitudinal paver joints + heavy black vulcanized rubbered-in twin tire grooves & braking skids
+    ctx.fillStyle = 'rgba(6, 7, 10, 0.42)';
+    ctx.fillRect(340, 0, 3, 1024);
     ctx.fillRect(682, 0, 3, 1024);
 
-    for (let i = 0; i < 48; i++) {
-      const sx = (i % 2 === 0 ? 225 : 705) + (fastHash2D(i, 3, 99) - 0.5) * 130;
-      const sy = fastHash2D(i, 9, 99) * 900;
-      ctx.fillStyle = 'rgba(8, 10, 14, 0.16)';
-      ctx.fillRect(sx, sy, 3.5, 90 + fastHash2D(i, 15, 99) * 120);
+    for (let i = 0; i < 110; i++) {
+      const laneCenter = i % 2 === 0 ? 276 : 748;
+      const sx = laneCenter + (fastHash2D(i, 3, 99) - 0.5) * 118;
+      const sy = fastHash2D(i, 9, 99) * 880;
+      ctx.fillStyle = i % 3 === 0 ? 'rgba(5, 6, 8, 0.34)' : 'rgba(8, 9, 12, 0.24)';
+      ctx.fillRect(sx, sy, 4.5 + (i % 3) * 1.5, 110 + fastHash2D(i, 15, 99) * 145);
+      ctx.fillRect(sx + 26, sy, 4.5 + (i % 3) * 1.5, 110 + fastHash2D(i, 15, 99) * 145);
     }
 
-    // Crisp painted FIA white track-edge boundary lines + subtle inner contrast trim
-    ctx.fillStyle = 'rgba(10, 12, 18, 0.35)';
-    ctx.fillRect(18, 0, 28, 1024);
-    ctx.fillRect(978, 0, 28, 1024);
-
-    ctx.fillStyle = '#f5f8ff';
-    ctx.fillRect(22, 0, 20, 1024);
-    ctx.fillRect(982, 0, 20, 1024);
-
-    // Subtle center speed reference dashes
-    ctx.fillStyle = isVegas ? 'rgba(0, 240, 255, 0.42)' : 'rgba(245, 248, 255, 0.24)';
-    for (let y = 0; y < 1024; y += 128) {
-      ctx.fillRect(508, y, 8, 48);
+    // Off-line dark tire marble specks near track edges
+    ctx.fillStyle = 'rgba(8, 9, 11, 0.55)';
+    for (let m = 0; m < 420; m++) {
+      const mx = m % 2 === 0 ? 58 + fastHash2D(m, 1, 211) * 95 : 870 + fastHash2D(m, 2, 211) * 95;
+      const my = fastHash2D(m, 3, 211) * 1020;
+      ctx.fillRect(mx, my, 3, 4);
     }
+
+    // Crisp painted FIA double track-edge boundary lines (white outer + yellow/cyan inner contrast line)
+    ctx.fillStyle = 'rgba(8, 10, 14, 0.52)';
+    ctx.fillRect(14, 0, 40, 1024);
+    ctx.fillRect(970, 0, 40, 1024);
+
+    ctx.fillStyle = '#f8fbff';
+    ctx.fillRect(18, 0, 22, 1024);
+    ctx.fillRect(984, 0, 22, 1024);
+
+    ctx.fillStyle = isVegas ? '#00f0ff' : '#ffd600';
+    ctx.fillRect(44, 0, 7, 1024);
+    ctx.fillRect(973, 0, 7, 1024);
 
     const roadTex = new THREE.CanvasTexture(c);
     roadTex.wrapS = THREE.RepeatWrapping;
@@ -528,32 +750,41 @@ export class FujiTrack {
     roadTex.anisotropy = 8;
     roadTex.colorSpace = THREE.SRGBColorSpace;
 
-    const bumpTex = new THREE.CanvasTexture(bumpC);
-    bumpTex.wrapS = THREE.RepeatWrapping;
-    bumpTex.wrapT = THREE.RepeatWrapping;
-    bumpTex.repeat.set(2, 290);
+    const roadNormTex = new THREE.CanvasTexture(normC);
+    roadNormTex.wrapS = THREE.RepeatWrapping;
+    roadNormTex.wrapT = THREE.RepeatWrapping;
+    roadNormTex.repeat.set(3, 435);
 
     const roughTex = new THREE.CanvasTexture(roughC);
     roughTex.wrapS = THREE.RepeatWrapping;
     roughTex.wrapT = THREE.RepeatWrapping;
     roughTex.repeat.set(1, 145);
 
-    this.asphaltMat = new THREE.MeshStandardMaterial({
+    // Dry tarmac: deep dark charcoal, roughness 0.86, metalness 0.04, clearcoat 0.0!
+    this.asphaltMat = new THREE.MeshPhysicalMaterial({
       map: roadTex,
-      bumpMap: bumpTex,
-      bumpScale: 0.032,
+      normalMap: roadNormTex,
+      normalScale: new THREE.Vector2(1.35, 1.35),
       roughnessMap: roughTex,
-      roughness: 0.72,
-      metalness: 0.14,
+      roughness: 0.86,
+      metalness: 0.04,
+      clearcoat: 0.0,
+      clearcoatRoughness: 0.42,
+      reflectivity: 0.28,
+      envMapIntensity: isVegas ? 0.46 : 0.28,
     });
 
-    this.pitAsphaltMat = new THREE.MeshStandardMaterial({
+    this.pitAsphaltMat = new THREE.MeshPhysicalMaterial({
       map: roadTex,
-      bumpMap: bumpTex,
-      bumpScale: 0.025,
-      color: isVegas ? 0x7694c4 : 0x93a9cc,
-      roughness: 0.60,
-      metalness: 0.16,
+      normalMap: roadNormTex,
+      normalScale: new THREE.Vector2(1.15, 1.15),
+      color: isVegas ? 0x8ea0b8 : 0xb8c0cc,
+      roughness: 0.82,
+      metalness: 0.05,
+      clearcoat: 0.0,
+      clearcoatRoughness: 0.38,
+      reflectivity: 0.30,
+      envMapIntensity: isVegas ? 0.48 : 0.30,
     });
 
     // B. Mowed Two-Tone Stadium Turf / Riviera Stone / Vegas Midnight Ground (512x512)
@@ -643,14 +874,18 @@ export class FujiTrack {
       metalness: isVegas ? 0.12 : 0.03,
     });
 
-    // D. Serrated 3D Kerb Materials & Corrugated Steel Armco Material
+    // D. Serrated 3D Beveled & Tire-Scuffed Kerb Materials + Corrugated Steel Armco Material
+    const curbBevelTex = this._makeSerratedCurbTexture();
     this.curbMats = this.trackDef.curbColors.map(
       (hex) => new THREE.MeshStandardMaterial({
         color: hex,
-        roughness: 0.36,
-        metalness: 0.10,
-        emissive: isVegas ? new THREE.Color(hex) : new THREE.Color(hex),
-        emissiveIntensity: isVegas ? 0.48 : 0.05,
+        map: curbBevelTex,
+        bumpMap: curbBevelTex,
+        bumpScale: 0.024,
+        roughness: 0.30,
+        metalness: 0.14,
+        emissive: new THREE.Color(hex),
+        emissiveIntensity: isVegas ? 0.52 : 0.08,
       })
     );
 
@@ -694,18 +929,73 @@ export class FujiTrack {
     });
   }
 
+  _makeSerratedCurbTexture() {
+    const c = document.createElement('canvas');
+    c.width = 256;
+    c.height = 256;
+    const ctx = c.getContext('2d');
+    const g = ctx.createLinearGradient(0, 0, 256, 0);
+    g.addColorStop(0.00, '#ffffff'); // Crisp sunlit bevel edge
+    g.addColorStop(0.18, '#f0f4fa');
+    g.addColorStop(0.78, '#d5dde8');
+    g.addColorStop(1.00, '#9aa6b8'); // Outer shadow bevel
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 256, 256);
+
+    // 3D serrated sawtooth step highlights & recessed shadow grooves
+    for (let y = 0; y < 256; y += 32) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.36)';
+      ctx.fillRect(0, y, 256, 5);
+      ctx.fillStyle = 'rgba(12, 16, 24, 0.34)';
+      ctx.fillRect(0, y + 27, 256, 5);
+    }
+
+    // Authentic dark Pirelli tire-rubber scuff marks along the inner apex edge
+    ctx.fillStyle = 'rgba(18, 22, 28, 0.26)';
+    for (let i = 0; i < 28; i++) {
+      const sy = fastHash2D(i, 1, 613) * 230;
+      ctx.fillRect(8 + fastHash2D(i, 2, 613) * 55, sy, 18 + fastHash2D(i, 3, 613) * 32, 8);
+    }
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
   updateVisualState(moistureW, visualStyle, elapsedSec = 0) {
+    const dt = Math.max(0, Math.min(0.1, elapsedSec - (this._lastElapsedSec || elapsedSec)));
+    this._lastElapsedSec = elapsedSec;
+    if (this.crowdExcitement > 0.22) {
+      this.crowdExcitement = Math.max(0.22, this.crowdExcitement - dt * 0.36);
+    }
+    this._crowdUniforms.uTime.value = elapsedSec;
+    this._crowdUniforms.uExcitement.value = this.crowdExcitement;
+
     const isArcade = visualStyle === '1982_ARCADE';
+    const isVegas = this.trackDef.theme === 'VEGAS';
     if (isArcade) {
-      this.asphaltMat.roughness = moistureW > 0.15 ? 0.22 : 0.85;
-      this.asphaltMat.metalness = moistureW > 0.15 ? 0.42 : 0.05;
+      this.asphaltMat.roughness = moistureW > 0.15 ? 0.14 : 0.86;
+      this.asphaltMat.metalness = moistureW > 0.15 ? 0.56 : 0.04;
+      this.asphaltMat.clearcoat = 0.0;
     } else {
-      const wetFactor = Math.max(0, Math.min(1, moistureW / 0.75));
-      this.asphaltMat.roughness = 0.72 - wetFactor * 0.58;
-      this.asphaltMat.metalness = 0.14 + wetFactor * 0.52;
+      // Dry tarmac stays deep matte dark charcoal (roughness 0.86, metalness 0.04, clearcoat 0.0)!
+      // ONLY raise clearcoat & mirror sky reflection when moistureW > 0.15!
+      const wetFactor = moistureW > 0.15
+        ? Math.max(0, Math.min(1, (moistureW - 0.15) / 0.50))
+        : 0.0;
+      this.asphaltMat.roughness = 0.86 - wetFactor * 0.76;
+      this.asphaltMat.metalness = 0.04 + wetFactor * 0.60;
+      this.asphaltMat.clearcoat = wetFactor * 1.0;
+      this.asphaltMat.clearcoatRoughness = 0.42 - wetFactor * 0.37;
+      this.asphaltMat.envMapIntensity = (isVegas ? 0.46 : 0.28) + wetFactor * 1.75;
       if (this.pitAsphaltMat) {
-        this.pitAsphaltMat.roughness = 0.62 - wetFactor * 0.46;
-        this.pitAsphaltMat.metalness = 0.16 + wetFactor * 0.44;
+        this.pitAsphaltMat.roughness = 0.82 - wetFactor * 0.72;
+        this.pitAsphaltMat.metalness = 0.05 + wetFactor * 0.56;
+        this.pitAsphaltMat.clearcoat = wetFactor * 0.96;
+        this.pitAsphaltMat.clearcoatRoughness = 0.38 - wetFactor * 0.33;
+        this.pitAsphaltMat.envMapIntensity = (isVegas ? 0.48 : 0.30) + wetFactor * 1.65;
       }
     }
 
@@ -769,60 +1059,86 @@ export class FujiTrack {
   }
 
   // --------------------------------------------------------------------------
-  // 4. SERRATED 3D RUMBLE KERBS, STEEL ARMCO + POSTS & FIA TIRE BARRIERS
+  // 4. SERRATED 3D RUMBLE KERBS, BLENDER .GLB STEEL ARMCO & FIA TIRE BARRIERS
   // --------------------------------------------------------------------------
   _buildCurbsAndArmcoBarriers() {
-    const curbBlockGeo = new THREE.BoxGeometry(2.38, 0.11, CURB_WIDTH);
+    const envCache = FujiTrack._envGlbCache;
+
+    // 2-Step Beveled & Serrated 3D FIA Rumble Kerb Geometry
+    const curbBase = new THREE.BoxGeometry(2.38, 0.11, CURB_WIDTH);
+    const curbRidge = new THREE.BoxGeometry(1.78, 0.062, CURB_WIDTH * 0.58);
+    curbRidge.translate(0.18, 0.068, 0);
+    const curbBlockGeo = mergeSubGeometries([curbBase, curbRidge]);
     const matBuckets = this.curbMats.map(() => []);
     const armcoMatrices = [];
     const armcoPostMatrices = [];
+    const tireWallMatrices = [];
     const tireRedMatrices = [];
     const tireWhiteMatrices = [];
     const dummy = new THREE.Object3D();
+
+    const useGlbArmco = Boolean(envCache?.armcoRailGeo);
+    const useGlbTires = Boolean(envCache?.tireRedGeo && envCache?.tireWhiteGeo);
 
     for (let i = 0; i < SAMPLES; i++) {
       const smp = this.samples[i];
       const yaw = Math.atan2(smp.tangent.z, smp.tangent.x);
       const absK = Math.abs(smp.curvature);
 
-      // Serrated FIA rumble kerbs on all corners & braking approaches
-      if (absK > 0.055) {
+      // Serrated FIA rumble kerbs on ALL corners AND framing the Main Straight / Showroom vista!
+      const isMainStraightLeft = smp.s >= 942 || smp.s <= 128;
+      const isMainStraightRight = smp.s >= 956 || smp.s <= 66;
+      if (absK > 0.045 || isMainStraightLeft || isMainStraightRight) {
         for (const side of [-1, 1]) {
-          if (side > 0 && (smp.s >= 902 || smp.s <= 122)) continue;
+          if (absK <= 0.045) {
+            if (side < 0 && !isMainStraightLeft) continue;
+            if (side > 0 && !isMainStraightRight) continue;
+          } else if (side > 0 && (smp.s >= 902 && smp.s < 956)) {
+            continue;
+          } else if (side > 0 && (smp.s > 66 && smp.s <= 122)) {
+            continue;
+          }
           dummy.position
             .copy(smp.pos)
             .addScaledVector(smp.right, side * (ROAD_HALF_WIDTH + CURB_WIDTH * 0.45));
-          dummy.position.y += 0.036;
-          dummy.rotation.set(side * 0.035, -yaw, 0);
+          dummy.position.y += 0.038;
+          dummy.rotation.set(side * 0.038, -yaw, 0);
+          dummy.scale.set(1, 1, 1);
           dummy.updateMatrix();
           matBuckets[i % matBuckets.length].push(dummy.matrix.clone());
         }
       }
 
-      // Continuous Double-Wave Steel Armco Guardrails + Steel Support Posts
+      // Continuous 3-Wave Steel Armco Guardrails + I-Posts + Bolted FIA Tire Wall Stacks
       if (i % 2 === 0) {
         for (const side of [-1, 1]) {
           if (side > 0 && (smp.s >= 902 || smp.s <= 124)) continue;
           const barrierDist = ROAD_HALF_WIDTH + 5.85;
+          const faceTrackRotY = -yaw + (side > 0 ? Math.PI : 0);
+
           dummy.position.copy(smp.pos).addScaledVector(smp.right, side * barrierDist);
-          dummy.position.y += 0.52;
-          dummy.rotation.set(0, -yaw, 0);
+          dummy.position.y += useGlbArmco ? 0.0 : 0.52;
+          dummy.rotation.set(0, useGlbArmco ? faceTrackRotY : -yaw, 0);
+          dummy.scale.set(1, 1, 1);
           dummy.updateMatrix();
           armcoMatrices.push(dummy.matrix.clone());
 
-          // Grounded steel I-beam support post behind Armco
-          dummy.position.copy(smp.pos).addScaledVector(smp.right, side * (barrierDist + 0.18));
-          dummy.position.y += 0.50;
-          dummy.updateMatrix();
+          if (!useGlbArmco) {
+            dummy.position.copy(smp.pos).addScaledVector(smp.right, side * (barrierDist + 0.18));
+            dummy.position.y += 0.50;
+            dummy.updateMatrix();
+          }
           armcoPostMatrices.push(dummy.matrix.clone());
 
-          // Double-stacked Red/White FIA Tire Barrier bundles on high-speed corner outsides
+          // Bolted FIA 3-High Tire Barrier bundles on high-speed corner outsides
           const outsideSign = -Math.sign(smp.curvature);
-          if (absK > 0.28 && side === outsideSign) {
-            dummy.position.copy(smp.pos).addScaledVector(smp.right, side * (barrierDist - 0.88));
-            dummy.position.y += 0.46;
+          if (absK > 0.26 && side === outsideSign && (i % 4 === 0)) {
+            dummy.position.copy(smp.pos).addScaledVector(smp.right, side * (barrierDist - 0.92));
+            dummy.position.y += useGlbTires ? 0.02 : 0.46;
+            dummy.rotation.set(0, faceTrackRotY, 0);
             dummy.updateMatrix();
-            if ((i / 2) % 2 === 0) tireRedMatrices.push(dummy.matrix.clone());
+            tireWallMatrices.push(dummy.matrix.clone());
+            if ((i / 4) % 2 === 0) tireRedMatrices.push(dummy.matrix.clone());
             else tireWhiteMatrices.push(dummy.matrix.clone());
           }
         }
@@ -838,7 +1154,7 @@ export class FujiTrack {
       this.group.add(inst);
     });
 
-    const armcoGeo = new THREE.BoxGeometry(4.5, 0.94, 0.22);
+    const armcoGeo = useGlbArmco ? envCache.armcoRailGeo : new THREE.BoxGeometry(4.5, 0.94, 0.22);
     const armcoInst = new THREE.InstancedMesh(armcoGeo, this.armcoMat, armcoMatrices.length);
     armcoMatrices.forEach((m, k) => armcoInst.setMatrixAt(k, m));
     armcoInst.instanceMatrix.needsUpdate = true;
@@ -846,37 +1162,60 @@ export class FujiTrack {
     armcoInst.receiveShadow = true;
     this.group.add(armcoInst);
 
-    const postGeo = new THREE.BoxGeometry(0.18, 1.08, 0.18);
+    const postGeo = (useGlbArmco && envCache.armcoPostGeo)
+      ? envCache.armcoPostGeo
+      : new THREE.BoxGeometry(0.18, 1.08, 0.18);
     const postInst = new THREE.InstancedMesh(postGeo, this.darkFrameMat, armcoPostMatrices.length);
     armcoPostMatrices.forEach((m, k) => postInst.setMatrixAt(k, m));
     postInst.instanceMatrix.needsUpdate = true;
     this.group.add(postInst);
 
-    const tireGeo = new THREE.CylinderGeometry(0.56, 0.56, 0.96, 14);
-    if (tireRedMatrices.length > 0) {
-      const redTireInst = new THREE.InstancedMesh(
-        tireGeo,
-        new THREE.MeshStandardMaterial({ color: 0xd91e26, roughness: 0.65 }),
-        tireRedMatrices.length
-      );
-      tireRedMatrices.forEach((m, k) => redTireInst.setMatrixAt(k, m));
-      redTireInst.instanceMatrix.needsUpdate = true;
-      this.group.add(redTireInst);
-    }
-    if (tireWhiteMatrices.length > 0) {
-      const whiteTireInst = new THREE.InstancedMesh(
-        tireGeo,
-        new THREE.MeshStandardMaterial({ color: 0xf4f7fc, roughness: 0.65 }),
-        tireWhiteMatrices.length
-      );
-      tireWhiteMatrices.forEach((m, k) => whiteTireInst.setMatrixAt(k, m));
-      whiteTireInst.instanceMatrix.needsUpdate = true;
-      this.group.add(whiteTireInst);
+    if (useGlbTires && tireWallMatrices.length > 0) {
+      const redMat = new THREE.MeshStandardMaterial({ color: 0xd91e26, roughness: 0.65 });
+      const whiteMat = new THREE.MeshStandardMaterial({ color: 0xf4f7fc, roughness: 0.65 });
+      const strapMat = new THREE.MeshStandardMaterial({ color: 0x14171d, roughness: 0.82 });
+      const rInst = new THREE.InstancedMesh(envCache.tireRedGeo, redMat, tireWallMatrices.length);
+      const wInst = new THREE.InstancedMesh(envCache.tireWhiteGeo, whiteMat, tireWallMatrices.length);
+      tireWallMatrices.forEach((m, k) => {
+        rInst.setMatrixAt(k, m);
+        wInst.setMatrixAt(k, m);
+      });
+      rInst.instanceMatrix.needsUpdate = true;
+      wInst.instanceMatrix.needsUpdate = true;
+      this.group.add(rInst, wInst);
+      if (envCache.tireStrapGeo) {
+        const sInst = new THREE.InstancedMesh(envCache.tireStrapGeo, strapMat, tireWallMatrices.length);
+        tireWallMatrices.forEach((m, k) => sInst.setMatrixAt(k, m));
+        sInst.instanceMatrix.needsUpdate = true;
+        this.group.add(sInst);
+      }
+    } else {
+      const tireGeo = new THREE.CylinderGeometry(0.56, 0.56, 0.96, 14);
+      if (tireRedMatrices.length > 0) {
+        const redTireInst = new THREE.InstancedMesh(
+          tireGeo,
+          new THREE.MeshStandardMaterial({ color: 0xd91e26, roughness: 0.65 }),
+          tireRedMatrices.length
+        );
+        tireRedMatrices.forEach((m, k) => redTireInst.setMatrixAt(k, m));
+        redTireInst.instanceMatrix.needsUpdate = true;
+        this.group.add(redTireInst);
+      }
+      if (tireWhiteMatrices.length > 0) {
+        const whiteTireInst = new THREE.InstancedMesh(
+          tireGeo,
+          new THREE.MeshStandardMaterial({ color: 0xf4f7fc, roughness: 0.65 }),
+          tireWhiteMatrices.length
+        );
+        tireWhiteMatrices.forEach((m, k) => whiteTireInst.setMatrixAt(k, m));
+        whiteTireInst.instanceMatrix.needsUpdate = true;
+        this.group.add(whiteTireInst);
+      }
     }
   }
 
   // --------------------------------------------------------------------------
-  // 5. ILLUMINATED OPEN-BAY F1 PIT GARAGES, PIT WALL CANOPY & TEAM BOXES
+  // 5. ARCHITECTURAL DARK-CARBON 3D OPEN-BAY PIT GARAGES & VIP ROOFTOP CROWD
   // --------------------------------------------------------------------------
   _buildPitLaneAndGarages() {
     const pitIndices = [];
@@ -891,7 +1230,7 @@ export class FujiTrack {
       const lPt = center.clone().addScaledVector(smp.right, -pitHalfWidth);
       const rPt = center.clone().addScaledVector(smp.right, pitHalfWidth + 4.8);
       lPt.y += 0.020;
-      rPt.y += 0.020;
+      rPt.y += yLiftPit(k);
       posArr.push(lPt.x, lPt.y, lPt.z, rPt.x, rPt.y, rPt.z);
       normArr.push(0, 1, 0, 0, 1, 0);
       uvArr.push(0, k * 0.08, 1, k * 0.08);
@@ -900,6 +1239,7 @@ export class FujiTrack {
         idxArr.push(b, b + 1, b + 2, b + 1, b + 3, b + 2);
       }
     }
+    function yLiftPit() { return 0.020; }
     const pitGeo = new THREE.BufferGeometry();
     pitGeo.setAttribute('position', new THREE.Float32BufferAttribute(posArr, 3));
     pitGeo.setAttribute('normal', new THREE.Float32BufferAttribute(normArr, 3));
@@ -909,34 +1249,41 @@ export class FujiTrack {
     pitRoadMesh.receiveShadow = true;
     this.group.add(pitRoadMesh);
 
-    // Concrete Pit Wall + FIA Blue Accent Stripe + Pit Wall Engineer Telemetry Canopy
+    // Dark Architectural Concrete Pit Wall + FIA Championship Stripe + Engineer Telemetry Perch
     const wallStart = this.sampleAt(954, ROAD_HALF_WIDTH + 1.8).pos;
     const wallEnd = this.sampleAt(68, ROAD_HALF_WIDTH + 1.8).pos;
     const wallLen = Math.max(120, wallEnd.x - wallStart.x);
     const wallCenterX = (wallStart.x + wallEnd.x) * 0.5;
     const wallZ = wallStart.z;
+    const isVegas = this.trackDef.theme === 'VEGAS';
 
-    const pitWall = new THREE.Mesh(new THREE.BoxGeometry(wallLen, 1.18, 0.48), this.concreteMat);
-    pitWall.position.set(wallCenterX, 0.59, wallZ);
+    const darkPitWallMat = new THREE.MeshStandardMaterial({
+      color: 0x242a36,
+      roughness: 0.62,
+      metalness: 0.18,
+    });
+    const pitWall = new THREE.Mesh(new THREE.BoxGeometry(wallLen, 1.16, 0.48), darkPitWallMat);
+    pitWall.position.set(wallCenterX, 0.58, wallZ);
     pitWall.castShadow = true;
     pitWall.receiveShadow = true;
     this.group.add(pitWall);
 
+    // Pit-wall debris catch glass & FIA accent stripe
     const wallStripe = new THREE.Mesh(
-      new THREE.BoxGeometry(wallLen + 0.1, 0.24, 0.52),
+      new THREE.BoxGeometry(wallLen + 0.1, 0.22, 0.52),
       new THREE.MeshStandardMaterial({
-        color: this.trackDef.theme === 'VEGAS' ? 0x00f0ff : 0x0e58c8,
-        emissive: this.trackDef.theme === 'VEGAS' ? 0x00f0ff : 0x062963,
-        emissiveIntensity: this.trackDef.theme === 'VEGAS' ? 0.45 : 0.2,
-        roughness: 0.3,
+        color: isVegas ? 0x00f0ff : 0xe41c24,
+        emissive: isVegas ? 0x00f0ff : 0x5c080c,
+        emissiveIntensity: isVegas ? 0.50 : 0.24,
+        roughness: 0.28,
       })
     );
-    wallStripe.position.set(wallCenterX, 1.08, wallZ);
+    wallStripe.position.set(wallCenterX, 1.06, wallZ);
     this.group.add(wallStripe);
 
-    // Architectural F1 Pit-Wall Team Telemetry Perch (replaces plain untextured box!)
+    // Architectural F1 Pit-Wall Team Telemetry Perch
     const perchGroup = new THREE.Group();
-    perchGroup.position.set(wallCenterX + 8, 1.18, wallZ);
+    perchGroup.position.set(wallCenterX + 8, 1.16, wallZ);
     const screenTex = this._makeMotorsportBanner(
       'RACE CONTROL • LIVE TELEMETRY',
       'FIA TIMING • SECTOR DELTA • WEATHER RADAR',
@@ -956,8 +1303,8 @@ export class FujiTrack {
       roughness: 0.2,
     });
     const perchRoof = new THREE.Mesh(
-      new THREE.BoxGeometry(26, 0.28, 2.3),
-      new THREE.MeshStandardMaterial({ color: 0xe8eef6, metalness: 0.45, roughness: 0.25 })
+      new THREE.BoxGeometry(26, 0.26, 2.3),
+      new THREE.MeshStandardMaterial({ color: 0x1e2533, metalness: 0.68, roughness: 0.24 })
     );
     perchRoof.position.set(0, 2.55, 0.15);
     perchGroup.add(perchRoof);
@@ -976,56 +1323,80 @@ export class FujiTrack {
     }
     this.group.add(perchGroup);
 
-    // 2-Story Architectural F1 Paddock Club & 3D Open-Bay Illuminated Garages
+    // Sleek Dark-Carbon & Smoked-Glass 2-Story F1 Paddock Complex (NO flat pale white boxes!)
     const garX = wallCenterX + 18;
     const garZ = PIT_LANE_CONFIG.lateralOffset + 14.5;
-    const isVegas = this.trackDef.theme === 'VEGAS';
 
-    const claddingMat = new THREE.MeshStandardMaterial({
-      color: isVegas ? 0xd8e4f8 : 0xedf2f9,
-      roughness: 0.32,
-      metalness: 0.28,
-      emissive: new THREE.Color(isVegas ? 0x1a2845 : 0x161c26),
-      emissiveIntensity: 0.22,
+    const carbonFasciaMat = new THREE.MeshStandardMaterial({
+      color: isVegas ? 0x121828 : 0x181d27,
+      roughness: 0.34,
+      metalness: 0.58,
+    });
+    const gunmetalTrimMat = new THREE.MeshStandardMaterial({
+      color: 0x2c3546,
+      roughness: 0.28,
+      metalness: 0.72,
+    });
+    const crimsonAccentMat = new THREE.MeshStandardMaterial({
+      color: isVegas ? 0x00f0ff : 0xd91424,
+      roughness: 0.26,
+      metalness: 0.35,
+      emissive: new THREE.Color(isVegas ? 0x00a8c8 : 0x45050b),
+      emissiveIntensity: 0.32,
     });
 
-    // Upper Paddock Club VIP Volume + Cantilevered Louvered Roof Canopy
-    const upperDeck = new THREE.Mesh(new THREE.BoxGeometry(342, 4.8, 14.4), claddingMat);
+    // Upper Paddock Club Dark-Carbon Volume + Cantilevered Titanium Louvered Canopy
+    const upperDeck = new THREE.Mesh(new THREE.BoxGeometry(342, 4.6, 14.4), carbonFasciaMat);
     upperDeck.position.set(garX, 7.6, garZ);
     upperDeck.castShadow = true;
     upperDeck.receiveShadow = true;
     this.group.add(upperDeck);
 
-    const roofOverhang = new THREE.Mesh(
-      new THREE.BoxGeometry(348, 0.65, 17.6),
-      new THREE.MeshStandardMaterial({ color: 0xf7faff, metalness: 0.35, roughness: 0.24 })
-    );
-    roofOverhang.position.set(garX, 10.25, garZ - 0.8);
+    const midBeltTrim = new THREE.Mesh(new THREE.BoxGeometry(344, 0.34, 15.2), crimsonAccentMat);
+    midBeltTrim.position.set(garX, 5.32, garZ - 0.3);
+    this.group.add(midBeltTrim);
+
+    const roofOverhang = new THREE.Mesh(new THREE.BoxGeometry(348, 0.58, 17.8), gunmetalTrimMat);
+    roofOverhang.position.set(garX, 10.22, garZ - 0.8);
+    roofOverhang.castShadow = true;
     this.group.add(roofOverhang);
 
-    // Paddock Club VIP Glass Curtain Wall Texture (front & rear so never blank from any orbit!)
+    // Smoked Reflective Floor-to-Ceiling VIP Paddock Club Glass Curtain Wall
     const clubTex = this._makePaddockGlassTexture(isVegas);
     const clubGlassMat = new THREE.MeshStandardMaterial({
       map: clubTex,
       emissive: new THREE.Color(0xffffff),
       emissiveMap: clubTex,
-      emissiveIntensity: isVegas ? 0.85 : 0.48,
-      roughness: 0.12,
-      metalness: 0.78,
+      emissiveIntensity: isVegas ? 0.78 : 0.42,
+      roughness: 0.10,
+      metalness: 0.84,
     });
     const clubGlass = new THREE.Mesh(
-      new THREE.BoxGeometry(338, 3.1, 14.65),
+      new THREE.BoxGeometry(338, 3.2, 14.72),
       [this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, clubGlassMat, clubGlassMat]
     );
-    clubGlass.position.set(garX, 7.55, garZ);
+    clubGlass.position.set(garX, 7.58, garZ);
     this.group.add(clubGlass);
 
-    // Rooftop Championship Signboard facing the Main Straight & Showroom Camera!
+    // Architectural Vertical Steel Fins framing the VIP Paddock Glass every 17m
+    const finGeo = new THREE.BoxGeometry(0.42, 4.7, 0.85);
+    const finCount = 21;
+    const finInst = new THREE.InstancedMesh(finGeo, gunmetalTrimMat, finCount);
+    const finDummy = new THREE.Object3D();
+    for (let fi = 0; fi < finCount; fi++) {
+      finDummy.position.set(garX - 165 + fi * 16.5, 7.62, garZ - 7.35);
+      finDummy.updateMatrix();
+      finInst.setMatrixAt(fi, finDummy.matrix);
+    }
+    finInst.instanceMatrix.needsUpdate = true;
+    this.group.add(finInst);
+
+    // Rooftop Championship Signboard + Smoked-Glass VIP Hospitality Terrace Balustrade
     const roofBannerTex = this._makeMotorsportBanner(
       'F1 PADDOCK CLUB',
       `${this.trackDef.name} • WORLD CHAMPIONSHIP GARAGES`,
-      '#0b1d3a',
-      '#133463',
+      '#0b1324',
+      '#162848',
       '#ffffff',
       isVegas ? '#00f0ff' : '#e41c24',
       'GP',
@@ -1036,42 +1407,71 @@ export class FujiTrack {
       map: roofBannerTex,
       emissive: new THREE.Color(0xffffff),
       emissiveMap: roofBannerTex,
-      emissiveIntensity: isVegas ? 0.52 : 0.24,
-      roughness: 0.28,
+      emissiveIntensity: isVegas ? 0.52 : 0.26,
+      roughness: 0.26,
     });
     const roofSign = new THREE.Mesh(
-      new THREE.BoxGeometry(118, 2.2, 0.55),
+      new THREE.BoxGeometry(118, 2.15, 0.55),
       [this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, roofBannerMat, roofBannerMat]
     );
-    roofSign.position.set(garX - 35, 11.65, garZ - 7.1);
+    roofSign.position.set(garX - 35, 12.15, garZ + 2.8);
     this.group.add(roofSign);
 
-    // Continuous Ground-Floor Recessed Back Wall + Checkered Garage Epoxy Floor (enclosed 3D bays!)
+    const terraceRailMat = new THREE.MeshStandardMaterial({
+      color: 0x88c8ff,
+      roughness: 0.12,
+      metalness: 0.75,
+      transparent: true,
+      opacity: 0.46,
+    });
+    const terraceRail = new THREE.Mesh(new THREE.BoxGeometry(336, 1.15, 0.14), terraceRailMat);
+    terraceRail.position.set(garX, 11.08, garZ - 8.8);
+    this.group.add(terraceRail);
+
+    // Colorful 3D VIP Rooftop Hospitality Parasols & Umbrellas overlooking the Main Straight!
+    const parasolCols = [0xd91424, 0xff8000, 0x00b0ff, 0xffd600, 0xf8fbff];
+    const parasolPoleGeo = new THREE.CylinderGeometry(0.06, 0.07, 2.7, 8);
+    const parasolCanopyGeo = new THREE.ConeGeometry(2.35, 0.72, 10);
+    for (let pi = 0; pi < 13; pi++) {
+      const px = garX - 144 + pi * 24;
+      const pz = garZ - 5.2 - (pi % 2) * 1.8;
+      const pStem = new THREE.Mesh(parasolPoleGeo, gunmetalTrimMat);
+      pStem.position.set(px, 11.85, pz);
+      const pTop = new THREE.Mesh(
+        parasolCanopyGeo,
+        new THREE.MeshStandardMaterial({ color: parasolCols[pi % parasolCols.length], roughness: 0.42 })
+      );
+      pTop.position.set(px, 13.25, pz);
+      this.group.add(pStem, pTop);
+    }
+
+    // Recessed Dark Interior Garage Wall + High-Contrast Checkered Epoxy Floor
     const garageIntTex = this._makeGarageInteriorTexture();
     const garageIntMat = new THREE.MeshStandardMaterial({
       map: garageIntTex,
-      emissive: new THREE.Color(0xfff4dc),
+      emissive: new THREE.Color(0xffe8c2),
       emissiveMap: garageIntTex,
-      emissiveIntensity: 0.78,
-      roughness: 0.4,
+      emissiveIntensity: 0.72,
+      roughness: 0.38,
     });
     const backStructure = new THREE.Mesh(
       new THREE.BoxGeometry(340, 5.2, 2.2),
-      [claddingMat, claddingMat, claddingMat, claddingMat, claddingMat, garageIntMat]
+      [carbonFasciaMat, carbonFasciaMat, carbonFasciaMat, carbonFasciaMat, carbonFasciaMat, garageIntMat]
     );
     backStructure.position.set(garX, 2.6, garZ + 5.6);
     this.group.add(backStructure);
 
     const garageFloorTex = this._makeCheckeredFloorTexture();
     const garageFloor = new THREE.Mesh(
-      new THREE.PlaneGeometry(340, 13.6),
-      new THREE.MeshStandardMaterial({ map: garageFloorTex, roughness: 0.35, metalness: 0.15 })
+      new THREE.PlaneGeometry(340, 13.8),
+      new THREE.MeshStandardMaterial({ map: garageFloorTex, roughness: 0.32, metalness: 0.18 })
     );
     garageFloor.rotation.x = -Math.PI / 2;
     garageFloor.position.set(garX, 0.032, garZ - 0.2);
+    garageFloor.receiveShadow = true;
     this.group.add(garageFloor);
 
-    // Individual Open Garage Bays with Glowing Ceiling Light Panels & Team Livery Headers
+    // Individual Deep 3D Open Garage Bays with 3D Stacked Pirelli Tire Racks, Tool Chests & Overhead Trusses!
     const teamDefs = [
       { name: 'PHANATIC RACING #1', bg: '#d91424', stripe: '#ffd600' },
       { name: 'TAKAHASHI MOTORSPORT', bg: '#103468', stripe: '#00f0ff' },
@@ -1086,39 +1486,157 @@ export class FujiTrack {
         map: t,
         emissive: new THREE.Color(0xffffff),
         emissiveMap: t,
-        emissiveIntensity: 0.32,
-        roughness: 0.3,
+        emissiveIntensity: 0.36,
+        roughness: 0.28,
       });
     });
 
-    const ceilingPanelMat = new THREE.MeshBasicMaterial({ color: 0xfff8e8 });
+    const ceilingPanelMat = new THREE.MeshBasicMaterial({ color: 0xfff5dc });
+    const bayTireGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.32, 12);
+    bayTireGeo.rotateZ(Math.PI * 0.5);
+    const bayTireMat = new THREE.MeshStandardMaterial({ color: 0x15171c, roughness: 0.78 });
+    const toolCabinetGeo = new THREE.BoxGeometry(2.6, 1.35, 0.95);
+    const toolCabinetMat = new THREE.MeshStandardMaterial({ color: 0xc91622, roughness: 0.34, metalness: 0.38 });
+    const bayTrussGeo = new THREE.BoxGeometry(20.5, 0.28, 0.32);
+
+    const tireRackMatrices = [];
+    const toolChestMatrices = [];
+    const bayTrussMatrices = [];
+    const bayDummy = new THREE.Object3D();
+
     let bayIdx = 0;
     for (let bx = garX - 150; bx <= garX + 150; bx += 25) {
-      const pillar = new THREE.Mesh(new THREE.BoxGeometry(2.1, 5.2, 13.8), claddingMat);
+      const pillar = new THREE.Mesh(new THREE.BoxGeometry(2.2, 5.2, 14.0), carbonFasciaMat);
       pillar.position.set(bx, 2.6, garZ);
       pillar.castShadow = true;
+      pillar.receiveShadow = true;
       this.group.add(pillar);
 
       if (bx < garX + 150) {
-        // Illuminated LED ceiling light strip inside open bay
         const lightPanel = new THREE.Mesh(new THREE.PlaneGeometry(18.5, 4.2), ceilingPanelMat);
         lightPanel.rotation.x = Math.PI / 2;
         lightPanel.position.set(bx + 12.5, 5.05, garZ - 1.5);
         this.group.add(lightPanel);
 
-        // Framed Team Livery Header Fascia above open bay
+        // Overhead 3D garage gantry beam inside each open bay
+        bayDummy.position.set(bx + 12.5, 4.45, garZ - 3.2);
+        bayDummy.rotation.set(0, 0, 0);
+        bayDummy.scale.set(1, 1, 1);
+        bayDummy.updateMatrix();
+        bayTrussMatrices.push(bayDummy.matrix.clone());
+
+        // 3D Red mechanic tool chest inside bay
+        bayDummy.position.set(bx + 5.8, 0.68, garZ + 2.6);
+        bayDummy.updateMatrix();
+        toolChestMatrices.push(bayDummy.matrix.clone());
+
+        // 2-tier x 4-tire 3D Pirelli tire rack inside bay
+        for (let rowT = 0; rowT < 2; rowT++) {
+          for (let colT = 0; colT < 4; colT++) {
+            bayDummy.position.set(bx + 17.2 + colT * 0.44, 0.46 + rowT * 0.82, garZ + 1.8);
+            bayDummy.updateMatrix();
+            tireRackMatrices.push(bayDummy.matrix.clone());
+          }
+        }
+
         const hMat = teamHeaderMats[bayIdx % teamHeaderMats.length];
         const hdr = new THREE.Mesh(
-          new THREE.BoxGeometry(22.9, 1.05, 0.55),
+          new THREE.BoxGeometry(22.8, 1.12, 0.58),
           [this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, hMat]
         );
-        hdr.position.set(bx + 12.5, 4.72, garZ - 6.95);
+        hdr.position.set(bx + 12.5, 4.72, garZ - 7.05);
         this.group.add(hdr);
         bayIdx++;
       }
     }
 
-    // 80 KM/H Pit Speed Limit Line + Grounded FIA 80 Limit Signpost
+    if (tireRackMatrices.length) {
+      const trInst = new THREE.InstancedMesh(bayTireGeo, bayTireMat, tireRackMatrices.length);
+      tireRackMatrices.forEach((m, k) => trInst.setMatrixAt(k, m));
+      trInst.instanceMatrix.needsUpdate = true;
+      this.group.add(trInst);
+    }
+    if (toolChestMatrices.length) {
+      const tcInst = new THREE.InstancedMesh(toolCabinetGeo, toolCabinetMat, toolChestMatrices.length);
+      toolChestMatrices.forEach((m, k) => tcInst.setMatrixAt(k, m));
+      tcInst.instanceMatrix.needsUpdate = true;
+      this.group.add(tcInst);
+    }
+    if (bayTrussMatrices.length) {
+      const btInst = new THREE.InstancedMesh(bayTrussGeo, gunmetalTrimMat, bayTrussMatrices.length);
+      bayTrussMatrices.forEach((m, k) => btInst.setMatrixAt(k, m));
+      btInst.instanceMatrix.needsUpdate = true;
+      this.group.add(btInst);
+    }
+
+    // Save VIP rooftop terrace bounds so _buildGrandstands populates it with animated 3D cheering crowds!
+    this._paddockTerraceBounds = { centerX: garX, zFront: garZ - 7.8, width: 316, yBase: 10.52 };
+
+    // 80 KM/H Pit Speed Limit Line + Grounded FIA 80 Limit Signpost + High-Vis Pit-Entry Chevron Gore Strip!
+    const chevronCanvas = document.createElement('canvas');
+    chevronCanvas.width = 256;
+    chevronCanvas.height = 512;
+    const cctx = chevronCanvas.getContext('2d');
+    cctx.fillStyle = '#0d1726';
+    cctx.fillRect(0, 0, 256, 512);
+    cctx.fillStyle = isVegas ? '#00f0ff' : '#ffd600';
+    for (let y = -128; y < 512; y += 64) {
+      cctx.beginPath();
+      cctx.moveTo(16, y + 44);
+      cctx.lineTo(128, y);
+      cctx.lineTo(240, y + 44);
+      cctx.lineTo(240, y + 72);
+      cctx.lineTo(128, y + 28);
+      cctx.lineTo(16, y + 72);
+      cctx.closePath();
+      cctx.fill();
+    }
+    cctx.fillStyle = '#ffffff';
+    cctx.fillRect(6, 0, 8, 512);
+    cctx.fillRect(242, 0, 8, 512);
+    const chevronTex = new THREE.CanvasTexture(chevronCanvas);
+    chevronTex.wrapS = THREE.RepeatWrapping;
+    chevronTex.wrapT = THREE.RepeatWrapping;
+    chevronTex.repeat.set(1, 5);
+    chevronTex.colorSpace = THREE.SRGBColorSpace;
+
+    const goreFrame = this.sampleAt(928, ROAD_HALF_WIDTH + 2.1);
+    const goreYaw = Math.atan2(goreFrame.tangent.z, goreFrame.tangent.x);
+    const goreStrip = new THREE.Mesh(
+      new THREE.PlaneGeometry(58, 3.2),
+      new THREE.MeshStandardMaterial({
+        map: chevronTex,
+        roughness: 0.4,
+        emissive: new THREE.Color(0xffffff),
+        emissiveMap: chevronTex,
+        emissiveIntensity: isVegas ? 0.55 : 0.26,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      })
+    );
+    goreStrip.rotation.x = -Math.PI / 2;
+    goreStrip.rotation.z = -goreYaw;
+    goreStrip.position.copy(goreFrame.pos).add(new THREE.Vector3(0, 0.031, 0));
+    this.group.add(goreStrip);
+
+    // Pit Entry Directional Signpost at s = 914
+    const pitInTex = this._makeMotorsportBanner('PIT ENTRY ❯❯', 'BOX LANE RIGHT', '#ffd600', '#e09e00', '#0b1018', '#d91424', 'IN', 512, 160);
+    const pitInMat = new THREE.MeshStandardMaterial({
+      map: pitInTex,
+      emissive: new THREE.Color(0xffffff),
+      emissiveMap: pitInTex,
+      emissiveIntensity: 0.42,
+      roughness: 0.25,
+    });
+    const pitInPos = this.sampleAt(914, ROAD_HALF_WIDTH + 4.4).pos;
+    const pitInBoard = new THREE.Mesh(
+      new THREE.BoxGeometry(0.22, 1.05, 2.5),
+      [pitInMat, pitInMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat]
+    );
+    pitInBoard.position.copy(pitInPos).add(new THREE.Vector3(0, 1.05, 0));
+    this.group.add(pitInBoard);
+
     const limFrame = this.sampleAt(PIT_LANE_CONFIG.speedLimitLineS, 0);
     const limPos = limFrame.pos.clone().addScaledVector(limFrame.right, limFrame.pitOffset || 13.0);
     const limLine = new THREE.Mesh(
@@ -1197,24 +1715,24 @@ export class FujiTrack {
     c.height = 128;
     const ctx = c.getContext('2d');
     const g = ctx.createLinearGradient(0, 0, 0, 128);
-    g.addColorStop(0.0, isNight ? '#0e284d' : '#1b4b7a');
-    g.addColorStop(0.55, isNight ? '#ffe39f' : '#8ed6ff');
-    g.addColorStop(1.0, isNight ? '#ffb84d' : '#d6f0ff');
+    g.addColorStop(0.0, '#07111f');
+    g.addColorStop(0.45, isNight ? '#1c3b63' : '#122b46');
+    g.addColorStop(1.0, isNight ? '#ffca6b' : '#2a5680');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, 512, 128);
 
-    // Warm lounge ceiling lights + vertical curtain-wall mullions
-    ctx.fillStyle = 'rgba(255, 250, 224, 0.72)';
-    for (let x = 12; x < 512; x += 32) {
-      ctx.fillRect(x, 16, 18, 10);
+    // Warm lounge ceiling lights + dark structural curtain-wall mullions
+    ctx.fillStyle = 'rgba(255, 232, 176, 0.85)';
+    for (let x = 10; x < 512; x += 32) {
+      ctx.fillRect(x, 18, 20, 8);
     }
-    ctx.fillStyle = '#182230';
+    ctx.fillStyle = '#0c111a';
     for (let x = 0; x < 512; x += 32) {
-      ctx.fillRect(x, 0, 4, 128);
+      ctx.fillRect(x, 0, 5, 128);
     }
-    ctx.fillRect(0, 0, 512, 8);
-    ctx.fillRect(0, 92, 512, 5);
-    ctx.fillRect(0, 120, 512, 8);
+    ctx.fillRect(0, 0, 512, 10);
+    ctx.fillRect(0, 90, 512, 6);
+    ctx.fillRect(0, 118, 512, 10);
 
     const tex = new THREE.CanvasTexture(c);
     tex.wrapS = THREE.RepeatWrapping;
@@ -1229,29 +1747,36 @@ export class FujiTrack {
     c.width = 512;
     c.height = 128;
     const ctx = c.getContext('2d');
-    ctx.fillStyle = '#f2ede2';
+    ctx.fillStyle = '#181e29';
     ctx.fillRect(0, 0, 512, 128);
 
-    // Upper telemetry screens + red/blue tool chests + tire racks inside garage bays
+    // High-tech dark carbon F1 garage wall with glowing FOM telemetry screens & Snap-On cabinets
     for (let bx = 0; bx < 512; bx += 128) {
+      ctx.fillStyle = '#232c3b';
+      ctx.fillRect(bx + 5, 6, 118, 116);
+      ctx.fillStyle = '#d91424';
+      ctx.fillRect(bx + 5, 6, 118, 8);
+      // Red tool cabinet
+      ctx.fillStyle = '#c81622';
+      ctx.fillRect(bx + 12, 66, 44, 52);
       ctx.fillStyle = '#dce4ef';
-      ctx.fillRect(bx + 6, 8, 116, 112);
-      // Red Snap-On style tool cabinet
-      ctx.fillStyle = '#d91c24';
-      ctx.fillRect(bx + 14, 68, 42, 48);
-      ctx.fillStyle = '#cfd8e3';
-      for (let ry = 74; ry < 112; ry += 9) ctx.fillRect(bx + 18, ry, 34, 3);
-      // Telemetry monitor wall
-      ctx.fillStyle = '#0d1b2e';
-      ctx.fillRect(bx + 64, 24, 46, 28);
-      ctx.fillStyle = '#00e5ff';
-      ctx.fillRect(bx + 68, 28, 38, 6);
+      for (let ry = 73; ry < 114; ry += 9) ctx.fillRect(bx + 16, ry, 36, 3);
+      // Multi-screen FOM telemetry wall
+      ctx.fillStyle = '#050d1a';
+      ctx.fillRect(bx + 62, 20, 52, 34);
+      ctx.fillStyle = '#00f0ff';
+      ctx.fillRect(bx + 66, 25, 44, 6);
       ctx.fillStyle = '#00e676';
-      ctx.fillRect(bx + 68, 38, 26, 8);
-      // Tire rack
-      ctx.fillStyle = '#1c2026';
+      ctx.fillRect(bx + 66, 35, 30, 7);
+      ctx.fillStyle = '#ffd600';
+      ctx.fillRect(bx + 66, 45, 38, 5);
+      // Pirelli tire rack graphic
+      ctx.fillStyle = '#0e1116';
       for (let tx = 0; tx < 3; tx++) {
-        ctx.fillRect(bx + 66 + tx * 15, 72, 12, 40);
+        ctx.fillRect(bx + 64 + tx * 16, 70, 13, 44);
+        ctx.fillStyle = tx === 0 ? '#ff1e28' : (tx === 1 ? '#ffd600' : '#ffffff');
+        ctx.fillRect(bx + 66 + tx * 16, 76, 9, 4);
+        ctx.fillStyle = '#0e1116';
       }
     }
     const tex = new THREE.CanvasTexture(c);
@@ -1269,7 +1794,7 @@ export class FujiTrack {
     const ctx = c.getContext('2d');
     for (let y = 0; y < 4; y++) {
       for (let x = 0; x < 4; x++) {
-        ctx.fillStyle = (x + y) % 2 === 0 ? '#dde4ee' : '#8a99ad';
+        ctx.fillStyle = (x + y) % 2 === 0 ? '#2b3342' : '#171c26';
         ctx.fillRect(x * 32, y * 32, 32, 32);
       }
     }
@@ -1281,42 +1806,91 @@ export class FujiTrack {
     return tex;
   }
 
-  // --------------------------------------------------------------------------
-  // 6. OVERHEAD F1 SPACE-FRAME GANTRY, 5 START LIGHTS & FULL FIA GRID STALLS
-  // --------------------------------------------------------------------------
-  _buildStartGantryAndGridBoxes() {
-    const trussMat = new THREE.MeshStandardMaterial({ color: 0xe4eaf4, metalness: 0.78, roughness: 0.22 });
-    const spanZ = ROAD_HALF_WIDTH + 4.3;
+  _makeShowroomGridSlotTexture() {
+    const c = document.createElement('canvas');
+    c.width = 512;
+    c.height = 256;
+    const ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, 512, 256);
 
-    // Grounded Concrete Plinths + 4-Chord Lattice Truss Towers on both sides
-    for (const side of [-1, 1]) {
-      const plinth = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.85, 2.1), this.concreteMat);
-      plinth.position.set(0, 0.42, side * spanZ);
-      this.group.add(plinth);
+    // Twin dark vulcanized Pirelli launch burnout rubber streaks!
+    const burnGrad = ctx.createLinearGradient(0, 0, 420, 0);
+    burnGrad.addColorStop(0.0, 'rgba(6, 7, 10, 0.0)');
+    burnGrad.addColorStop(0.25, 'rgba(6, 7, 10, 0.72)');
+    burnGrad.addColorStop(0.85, 'rgba(6, 7, 10, 0.82)');
+    burnGrad.addColorStop(1.0, 'rgba(6, 7, 10, 0.15)');
+    ctx.fillStyle = burnGrad;
+    ctx.fillRect(20, 34, 410, 44);
+    ctx.fillRect(20, 178, 410, 44);
 
-      for (const xOff of [-0.68, 0.68]) {
-        for (const zSub of [-0.52, 0.52]) {
-          const col = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.18, 9.8, 10), trussMat);
-          col.position.set(xOff, 4.9, side * spanZ + zSub);
-          col.castShadow = true;
-          this.group.add(col);
-        }
-      }
-      // Horizontal tower cross-rungs
-      for (let yR = 2.0; yR <= 8.5; yR += 2.1) {
-        const rung = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.14, 1.12), trussMat);
-        rung.position.set(0, yR, side * spanZ);
-        this.group.add(rung);
-      }
+    // Crisp FIA White Grid U-Bracket + Red/Yellow Wheel-Stop Chevrons
+    ctx.fillStyle = '#f8fbff';
+    ctx.fillRect(458, 16, 22, 224);
+    ctx.fillRect(180, 16, 298, 14);
+    ctx.fillRect(180, 226, 298, 14);
+
+    for (let i = 0; i < 6; i++) {
+      ctx.fillStyle = i % 2 === 0 ? '#ffd600' : '#e41c24';
+      ctx.fillRect(428, 32 + i * 32, 22, 28);
     }
 
-    // Overhead Space-Frame Chord Beams
-    for (const yOff of [7.35, 9.65]) {
-      for (const xOff of [-0.55, 0.55]) {
-        const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, spanZ * 2.06, 10), trussMat);
-        beam.rotation.x = Math.PI / 2;
-        beam.position.set(xOff, yOff, 0);
-        this.group.add(beam);
+    // Stenciled "P1" FIA Grid Slot Designation on tarmac
+    ctx.save();
+    ctx.translate(335, 128);
+    ctx.rotate(-Math.PI * 0.5);
+    ctx.font = '900 italic 54px "Segoe UI", "Arial Black", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255, 214, 0, 0.88)';
+    ctx.fillText('P1 • FIA', 0, 0);
+    ctx.restore();
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.anisotropy = 8;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  // --------------------------------------------------------------------------
+  // 6. BLENDER .GLB SPACE-FRAME START GANTRY, 5 START LIGHTS & FIA GRID STALLS
+  // --------------------------------------------------------------------------
+  _buildStartGantryAndGridBoxes() {
+    const envCache = FujiTrack._envGlbCache;
+    const trussMat = new THREE.MeshStandardMaterial({ color: 0xdce4f0, metalness: 0.82, roughness: 0.22 });
+    const spanZ = ROAD_HALF_WIDTH + 4.3;
+
+    if (envCache?.gantryTrussGeo) {
+      const glbGantry = new THREE.Mesh(envCache.gantryTrussGeo, trussMat);
+      glbGantry.castShadow = true;
+      glbGantry.receiveShadow = true;
+      this.group.add(glbGantry);
+    } else {
+      for (const side of [-1, 1]) {
+        const plinth = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.85, 2.1), this.concreteMat);
+        plinth.position.set(0, 0.42, side * spanZ);
+        this.group.add(plinth);
+
+        for (const xOff of [-0.68, 0.68]) {
+          for (const zSub of [-0.52, 0.52]) {
+            const col = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.18, 9.8, 10), trussMat);
+            col.position.set(xOff, 4.9, side * spanZ + zSub);
+            col.castShadow = true;
+            this.group.add(col);
+          }
+        }
+        for (let yR = 2.0; yR <= 8.5; yR += 2.1) {
+          const rung = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.14, 1.12), trussMat);
+          rung.position.set(0, yR, side * spanZ);
+          this.group.add(rung);
+        }
+      }
+      for (const yOff of [7.35, 9.65]) {
+        for (const xOff of [-0.55, 0.55]) {
+          const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, spanZ * 2.06, 10), trussMat);
+          beam.rotation.x = Math.PI / 2;
+          beam.position.set(xOff, yOff, 0);
+          this.group.add(beam);
+        }
       }
     }
 
@@ -1341,14 +1915,39 @@ export class FujiTrack {
       emissiveIntensity: this.trackDef.theme === 'VEGAS' ? 0.45 : 0.18,
     });
     const banner = new THREE.Mesh(
-      new THREE.BoxGeometry(1.15, 2.25, spanZ * 1.94),
+      new THREE.BoxGeometry(1.18, 2.25, spanZ * 1.94),
       [bannerFaceMat, bannerFaceMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat]
     );
     banner.castShadow = true;
-    banner.position.set(0, 8.5, 0);
+    banner.position.set(0, 8.52, 0);
     this.group.add(banner);
 
-    // Checkered Start/Finish Line (polygonOffset avoids Z-fighting with asphalt & car shadow!)
+    const timingCrownTex = this._makeMotorsportBanner(
+      'FIA WORLD CHAMPIONSHIP • POLE POSITION 2026',
+      'START / FINISH • SECTOR 1 LIVE TIMING',
+      '#08111f',
+      '#0d1f38',
+      '#00f0ff',
+      '#ffd600',
+      'FIA',
+      1024,
+      128
+    );
+    const timingCrownMat = new THREE.MeshStandardMaterial({
+      map: timingCrownTex,
+      emissive: new THREE.Color(0xffffff),
+      emissiveMap: timingCrownTex,
+      emissiveIntensity: 0.55,
+      roughness: 0.22,
+    });
+    const timingCrown = new THREE.Mesh(
+      new THREE.BoxGeometry(0.85, 1.05, spanZ * 1.42),
+      [timingCrownMat, timingCrownMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat]
+    );
+    timingCrown.position.set(0, 10.35, 0);
+    this.group.add(timingCrown);
+
+    // Checkered Start/Finish Line
     const sfCanvas = document.createElement('canvas');
     sfCanvas.width = 512;
     sfCanvas.height = 128;
@@ -1377,7 +1976,25 @@ export class FujiTrack {
     sfMesh.receiveShadow = true;
     this.group.add(sfMesh);
 
-    // Full FIA U-Bracket Starting Grid Stalls + Yellow Wheel-Stop Line for all 16 slots!
+    // Hero Showroom #1 Grid Pad (s = 993.5, lat = -3.0) with Burnout Streaks & Yellow/Red FIA Chevrons!
+    const heroPadTex = this._makeShowroomGridSlotTexture();
+    const heroPadMat = new THREE.MeshStandardMaterial({
+      map: heroPadTex,
+      transparent: true,
+      roughness: 0.68,
+      metalness: 0.04,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    const heroFrame = this.sampleAt(993.5, -3.0);
+    const heroPad = new THREE.Mesh(new THREE.PlaneGeometry(8.2, 3.6), heroPadMat);
+    heroPad.rotation.x = -Math.PI / 2;
+    heroPad.position.set(heroFrame.pos.x - 0.6, 0.031, heroFrame.pos.z);
+    heroPad.receiveShadow = true;
+    this.group.add(heroPad);
+
+    // Full FIA U-Bracket Starting Grid Stalls + Yellow/Red Wheel-Stop Lines for all 16 slots!
     const stallMat = new THREE.MeshBasicMaterial({
       color: 0xf4f8ff,
       polygonOffset: true,
@@ -1390,6 +2007,20 @@ export class FujiTrack {
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
     });
+    const redAlignMat = new THREE.MeshBasicMaterial({
+      color: 0xe41c24,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+    const burnoutMat = new THREE.MeshBasicMaterial({
+      color: 0x090a0d,
+      transparent: true,
+      opacity: 0.58,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
 
     for (let slot = 0; slot < 16; slot++) {
       const sBack = 3.2 + slot * 2.1;
@@ -1398,25 +2029,34 @@ export class FujiTrack {
       const stallGroup = new THREE.Group();
       stallGroup.position.set(fr.pos.x, 0.032, fr.pos.z);
 
-      // Front transverse white bracket line
-      const frontBar = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 2.52), stallMat);
+      const frontBar = new THREE.Mesh(new THREE.PlaneGeometry(0.24, 2.56), stallMat);
       frontBar.rotation.x = -Math.PI / 2;
       frontBar.position.set(2.48, 0, 0);
       stallGroup.add(frontBar);
 
-      // Left & right longitudinal side wing lines forming the FIA U-box
       for (const zSide of [-1.20, 1.20]) {
-        const wingBar = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.16), stallMat);
+        const wingBar = new THREE.Mesh(new THREE.PlaneGeometry(2.65, 0.16), stallMat);
         wingBar.rotation.x = -Math.PI / 2;
         wingBar.position.set(1.28, 0, zSide);
         stallGroup.add(wingBar);
       }
 
-      // FIA Yellow Front-Axle Registration Strip
-      const axStrip = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.85), yellowAlignMat);
+      for (const zTire of [-0.76, 0.76]) {
+        const burn = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 0.42), burnoutMat);
+        burn.rotation.x = -Math.PI / 2;
+        burn.position.set(-0.4, -0.001, zTire);
+        stallGroup.add(burn);
+      }
+
+      const axStrip = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.92), yellowAlignMat);
       axStrip.rotation.x = -Math.PI / 2;
-      axStrip.position.set(1.55, 0, slot % 2 === 0 ? -1.42 : 1.42);
+      axStrip.position.set(1.55, 0, slot % 2 === 0 ? -1.44 : 1.44);
       stallGroup.add(axStrip);
+
+      const redStop = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 1.85), redAlignMat);
+      redStop.rotation.x = -Math.PI / 2;
+      redStop.position.set(2.24, 0, 0);
+      stallGroup.add(redStop);
 
       this.group.add(stallGroup);
     }
@@ -1427,20 +2067,18 @@ export class FujiTrack {
     for (let i = 0; i < 5; i++) {
       const zOff = (i - 2) * 1.78;
       const pod = new THREE.Mesh(new THREE.BoxGeometry(0.62, 1.68, 0.96), podMat);
-      pod.position.set(-0.72, 6.32, zOff);
+      pod.position.set(-0.74, 6.32, zOff);
       this.group.add(pod);
 
-      // Visor brow hood
       const visor = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.12, 1.02), podMat);
       visor.position.set(-1.12, 7.10, zOff);
       this.group.add(visor);
 
-      // Shared bulbMat for upper & lower twin lenses so setGantryLights drives both cleanly!
       const bulbMat = new THREE.MeshBasicMaterial({ color: 0x2b0a0a });
       for (const yLens of [6.66, 5.98]) {
         const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.27, 16, 14), bulbMat);
         bulb.scale.set(0.55, 1.0, 1.0);
-        bulb.position.set(-1.02, yLens, zOff);
+        bulb.position.set(-1.04, yLens, zOff);
         this.group.add(bulb);
       }
       this.gantryLights.push(bulbMat);
@@ -1448,6 +2086,7 @@ export class FujiTrack {
   }
 
   setGantryLights(redCount, greenOn = false, yellowFlash = false) {
+    this._lastGantryState = { redCount, greenOn, yellowFlash };
     for (let i = 0; i < this.gantryLights.length; i++) {
       if (yellowFlash) this.gantryLights[i].color.setHex(0xffe600);
       else if (greenOn) this.gantryLights[i].color.setHex(0x00ff66);
@@ -1512,34 +2151,143 @@ export class FujiTrack {
       spanBox.position.set(0, 8.15, 0);
       spanBox.castShadow = true;
       gGroup.add(spanBox);
+
+      // Top LED floodlight brow + twin underside volumetric downlight cones illuminating the track
+      const bridgeLampMat = new THREE.MeshBasicMaterial({
+        color: this.trackDef.theme === 'VEGAS' ? 0x00f0ff : 0xfff8e6,
+      });
+      const topLightBar = new THREE.Mesh(new THREE.BoxGeometry(1.65, 0.16, span * 1.92), bridgeLampMat);
+      topLightBar.position.set(0, 9.42, 0);
+      gGroup.add(topLightBar);
+
+      const bridgeConeMat = new THREE.MeshBasicMaterial({
+        color: this.trackDef.theme === 'VEGAS' ? 0x80f8ff : 0xfff3d1,
+        transparent: true,
+        opacity: this.trackDef.theme === 'VEGAS' ? 0.085 : 0.045,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      for (const zCone of [-3.6, 3.6]) {
+        const downCone = new THREE.Mesh(new THREE.ConeGeometry(5.2, 6.9, 14, 1, true), bridgeConeMat);
+        downCone.position.set(0, 3.5, zCone);
+        gGroup.add(downCone);
+      }
+
       this.group.add(gGroup);
     }
 
-    // FIA Grade-1 Wire Catch-Fencing along Main Straight Spectator Corridor
-    const fencePostGeo = new THREE.CylinderGeometry(0.06, 0.075, 4.3, 6);
-    const fencePostMat = new THREE.MeshStandardMaterial({ color: 0xa2afc2, metalness: 0.78, roughness: 0.28 });
-    const postMatrices = [];
-    const dummy = new THREE.Object3D();
-    for (let x = -225; x <= 525; x += 12.5) {
-      dummy.position.set(x, 2.65, -(ROAD_HALF_WIDTH + 5.88));
-      dummy.rotation.set(0.11, 0, 0);
-      dummy.updateMatrix();
-      postMatrices.push(dummy.matrix.clone());
-    }
-    const postInst = new THREE.InstancedMesh(fencePostGeo, fencePostMat, postMatrices.length);
-    postMatrices.forEach((m, i) => postInst.setMatrixAt(i, m));
-    this.group.add(postInst);
+    // Trackside Stadium Floodlight Poles + Volumetric Light-Cones & Asphalt Light Pools across all 6 circuits!
+    const isVegas = this.trackDef.theme === 'VEGAS';
+    const floodPoleMat = new THREE.MeshStandardMaterial({ color: 0xaab6c8, metalness: 0.80, roughness: 0.24 });
+    const floodBulbMat = new THREE.MeshBasicMaterial({ color: isVegas ? 0xe6fcff : 0xfff9e6 });
+    const floodConeMat = new THREE.MeshBasicMaterial({
+      color: isVegas ? 0x70f4ff : 0xfff2cc,
+      transparent: true,
+      opacity: isVegas ? 0.095 : 0.048,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const floodPoolMat = new THREE.MeshBasicMaterial({
+      color: isVegas ? 0x40e8ff : 0xfff0c2,
+      transparent: true,
+      opacity: isVegas ? 0.14 : 0.065,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
 
+    const floodConeGeo = new THREE.ConeGeometry(8.2, 13.4, 14, 1, true);
+    const floodPoolGeo = new THREE.CircleGeometry(7.2, 18);
+    floodPoolGeo.rotateX(-Math.PI / 2);
+
+    const floodStep = isVegas ? 44 : 62;
+    for (let s = 22; s < 978; s += floodStep) {
+      if (this.trackDef.tunnelRangeS && s >= this.trackDef.tunnelRangeS[0] - 8 && s <= this.trackDef.tunnelRangeS[1] + 8) {
+        continue;
+      }
+      if (this.trackDef.overpassRangeS && s >= this.trackDef.overpassRangeS[0] - 10 && s <= this.trackDef.overpassRangeS[1] + 10) {
+        continue;
+      }
+      const fr = this.sampleAt(s, -(ROAD_HALF_WIDTH + 6.5));
+      if (this.trackDef.overpassRangeS && fr.pos.y > 6.5) continue;
+      const yaw = Math.atan2(fr.tangent.z, fr.tangent.x);
+
+      const rig = new THREE.Group();
+      rig.position.copy(fr.pos);
+      rig.rotation.y = -yaw;
+
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.24, 12.8, 8), floodPoleMat);
+      mast.position.set(0, 6.4, 0);
+      const arm = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.22, 3.6), floodPoleMat);
+      arm.position.set(0, 12.6, 1.7);
+      const head = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.45, 2.6), this.darkFrameMat);
+      head.position.set(0, 12.45, 2.9);
+      head.rotation.x = 0.32;
+      const lens = new THREE.Mesh(new THREE.BoxGeometry(1.96, 0.18, 2.42), floodBulbMat);
+      lens.position.set(0, 12.28, 2.95);
+      lens.rotation.x = 0.32;
+
+      const cone = new THREE.Mesh(floodConeGeo, floodConeMat);
+      cone.position.set(0, 6.1, 5.2);
+      cone.rotation.x = -0.34;
+
+      const pool = new THREE.Mesh(floodPoolGeo, floodPoolMat);
+      pool.position.set(0, 0.035, 6.8);
+
+      rig.add(mast, arm, head, lens, cone, pool);
+      this.group.add(rig);
+    }
+
+    // FIA Grade-1 Wire Catch-Fencing along Main Straight Spectator Corridor (Blender .glb or fallback)
+    const envCache = FujiTrack._envGlbCache;
+    const fencePostMat = new THREE.MeshStandardMaterial({ color: 0xa2afc2, metalness: 0.78, roughness: 0.28 });
     const meshFenceMat = new THREE.MeshBasicMaterial({
       color: 0xc2d2e8,
       transparent: true,
-      opacity: 0.15,
+      opacity: 0.16,
       side: THREE.DoubleSide,
       depthWrite: false,
     });
-    const fencePanel = new THREE.Mesh(new THREE.PlaneGeometry(750, 3.45), meshFenceMat);
-    fencePanel.position.set(150, 2.7, -(ROAD_HALF_WIDTH + 5.84));
-    this.group.add(fencePanel);
+    const dummy = new THREE.Object3D();
+    if (envCache?.catchFencePostGeo && envCache?.catchFenceWireGeo) {
+      const cfMatrices = [];
+      for (let x = -224; x <= 524; x += 12.4) {
+        dummy.position.set(x, 0.0, -(ROAD_HALF_WIDTH + 5.88));
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        cfMatrices.push(dummy.matrix.clone());
+      }
+      const cfPostInst = new THREE.InstancedMesh(envCache.catchFencePostGeo, fencePostMat, cfMatrices.length);
+      const cfWireInst = new THREE.InstancedMesh(envCache.catchFenceWireGeo, meshFenceMat, cfMatrices.length);
+      cfMatrices.forEach((m, i) => {
+        cfPostInst.setMatrixAt(i, m);
+        cfWireInst.setMatrixAt(i, m);
+      });
+      cfPostInst.instanceMatrix.needsUpdate = true;
+      cfWireInst.instanceMatrix.needsUpdate = true;
+      this.group.add(cfPostInst, cfWireInst);
+    } else {
+      const fencePostGeo = new THREE.CylinderGeometry(0.06, 0.075, 4.3, 6);
+      const postMatrices = [];
+      for (let x = -225; x <= 525; x += 12.5) {
+        dummy.position.set(x, 2.65, -(ROAD_HALF_WIDTH + 5.88));
+        dummy.rotation.set(0.11, 0, 0);
+        dummy.updateMatrix();
+        postMatrices.push(dummy.matrix.clone());
+      }
+      const postInst = new THREE.InstancedMesh(fencePostGeo, fencePostMat, postMatrices.length);
+      postMatrices.forEach((m, i) => postInst.setMatrixAt(i, m));
+      this.group.add(postInst);
+
+      const fencePanel = new THREE.Mesh(new THREE.PlaneGeometry(750, 3.45), meshFenceMat);
+      fencePanel.position.set(150, 2.7, -(ROAD_HALF_WIDTH + 5.84));
+      this.group.add(fencePanel);
+    }
 
     // Aerial Race-Day Atmosphere: Sweeping Vegas Sky Searchlights OR Broadcast Blimp & Festival Balloons
     if (this.trackDef.theme === 'VEGAS') {
@@ -1629,36 +2377,66 @@ export class FujiTrack {
   }
 
   // --------------------------------------------------------------------------
-  // 7. FIA 150m/100m/50m BRAKING BOARDS & FRAMED VECTOR SPONSOR BILLBOARDS
+  // 7. BLENDER .GLB FIA 300m/200m/100m/50m BRAKING BOARDS & SPONSOR BILLBOARDS
   // --------------------------------------------------------------------------
   _buildBrakingBoardsAndBillboards() {
     this.billboards = [];
+    const envCache = FujiTrack._envGlbCache;
     const isVegas = this.trackDef.theme === 'VEGAS';
     const strutMat = new THREE.MeshStandardMaterial({ color: 0x647082, metalness: 0.75, roughness: 0.3 });
 
-    // A. Grounded FIA 150m / 100m / 50m Braking Marker Boards at all circuit braking zones
+    // A. Grounded FIA 300m / 200m / 100m / 50m Braking Marker Boards + Apex Turn-In Chevrons & Bollards
+    const brakeDistances = [300, 200, 100, 50];
     const brakeMats = new Map();
-    for (const distM of [150, 100, 50]) {
+    for (const distM of brakeDistances) {
       const tex = this._makeBrakingBoardTexture(distM, isVegas);
       brakeMats.set(
         distM,
         new THREE.MeshStandardMaterial({
           map: tex,
-          roughness: 0.28,
+          roughness: 0.22,
           emissive: new THREE.Color(0xffffff),
           emissiveMap: tex,
-          emissiveIntensity: isVegas ? 0.52 : 0.18,
+          emissiveIntensity: isVegas ? 0.78 : 0.38,
         })
       );
     }
+
+    const apexChevronLeftTex = this._makeApexChevronTexture(false, isVegas);
+    const apexChevronRightTex = this._makeApexChevronTexture(true, isVegas);
+    const chevronMatLeft = new THREE.MeshStandardMaterial({
+      map: apexChevronLeftTex,
+      roughness: 0.25,
+      emissive: new THREE.Color(0xffffff),
+      emissiveMap: apexChevronLeftTex,
+      emissiveIntensity: isVegas ? 0.68 : 0.30,
+    });
+    const chevronMatRight = new THREE.MeshStandardMaterial({
+      map: apexChevronRightTex,
+      roughness: 0.25,
+      emissive: new THREE.Color(0xffffff),
+      emissiveMap: apexChevronRightTex,
+      emissiveIntensity: isVegas ? 0.68 : 0.30,
+    });
+    const apexBollardMat = new THREE.MeshStandardMaterial({
+      color: 0xff5500,
+      roughness: 0.3,
+      emissive: new THREE.Color(0xff4400),
+      emissiveIntensity: 0.42,
+    });
+    const bollardBandMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const markerFloodMat = new THREE.MeshBasicMaterial({ color: isVegas ? 0x00f0ff : 0xfff8e6 });
 
     const zones = this.trackDef.brakingZones || [
       { entryS: 162, side: -1 },
       { entryS: 610, side: -1 },
     ];
 
+    const glbBrakeFrameMatrices = [];
+    const glbBrakeDummy = new THREE.Object3D();
+
     for (const bz of zones) {
-      for (const distM of [150, 100, 50]) {
+      for (const distM of brakeDistances) {
         const ms = wrapS(bz.entryS - distM / this.realMetersPerGameMeter);
         if (this.trackDef.tunnelRangeS && ms >= this.trackDef.tunnelRangeS[0] && ms <= this.trackDef.tunnelRangeS[1]) {
           continue;
@@ -1666,31 +2444,93 @@ export class FujiTrack {
         const side = (bz.side > 0 && (ms >= 898 || ms <= 126)) ? -1 : bz.side;
         const fr = this.sampleAt(ms, side * (ROAD_HALF_WIDTH + 3.45));
         const yaw = Math.atan2(fr.tangent.z, fr.tangent.x);
-
-        const markerGroup = new THREE.Group();
-        markerGroup.position.copy(fr.pos);
-        markerGroup.rotation.y = -yaw + (side > 0 ? -0.14 : 0.14);
-
+        const rotY = -yaw + (side > 0 ? -0.16 : 0.16);
         const bMat = brakeMats.get(distM);
-        const sign = new THREE.Mesh(
-          new THREE.BoxGeometry(0.18, 1.38, 1.86),
-          [bMat, bMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat]
-        );
-        sign.position.y = 1.52;
-        sign.castShadow = true;
-        markerGroup.add(sign);
 
-        // Twin grounded breakaway steel posts (never floating!)
-        for (const zLeg of [-0.58, 0.58]) {
-          const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.065, 1.55, 8), strutMat);
-          leg.position.set(0.08, 0.77, zLeg);
-          markerGroup.add(leg);
+        if (envCache?.brakeFrameGeo && envCache?.brakeFaceGeo) {
+          glbBrakeDummy.position.copy(fr.pos);
+          glbBrakeDummy.rotation.set(0, rotY, 0);
+          glbBrakeDummy.scale.set(1, 1, 1);
+          glbBrakeDummy.updateMatrix();
+          glbBrakeFrameMatrices.push(glbBrakeDummy.matrix.clone());
+
+          const signFace = new THREE.Mesh(envCache.brakeFaceGeo, bMat);
+          signFace.position.copy(fr.pos);
+          signFace.rotation.y = rotY;
+          signFace.castShadow = true;
+          this.group.add(signFace);
+        } else {
+          const markerGroup = new THREE.Group();
+          markerGroup.position.copy(fr.pos);
+          markerGroup.rotation.y = rotY;
+
+          const sign = new THREE.Mesh(
+            new THREE.BoxGeometry(0.22, 1.54, 2.18),
+            [bMat, bMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat]
+          );
+          sign.position.y = 1.62;
+          sign.castShadow = true;
+          markerGroup.add(sign);
+
+          const hood = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.10, 2.02), markerFloodMat);
+          hood.position.set(-0.12, 2.44, 0);
+          markerGroup.add(hood);
+
+          for (const zLeg of [-0.66, 0.66]) {
+            const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 1.62, 8), strutMat);
+            leg.position.set(0.08, 0.81, zLeg);
+            markerGroup.add(leg);
+          }
+          this.group.add(markerGroup);
         }
-        this.group.add(markerGroup);
+      }
+
+      // High-Visibility FIA Turn-In Chevron Boards + Inside Apex Marker Bollard at Corner Entry!
+      const apexS = wrapS(bz.entryS + 14);
+      if (!(this.trackDef.tunnelRangeS && apexS >= this.trackDef.tunnelRangeS[0] && apexS <= this.trackDef.tunnelRangeS[1])) {
+        const kApex = this.getPhysicsCurvature(apexS);
+        const turnRight = kApex >= 0;
+        const outsideSide = (bz.side > 0 && (apexS >= 898 || apexS <= 126)) ? -1 : bz.side;
+        const cMat = turnRight ? chevronMatRight : chevronMatLeft;
+
+        for (let ci = 0; ci < 2; ci++) {
+          const cs = wrapS(bz.entryS + 6 + ci * 10);
+          const cfr = this.sampleAt(cs, outsideSide * (ROAD_HALF_WIDTH + 5.15));
+          const cyaw = Math.atan2(cfr.tangent.z, cfr.tangent.x);
+          const chev = new THREE.Mesh(
+            new THREE.BoxGeometry(0.18, 1.12, 2.35),
+            [cMat, cMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat]
+          );
+          chev.position.copy(cfr.pos).add(new THREE.Vector3(0, 1.38, 0));
+          chev.rotation.y = -cyaw + (outsideSide > 0 ? -0.24 : 0.24);
+          this.group.add(chev);
+        }
+
+        // Fluorescent Orange/White FIA Inside Apex Bollard on inner kerb shoulder
+        const insideSide = -outsideSide;
+        if (!(insideSide > 0 && (apexS >= 900 || apexS <= 124))) {
+          const ifr = this.sampleAt(apexS, insideSide * (ROAD_HALF_WIDTH + CURB_WIDTH + 0.65));
+          const bollard = new THREE.Group();
+          bollard.position.copy(ifr.pos);
+          const bCore = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.21, 0.96, 10), apexBollardMat);
+          bCore.position.y = 0.48;
+          const bBand = new THREE.Mesh(new THREE.CylinderGeometry(0.175, 0.185, 0.26, 10), bollardBandMat);
+          bBand.position.y = 0.62;
+          bollard.add(bCore, bBand);
+          this.group.add(bollard);
+        }
       }
     }
 
-    // B. Vector-Art Motorsport Sponsor Billboards with 6-Face Frame, Top Light Hood & Steel A-Frame Struts
+    if (glbBrakeFrameMatrices.length && envCache?.brakeFrameGeo) {
+      const bfInst = new THREE.InstancedMesh(envCache.brakeFrameGeo, strutMat, glbBrakeFrameMatrices.length);
+      glbBrakeFrameMatrices.forEach((m, i) => bfInst.setMatrixAt(i, m));
+      bfInst.instanceMatrix.needsUpdate = true;
+      bfInst.castShadow = true;
+      this.group.add(bfInst);
+    }
+
+    // B. Blender .glb Sponsor Billboard Rigs (Steel A-Frame Bracing, Catwalk, Floodlights & Vector Sponsor Banners)
     const brandMats = BILLBOARD_BRANDS.map((b) => {
       const tex = this._makeMotorsportBanner(b.title, b.sub, b.bg1, b.bg2, b.fg, b.stripe, b.badge, 1024, 256);
       return new THREE.MeshStandardMaterial({
@@ -1728,34 +2568,44 @@ export class FujiTrack {
       holder.rotation.y = -yaw + (side > 0 ? -0.20 : 0.20);
 
       const faceMat = brandMats[bIdx % brandMats.length];
-      const board = new THREE.Mesh(
-        new THREE.BoxGeometry(0.32, 2.68, 7.7),
-        [faceMat, faceMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat]
-      );
-      board.castShadow = true;
-      board.receiveShadow = true;
-      board.position.y = 2.12;
-      holder.add(board);
+      if (envCache?.billboardFrameGeo && envCache?.billboardFaceGeo) {
+        const frameMesh = new THREE.Mesh(envCache.billboardFrameGeo, this.darkFrameMat);
+        frameMesh.castShadow = true;
+        frameMesh.receiveShadow = true;
+        const bannerFace = new THREE.Mesh(envCache.billboardFaceGeo, faceMat);
+        bannerFace.castShadow = true;
+        bannerFace.receiveShadow = true;
+        const lightHood = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.12, 7.1), lightBarMat);
+        lightHood.position.set(-0.48, 3.56, 0);
+        holder.add(frameMesh, bannerFace, lightHood);
+      } else {
+        const board = new THREE.Mesh(
+          new THREE.BoxGeometry(0.32, 2.68, 7.7),
+          [faceMat, faceMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat]
+        );
+        board.castShadow = true;
+        board.receiveShadow = true;
+        board.position.y = 2.12;
+        holder.add(board);
 
-      // Top architectural floodlight brow bar
-      const lightHood = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.12, 7.2), lightBarMat);
-      lightHood.position.set(-0.18, 3.52, 0);
-      holder.add(lightHood);
+        const lightHood = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.12, 7.2), lightBarMat);
+        lightHood.position.set(-0.18, 3.52, 0);
+        holder.add(lightHood);
 
-      // Grounded concrete ballast footings + vertical steel posts + angled rear A-frame diagonal struts
-      for (const zPost of [-2.75, 0, 2.75]) {
-        const ballast = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.36, 0.55), this.concreteMat);
-        ballast.position.set(0.32, 0.18, zPost);
-        holder.add(ballast);
+        for (const zPost of [-2.75, 0, 2.75]) {
+          const ballast = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.36, 0.55), this.concreteMat);
+          ballast.position.set(0.32, 0.18, zPost);
+          holder.add(ballast);
 
-        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.095, 3.3, 8), strutMat);
-        post.position.set(0.24, 1.65, zPost);
-        holder.add(post);
+          const post = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.095, 3.3, 8), strutMat);
+          post.position.set(0.24, 1.65, zPost);
+          holder.add(post);
 
-        const diag = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.065, 2.45, 6), strutMat);
-        diag.position.set(0.76, 1.18, zPost);
-        diag.rotation.z = -0.46;
-        holder.add(diag);
+          const diag = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.065, 2.45, 6), strutMat);
+          diag.position.set(0.76, 1.18, zPost);
+          diag.rotation.z = -0.46;
+          holder.add(diag);
+        }
       }
 
       this.group.add(holder);
@@ -1770,35 +2620,89 @@ export class FujiTrack {
     }
   }
 
-  _makeBrakingBoardTexture(distM, isNight) {
+  _makeApexChevronTexture(turnRight, isNight) {
     const c = document.createElement('canvas');
-    c.width = 256;
+    c.width = 512;
     c.height = 256;
     const ctx = c.getContext('2d');
-
-    ctx.fillStyle = isNight ? '#061a2e' : '#0a5c28';
-    ctx.fillRect(0, 0, 256, 256);
-
-    ctx.strokeStyle = isNight ? '#00f0ff' : '#ffffff';
-    ctx.lineWidth = 10;
-    ctx.strokeRect(8, 8, 240, 240);
-
-    // FIA Braking Countdown Bars (3 bars = 150m, 2 bars = 100m, 1 bar = 50m)
-    const bars = distM === 150 ? 3 : (distM === 100 ? 2 : 1);
-    ctx.fillStyle = isNight ? '#ff1493' : '#ffd600';
-    for (let i = 0; i < bars; i++) {
-      ctx.fillRect(28 + i * 26, 24, 16, 40);
-    }
-
-    ctx.fillStyle = '#ffffff';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = '900 italic 96px "Segoe UI", "Arial Black", sans-serif';
-    ctx.fillText(`${distM}`, 128, 134);
+    ctx.fillStyle = '#0e131d';
+    ctx.fillRect(0, 0, 512, 256);
 
     ctx.fillStyle = isNight ? '#00f0ff' : '#ffd600';
-    ctx.font = '800 30px "Segoe UI", Arial, sans-serif';
-    ctx.fillText('METERS', 128, 212);
+    const dir = turnRight ? 1 : -1;
+    for (let i = -1; i < 4; i++) {
+      const cx = 96 + i * 118;
+      ctx.beginPath();
+      ctx.moveTo(cx - dir * 36, 20);
+      ctx.lineTo(cx + dir * 24, 20);
+      ctx.lineTo(cx + dir * 72, 128);
+      ctx.lineTo(cx + dir * 24, 236);
+      ctx.lineTo(cx - dir * 36, 236);
+      ctx.lineTo(cx + dir * 12, 128);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 8;
+    ctx.strokeRect(6, 6, 500, 244);
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.anisotropy = 4;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  _makeBrakingBoardTexture(distM, isNight) {
+    const c = document.createElement('canvas');
+    c.width = 512;
+    c.height = 384;
+    const ctx = c.getContext('2d');
+
+    // Deep high-contrast backing with luminous outer + inner FIA border
+    const bg = ctx.createLinearGradient(0, 0, 0, 384);
+    bg.addColorStop(0.0, isNight ? '#061c36' : '#064e22');
+    bg.addColorStop(1.0, isNight ? '#030e1c' : '#032b12');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, 512, 384);
+
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 14;
+    ctx.strokeRect(10, 10, 492, 364);
+
+    ctx.strokeStyle = isNight ? '#00f0ff' : '#ffd600';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(24, 24, 464, 336);
+
+    // FIA Braking Countdown Bars (300m = 3 bars, 200m = 2 bars, 150m = 3 bars, 100m = 1 bar, 50m = twin chevrons)
+    ctx.fillStyle = isNight ? '#ff1493' : '#ffd600';
+    if (distM === 50) {
+      ctx.fillRect(42, 44, 428, 36);
+    } else {
+      const bars = distM >= 250 || distM === 150 ? 3 : (distM >= 180 ? 2 : 1);
+      for (let i = 0; i < bars; i++) {
+        ctx.fillRect(42 + i * 48, 38, 32, 54);
+      }
+    }
+
+    // High-contrast dark numeral badge + ultra-bold outlined distance numerals for 300+ km/h mobile readability
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
+    ctx.fillRect(36, 104, 440, 186);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '900 italic 176px "Segoe UI", "Arial Black", sans-serif';
+    ctx.lineWidth = 16;
+    ctx.strokeStyle = '#05080f';
+    ctx.strokeText(`${distM}`, 256, 202);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(`${distM}`, 256, 202);
+
+    // High-visibility footer ribbon
+    ctx.fillStyle = isNight ? '#00f0ff' : '#ffd600';
+    ctx.fillRect(28, 302, 456, 52);
+    ctx.fillStyle = '#08101c';
+    ctx.font = '900 36px "Segoe UI", "Arial Black", sans-serif';
+    ctx.fillText('BRAKE • METERS', 256, 329);
 
     const tex = new THREE.CanvasTexture(c);
     tex.anisotropy = 4;
@@ -1900,7 +2804,7 @@ export class FujiTrack {
   }
 
   // --------------------------------------------------------------------------
-  // 8. CLOSED-BOWL SUNLIT/ILLUMINATED 3D GRANDSTANDS + ANIMATED CROWDS, FLAGS & FLASHES
+  // 8. BLENDER .GLB 3D GRANDSTANDS + LIVING MEXICAN-WAVE CROWDS, 3D FLAGS, SMOKE FLARES & CONFETTI
   // --------------------------------------------------------------------------
   _makeCameraFlashTexture() {
     const c = document.createElement('canvas');
@@ -1924,32 +2828,112 @@ export class FujiTrack {
     return tex;
   }
 
+  _makeFlareSmokeTexture() {
+    const c = document.createElement('canvas');
+    c.width = 128;
+    c.height = 128;
+    const ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(64, 64, 6, 64, 64, 60);
+    g.addColorStop(0.00, 'rgba(255, 255, 255, 0.62)');
+    g.addColorStop(0.38, 'rgba(245, 248, 255, 0.36)');
+    g.addColorStop(0.72, 'rgba(220, 228, 240, 0.12)');
+    g.addColorStop(1.00, 'rgba(200, 210, 225, 0.0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 128, 128);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  _applyCrowdWaveShader(mat) {
+    const uniforms = this._crowdUniforms;
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uCrowdTime = uniforms.uTime;
+      shader.uniforms.uCrowdExcitement = uniforms.uExcitement;
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+          uniform float uCrowdTime;
+          uniform float uCrowdExcitement;`
+        )
+        .replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+          #ifdef USE_INSTANCING
+            vec3 instPos = instanceMatrix[3].xyz;
+            float fanSeed = fract(sin(dot(instPos.xz, vec2(12.9898, 78.233))) * 43758.5453);
+            float stadiumWave = pow(max(0.0, sin(uCrowdTime * 4.6 - instPos.x * 0.055 - instPos.z * 0.025)), 6.0);
+            float cheerBounce = abs(sin(uCrowdTime * (5.4 + fanSeed * 2.8) + fanSeed * 6.2831));
+            float jumpAmp = (0.12 + uCrowdExcitement * 0.16) * cheerBounce + (0.42 + uCrowdExcitement * 0.22) * stadiumWave;
+            float upperW = clamp(position.y / 1.45, 0.0, 1.0);
+            transformed.y += jumpAmp * (0.35 + 0.65 * upperW);
+            transformed.x += sin(uCrowdTime * 6.6 + fanSeed * 6.2831) * (0.05 + 0.08 * stadiumWave) * upperW;
+          #endif`
+        );
+    };
+    mat.customProgramCacheKey = () => 'f1_crowd_wave_v2';
+    return mat;
+  }
+
+  _applyFlagRippleShader(mat, flagSpanX = 2.25) {
+    const uniforms = this._crowdUniforms;
+    const spanStr = flagSpanX.toFixed(2);
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uCrowdTime = uniforms.uTime;
+      shader.uniforms.uCrowdExcitement = uniforms.uExcitement;
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+          uniform float uCrowdTime;
+          uniform float uCrowdExcitement;`
+        )
+        .replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+          float clothU = clamp(position.x / ${spanStr}, 0.0, 1.0);
+          float fSeed = 0.0;
+          #ifdef USE_INSTANCING
+            vec3 fInst = instanceMatrix[3].xyz;
+            fSeed = fract(sin(dot(fInst.xz, vec2(19.19, 47.73))) * 29143.17) * 6.2831;
+          #endif
+          float ripplePhase = uCrowdTime * (7.8 + uCrowdExcitement * 3.4) + fSeed;
+          transformed.z += sin(clothU * 5.6 - ripplePhase) * (0.28 + uCrowdExcitement * 0.15) * clothU;
+          transformed.y += cos(clothU * 3.9 - ripplePhase * 0.84) * 0.09 * clothU;`
+        );
+    };
+    mat.customProgramCacheKey = () => `f1_flag_ripple_${spanStr}`;
+    return mat;
+  }
+
   _buildGrandstands() {
+    const envCache = FujiTrack._envGlbCache;
     const c = document.createElement('canvas');
     c.width = 512;
     c.height = 256;
     const ctx = c.getContext('2d');
-    ctx.fillStyle = '#525e70';
+    ctx.fillStyle = '#485364';
     ctx.fillRect(0, 0, 512, 256);
 
     const theme = this.trackDef.theme;
     const shirtColors = theme === 'MONZA'
-      ? ['#e41c24', '#ff2a2a', '#ffffff', '#009246', '#ffd600', '#d90429']
+      ? ['#e41c24', '#ff2a2a', '#ffffff', '#009246', '#ffd600', '#ff6d00', '#d90429']
       : (theme === 'VEGAS'
-        ? ['#ff1493', '#00f0ff', '#ffd600', '#ffffff', '#b388ff', '#00e676']
+        ? ['#ff1493', '#00f0ff', '#ffd600', '#ffffff', '#b388ff', '#00e676', '#ff6d00']
         : (theme === 'SILVERSTONE'
-          ? ['#0038a8', '#ce1126', '#ffffff', '#00b0ff', '#ffd600', '#e51c23']
-          : ['#ff3b30', '#00b0ff', '#ffd600', '#ffffff', '#00e676', '#ff9500']));
+          ? ['#ff6d00', '#00f0ff', '#0038a8', '#ce1126', '#ffffff', '#ffd600', '#009246']
+          : ['#e41c24', '#ff6d00', '#00d2be', '#ffd600', '#ffffff', '#1e41ff', '#00e676']));
 
     for (let row = 0; row < 16; row++) {
       const y = row * 16;
-      ctx.fillStyle = '#7c8a9e';
-      ctx.fillRect(0, y, 512, 5); // Sunlit concrete riser step
-      ctx.fillStyle = '#3c4656';
-      ctx.fillRect(0, y + 14, 512, 2); // Step shadow
+      ctx.fillStyle = '#6c7a8e';
+      ctx.fillRect(0, y, 512, 5);
+      ctx.fillStyle = '#323b4a';
+      ctx.fillRect(0, y + 14, 512, 2);
       for (let col = 4; col < 508; col += 7) {
         const h = fastHash2D(col, row, 401);
-        if (h < 0.86) {
+        if (h < 0.88) {
           ctx.fillStyle = shirtColors[Math.floor(h * 97) % shirtColors.length];
           ctx.fillRect(col, y + 5, 5, 9);
           ctx.fillStyle = h < 0.3 ? '#ffffff' : '#f1c27d';
@@ -1965,20 +2949,20 @@ export class FujiTrack {
 
     const crowdMat = new THREE.MeshStandardMaterial({
       map: crowdTex,
-      roughness: 0.62,
+      roughness: 0.64,
       emissive: new THREE.Color(0xffffff),
       emissiveMap: crowdTex,
-      emissiveIntensity: theme === 'VEGAS' ? 0.55 : 0.34,
+      emissiveIntensity: theme === 'VEGAS' ? 0.50 : 0.26,
     });
 
-    // Architectural ribbed exterior cladding texture so stand backs/sides look rich from every angle
+    // Architectural dark gunmetal/ribbed exterior cladding texture
     const extC = document.createElement('canvas');
     extC.width = 256;
     extC.height = 128;
     const ectx = extC.getContext('2d');
-    ectx.fillStyle = theme === 'VEGAS' ? '#1c263b' : '#dce4f0';
+    ectx.fillStyle = theme === 'VEGAS' ? '#182236' : '#2b3444';
     ectx.fillRect(0, 0, 256, 128);
-    ectx.fillStyle = theme === 'VEGAS' ? '#00f0ff' : '#9aa8bc';
+    ectx.fillStyle = theme === 'VEGAS' ? '#00f0ff' : '#4a586e';
     for (let x = 0; x < 256; x += 16) {
       ectx.fillRect(x, 0, 3, 128);
     }
@@ -1992,13 +2976,13 @@ export class FujiTrack {
 
     const structMat = new THREE.MeshStandardMaterial({
       map: extTex,
-      roughness: 0.42,
-      metalness: 0.26,
-      emissive: new THREE.Color(theme === 'VEGAS' ? 0x152238 : 0x11161f),
-      emissiveIntensity: 0.25,
+      roughness: 0.44,
+      metalness: 0.32,
+      emissive: new THREE.Color(theme === 'VEGAS' ? 0x152238 : 0x0d121a),
+      emissiveIntensity: 0.22,
     });
     const canopyMat = new THREE.MeshStandardMaterial({
-      color: 0xf6f9ff,
+      color: 0xf4f8ff,
       roughness: 0.28,
       metalness: 0.24,
       side: THREE.DoubleSide,
@@ -2033,47 +3017,71 @@ export class FujiTrack {
       emissiveIntensity: theme === 'VEGAS' ? 0.48 : 0.20,
     });
 
-    // Shared 3D Cheering Spectator Mesh (Torso + Head + Raised Cheering Arms)
-    const torsoG = new THREE.BoxGeometry(0.62, 0.78, 0.38);
-    torsoG.translate(0, 0.39, 0);
-    const headG = new THREE.SphereGeometry(0.22, 8, 6);
-    headG.translate(0, 0.98, 0);
-    const armLG = new THREE.BoxGeometry(0.15, 0.62, 0.15);
-    armLG.rotateZ(0.36);
-    armLG.translate(-0.38, 0.88, 0.05);
-    const armRG = new THREE.BoxGeometry(0.15, 0.62, 0.15);
-    armRG.rotateZ(-0.36);
-    armRG.translate(0.38, 0.88, 0.05);
-    const spectatorGeo = mergeSubGeometries([torsoG, headG, armLG, armRG]);
+    // Articulated 3D Spectator & 3D Flag-Waver Geometries (Blender .glb or rich procedural fallback)
+    let spectatorGeo = envCache?.spectatorGeo;
+    if (!spectatorGeo) {
+      const torsoG = new THREE.BoxGeometry(0.56, 0.76, 0.34);
+      torsoG.translate(0, 0.48, 0);
+      const headG = new THREE.SphereGeometry(0.20, 8, 6);
+      headG.translate(0, 1.06, 0);
+      const armLG = new THREE.BoxGeometry(0.14, 0.58, 0.14);
+      armLG.rotateZ(0.38);
+      armLG.translate(-0.36, 0.98, 0.05);
+      const armRG = new THREE.BoxGeometry(0.14, 0.58, 0.14);
+      armRG.rotateZ(-0.38);
+      armRG.translate(0.36, 0.98, 0.05);
+      spectatorGeo = mergeSubGeometries([torsoG, headG, armLG, armRG]);
+    }
 
-    const fanMats = shirtColors.slice(0, 4).map(
-      (hex) => new THREE.MeshStandardMaterial({
-        color: hex,
-        roughness: 0.55,
-        emissive: new THREE.Color(hex),
-        emissiveIntensity: theme === 'VEGAS' ? 0.35 : 0.14,
+    let flagWaverBodyGeo = envCache?.flagWaverBodyGeo;
+    if (!flagWaverBodyGeo) {
+      const poleG = new THREE.CylinderGeometry(0.035, 0.045, 2.85, 6);
+      poleG.translate(0, 2.27, 0.34);
+      flagWaverBodyGeo = mergeSubGeometries([spectatorGeo.clone(), poleG]);
+    }
+
+    let flagWaverClothGeo = envCache?.flagWaverClothGeo;
+    if (!flagWaverClothGeo) {
+      const fg = new THREE.PlaneGeometry(2.25, 1.28, 8, 3);
+      fg.translate(1.125, 2.98, 0.34);
+      flagWaverClothGeo = fg;
+    }
+
+    const crowdInstMat = this._applyCrowdWaveShader(
+      new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        roughness: 0.56,
+        metalness: 0.04,
+        emissive: new THREE.Color(theme === 'VEGAS' ? 0x222838 : 0x141820),
+        emissiveIntensity: theme === 'VEGAS' ? 0.38 : 0.16,
       })
+    );
+    const flagBodyMat = this._applyCrowdWaveShader(
+      new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        roughness: 0.52,
+      })
+    );
+    const flagClothMat = this._applyFlagRippleShader(
+      new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        roughness: 0.38,
+        side: THREE.DoubleSide,
+        emissive: new THREE.Color(0x222222),
+        emissiveIntensity: theme === 'VEGAS' ? 0.45 : 0.20,
+      }),
+      2.25
     );
 
     const supporterFlagCols = theme === 'MONZA'
-      ? [0xe41c24, 0x009246, 0xffd600]
+      ? [0xe41c24, 0x009246, 0xffffff, 0xffd600]
       : (theme === 'SILVERSTONE'
-        ? [0x0038a8, 0xce1126, 0xffffff]
+        ? [0xff6d00, 0x00f0ff, 0x0038a8, 0xce1126]
         : (theme === 'VEGAS'
-          ? [0xff1493, 0x00f0ff, 0xffd600]
-          : [0xe51c23, 0xffffff, 0x00b0ff]));
-    const supporterFlagMats = supporterFlagCols.map(
-      (hex) => new THREE.MeshStandardMaterial({
-        color: hex,
-        roughness: 0.4,
-        side: THREE.DoubleSide,
-        emissive: new THREE.Color(hex),
-        emissiveIntensity: theme === 'VEGAS' ? 0.45 : 0.18,
-      })
-    );
-    const flagClothGeo = new THREE.PlaneGeometry(2.35, 1.35);
-    flagClothGeo.translate(1.18, 0, 0); // Hinge directly on flagpole axis!
-    const flagPoleGeo = new THREE.CylinderGeometry(0.045, 0.055, 3.2, 6);
+          ? [0xff1493, 0x00f0ff, 0xffd600, 0x00e676]
+          : [0xe51c23, 0xff6d00, 0x00e5ff, 0xffd600, 0xffffff]));
+    const shirtPaletteCols = shirtColors.map((hex) => new THREE.Color(hex));
+    const flagPaletteCols = supporterFlagCols.map((hex) => new THREE.Color(hex));
 
     const flashTex = this._makeCameraFlashTexture();
     const flashMat = new THREE.MeshBasicMaterial({
@@ -2085,185 +3093,395 @@ export class FujiTrack {
     });
     const flashGeo = new THREE.PlaneGeometry(1.85, 1.85);
 
-    const allWaveCohorts = [];
-    const allSupporterFlags = [];
+    const allFanInstances = [];
+    const allFlagInstances = [];
     const allCameraFlashes = [];
+    const allFlareSources = [];
+    const glbStructMatrices = [];
+    const glbRoofMatrices = [];
     let standSeed = 0;
 
-    const buildTribuneGroup = (spanW) => {
+    const worldDummy = new THREE.Object3D();
+    const localPos = new THREE.Vector3();
+    const standQuat = new THREE.Quaternion();
+    const fanQuat = new THREE.Quaternion();
+    const yAxis = new THREE.Vector3(0, 1, 0);
+
+    const spawnStandAndCrowd = (spanW, worldPos, worldYawRad, isMainStraight = false) => {
       const standGroup = new THREE.Group();
+      standGroup.position.copy(worldPos);
+      standGroup.rotation.y = worldYawRad;
+      standQuat.setFromAxisAngle(yAxis, worldYawRad);
       const mySeed = standSeed++;
+      const useGlbTribune = Boolean(envCache?.grandstandStructGeo && envCache?.grandstandRoofGeo);
 
-      // Enclosed 3D stadium base concourse + full-height rear architectural wall
-      const base = new THREE.Mesh(new THREE.BoxGeometry(spanW, 3.4, 19.5), structMat);
-      base.position.set(0, 1.7, 0);
-      base.castShadow = true;
-      base.receiveShadow = true;
-      standGroup.add(base);
+      if (useGlbTribune) {
+        const modCount = Math.max(2, Math.round(spanW / 28.0));
+        const modW = spanW / modCount;
+        const scaleX = modW / 28.0;
+        for (let m = 0; m < modCount; m++) {
+          const lx = -spanW * 0.5 + (m + 0.5) * modW;
+          localPos.set(lx, 0, 0).applyQuaternion(standQuat).add(worldPos);
+          worldDummy.position.copy(localPos);
+          worldDummy.rotation.set(0, worldYawRad, 0);
+          worldDummy.scale.set(scaleX, 1.0, 1.0);
+          worldDummy.updateMatrix();
+          glbStructMatrices.push(worldDummy.matrix.clone());
+          glbRoofMatrices.push(worldDummy.matrix.clone());
+        }
+        // Subtle populated step backing plane so zero sky gaps ever peek between seats
+        const tier = new THREE.Mesh(new THREE.PlaneGeometry(spanW - 2.2, 17.6), crowdMat);
+        tier.position.set(0, 8.5, 0.1);
+        tier.rotation.x = -0.64;
+        standGroup.add(tier);
+      } else {
+        const base = new THREE.Mesh(new THREE.BoxGeometry(spanW, 3.4, 19.5), structMat);
+        base.position.set(0, 1.7, 0);
+        base.castShadow = true;
+        base.receiveShadow = true;
+        standGroup.add(base);
 
-      const rearWall = new THREE.Mesh(new THREE.BoxGeometry(spanW, 16.6, 2.4), structMat);
-      rearWall.position.set(0, 8.3, -8.5);
-      rearWall.castShadow = true;
-      standGroup.add(rearWall);
+        const rearWall = new THREE.Mesh(new THREE.BoxGeometry(spanW, 16.6, 2.4), structMat);
+        rearWall.position.set(0, 8.3, -8.5);
+        rearWall.castShadow = true;
+        standGroup.add(rearWall);
 
-      // Enclosed side gable cheek walls so stand never looks paper-thin from oblique angles!
-      for (const sx of [-spanW * 0.5 + 0.6, spanW * 0.5 - 0.6]) {
-        const sideCheek = new THREE.Mesh(new THREE.BoxGeometry(1.2, 11.2, 16.5), structMat);
-        sideCheek.position.set(sx, 7.2, -1.2);
-        standGroup.add(sideCheek);
+        for (const sx of [-spanW * 0.5 + 0.6, spanW * 0.5 - 0.6]) {
+          const sideCheek = new THREE.Mesh(new THREE.BoxGeometry(1.2, 11.2, 16.5), structMat);
+          sideCheek.position.set(sx, 7.2, -1.2);
+          standGroup.add(sideCheek);
+        }
+
+        const tier = new THREE.Mesh(new THREE.PlaneGeometry(spanW - 2.4, 19.8), crowdMat);
+        tier.position.set(0, 9.3, 1.3);
+        tier.rotation.x = -0.62;
+        standGroup.add(tier);
+
+        const roof = new THREE.Mesh(new THREE.BoxGeometry(spanW + 3.0, 0.82, 23.0), canopyMat);
+        roof.position.set(0, 17.6, 1.2);
+        roof.rotation.x = 0.08;
+        roof.castShadow = true;
+        standGroup.add(roof);
+
+        const step = spanW / 4;
+        for (let px = -spanW * 0.44; px <= spanW * 0.45; px += step) {
+          const col = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.38, 17.4, 8), this.darkFrameMat);
+          col.position.set(px, 8.7, -7.2);
+          standGroup.add(col);
+        }
       }
 
-      // Sloped populated crowd bowl facing +Z toward the track
-      const tier = new THREE.Mesh(new THREE.PlaneGeometry(spanW - 2.4, 19.8), crowdMat);
-      tier.position.set(0, 9.3, 1.3);
-      tier.rotation.x = -0.62;
-      standGroup.add(tier);
+      // Framed Front Sponsor Fascia Wall & Under-Canopy Broadcast Spotlights
+      const fascia = new THREE.Mesh(
+        new THREE.BoxGeometry(spanW + 0.4, 2.25, 0.65),
+        [this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, fasciaMat, this.darkFrameMat]
+      );
+      fascia.position.set(0, 2.95, useGlbTribune ? 8.85 : 9.8);
+      standGroup.add(fascia);
 
-      // 3D Animated Cheering Crowd Wave Cohorts seated along the sloped bowl!
-      // Tier plane equation: y = 9.3 + 0.8139 * u, z = 1.3 - 0.5810 * u (u in [-7.6..+7.6])
-      const dummy = new THREE.Object3D();
-      const cohortBuckets = [
-        fanMats.map(() => []),
-        fanMats.map(() => []),
-        fanMats.map(() => []),
-      ];
-      const usableW = spanW - 6.0;
-      const cols = Math.max(14, Math.floor(usableW / 4.2));
-      for (let r = 0; r < 6; r++) {
-        const u = -6.8 + r * 2.72;
-        const rowY = 9.3 + 0.8139 * u + 0.14;
-        const rowZ = 1.3 - 0.5810 * u + 0.22;
+      const lightStrip = new THREE.Mesh(new THREE.BoxGeometry(spanW - 8.0, 0.22, 0.85), underLightMat);
+      lightStrip.position.set(0, 16.55, 9.8);
+      standGroup.add(lightStrip);
+
+      // Populate Dense 3D Cheering Fans across 8 Stepped Stadium Rows!
+      const usableW = spanW - 5.0;
+      const cols = Math.max(18, Math.floor(usableW / 3.1));
+      const rowCount = 8;
+      for (let r = 0; r < rowCount; r++) {
+        const rowY = useGlbTribune ? (3.96 + r * 1.24) : (3.90 + r * 1.48);
+        const rowZ = useGlbTribune ? (6.55 - r * 1.65) : (5.20 - r * 1.12);
         for (let cIdx = 0; cIdx < cols; cIdx++) {
           const h = fastHash2D(cIdx, r, mySeed * 31 + 17);
-          if (h > 0.82) continue;
-          const fx = -usableW * 0.5 + (cIdx + 0.5) * (usableW / cols) + (h - 0.4) * 0.8;
-          dummy.position.set(fx, rowY, rowZ);
-          dummy.rotation.set(0, (h - 0.5) * 0.35, 0);
-          const sc = 0.92 + (h * 0.28);
-          dummy.scale.setScalar(sc);
-          dummy.updateMatrix();
-          const waveCohort = (cIdx + r) % 3;
-          const colorBucket = (cIdx * 3 + r) % fanMats.length;
-          cohortBuckets[waveCohort][colorBucket].push(dummy.matrix.clone());
+          if (h > 0.84) continue;
+          const fx = -usableW * 0.5 + (cIdx + 0.5) * (usableW / cols) + (h - 0.42) * 0.75;
+          localPos.set(fx, rowY, rowZ).applyQuaternion(standQuat).add(worldPos);
+          fanQuat.setFromAxisAngle(yAxis, worldYawRad + (h - 0.5) * 0.36);
+          const sc = 0.94 + h * 0.26;
+          worldDummy.position.copy(localPos);
+          worldDummy.quaternion.copy(fanQuat);
+          worldDummy.scale.setScalar(sc);
+          worldDummy.updateMatrix();
+          const shirtCol = shirtPaletteCols[(cIdx * 5 + r * 3 + mySeed) % shirtPaletteCols.length];
+          allFanInstances.push({ matrix: worldDummy.matrix.clone(), color: shirtCol });
         }
       }
 
-      for (let wIdx = 0; wIdx < 3; wIdx++) {
-        const waveGroup = new THREE.Group();
-        for (let mIdx = 0; mIdx < fanMats.length; mIdx++) {
-          const list = cohortBuckets[wIdx][mIdx];
-          if (!list.length) continue;
-          const inst = new THREE.InstancedMesh(spectatorGeo, fanMats[mIdx], list.length);
-          list.forEach((mat4, k) => inst.setMatrixAt(k, mat4));
-          inst.instanceMatrix.needsUpdate = true;
-          waveGroup.add(inst);
-        }
-        standGroup.add(waveGroup);
-        allWaveCohorts.push({ group: waveGroup, phase: mySeed * 1.3 + wIdx * 2.09 });
-      }
-
-      // Waving 3D Grandstand Supporter Flags across mid & upper rows
-      const flagCount = Math.max(5, Math.floor(spanW / 24));
+      // Populate 3D Flag-Waving Ultras across Lower, Mid & Upper Rows!
+      const flagCount = Math.max(6, Math.floor(spanW / 18));
       for (let fi = 0; fi < flagCount; fi++) {
-        const u = fi % 2 === 0 ? -1.8 : 4.6;
-        const fx = -usableW * 0.44 + (fi / Math.max(1, flagCount - 1)) * (usableW * 0.88);
-        const fy = 9.3 + 0.8139 * u;
-        const fz = 1.3 - 0.5810 * u + 0.35;
-
-        const pole = new THREE.Mesh(flagPoleGeo, this.armcoMat);
-        pole.position.set(fx, fy + 1.55, fz);
-        standGroup.add(pole);
-
-        const flg = new THREE.Mesh(flagClothGeo, supporterFlagMats[(fi + mySeed) % supporterFlagMats.length]);
-        flg.position.set(fx, fy + 2.55, fz);
-        standGroup.add(flg);
-        allSupporterFlags.push({ mesh: flg, phase: mySeed * 0.9 + fi * 1.45 });
+        const rSlot = (fi * 3 + mySeed) % rowCount;
+        const fy = useGlbTribune ? (3.96 + rSlot * 1.24) : (3.90 + rSlot * 1.48);
+        const fz = (useGlbTribune ? (6.55 - rSlot * 1.65) : (5.20 - rSlot * 1.12)) + 0.18;
+        const fx = -usableW * 0.45 + (fi / Math.max(1, flagCount - 1)) * (usableW * 0.90);
+        localPos.set(fx, fy, fz).applyQuaternion(standQuat).add(worldPos);
+        worldDummy.position.copy(localPos);
+        worldDummy.rotation.set(0, worldYawRad, 0);
+        worldDummy.scale.setScalar(1.02);
+        worldDummy.updateMatrix();
+        allFlagInstances.push({
+          matrix: worldDummy.matrix.clone(),
+          bodyCol: shirtPaletteCols[(fi + mySeed * 2) % shirtPaletteCols.length],
+          flagCol: flagPaletteCols[(fi + mySeed) % flagPaletteCols.length],
+        });
       }
 
-      // Strobing Stadium Camera Flashes sparkling across the crowd bowl
-      const flashCount = Math.max(8, Math.floor(spanW / 14));
+      // Team-Colored Motorsport Smoke Flare Ultra-Sections!
+      const flareCount = isMainStraight ? 2 : 1;
+      const flarePalette = theme === 'MONZA'
+        ? [0xff1744, 0x00e676, 0xffffff, 0xffd600]
+        : [0xff6d00, 0xff1744, 0x00e5ff, 0xffd600];
+      for (let fl = 0; fl < flareCount; fl++) {
+        const frac = flareCount === 1 ? 0.5 : (0.28 + fl * 0.44);
+        const fx = -usableW * 0.42 + frac * usableW * 0.84;
+        const fy = (useGlbTribune ? 6.45 : 6.85) + (fl % 2) * 2.2;
+        const fz = (useGlbTribune ? 3.25 : 2.95) - (fl % 2) * 1.8;
+        localPos.set(fx, fy, fz).applyQuaternion(standQuat).add(worldPos);
+        allFlareSources.push({
+          pos: localPos.clone(),
+          color: new THREE.Color(flarePalette[(mySeed + fl) % flarePalette.length]),
+          seed: mySeed * 2.3 + fl * 3.1,
+        });
+      }
+
+      // Strobing HDR Camera Flashes across the crowd bowl
+      const flashCount = isMainStraight ? 22 : Math.max(10, Math.floor(spanW / 12));
       for (let k = 0; k < flashCount; k++) {
         const h1 = fastHash2D(k, 1, mySeed * 53 + 9);
         const h2 = fastHash2D(k, 2, mySeed * 53 + 9);
-        const u = -6.5 + h2 * 13.0;
+        const rF = h2 * (rowCount - 1);
         const fx = (h1 - 0.5) * usableW;
-        const fy = 9.3 + 0.8139 * u + 0.85;
-        const fz = 1.3 - 0.5810 * u + 0.65;
+        const fy = (useGlbTribune ? (3.96 + rF * 1.24) : (3.90 + rF * 1.48)) + 1.15;
+        const fz = (useGlbTribune ? (6.55 - rF * 1.65) : (5.20 - rF * 1.12)) + 0.45;
         const flashMesh = new THREE.Mesh(flashGeo, flashMat);
         flashMesh.position.set(fx, fy, fz);
         flashMesh.visible = false;
         standGroup.add(flashMesh);
-        allCameraFlashes.push({ mesh: flashMesh, seed: mySeed * 19 + k * 3.7 });
+        allCameraFlashes.push({
+          mesh: flashMesh,
+          seed: mySeed * 19 + k * 3.7,
+          isMainStraight,
+          standIdx: mySeed,
+        });
       }
 
-      // Framed Front Sponsor Fascia Wall
-      const fascia = new THREE.Mesh(
-        new THREE.BoxGeometry(spanW + 0.4, 2.35, 0.65),
-        [this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, fasciaMat, this.darkFrameMat]
-      );
-      fascia.position.set(0, 3.15, 9.8);
-      standGroup.add(fascia);
-
-      // Cantilevered Stadium Roof Canopy + Under-Canopy Broadcast Spotlights
-      const roof = new THREE.Mesh(new THREE.BoxGeometry(spanW + 3.0, 0.82, 23.0), canopyMat);
-      roof.position.set(0, 17.6, 1.2);
-      roof.rotation.x = 0.08;
-      roof.castShadow = true;
-      standGroup.add(roof);
-
-      const lightStrip = new THREE.Mesh(new THREE.BoxGeometry(spanW - 8.0, 0.22, 0.85), underLightMat);
-      lightStrip.position.set(0, 16.55, 10.8);
-      standGroup.add(lightStrip);
-
-      const step = spanW / 4;
-      for (let px = -spanW * 0.44; px <= spanW * 0.45; px += step) {
-        const col = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.38, 17.4, 8), this.darkFrameMat);
-        col.position.set(px, 8.7, -7.2);
-        standGroup.add(col);
-      }
-
-      return standGroup;
+      this.group.add(standGroup);
     };
 
-    // Main Straight 3-Block Grandstand Complex
+    // 1. Main Straight 3-Block Grandstand Complex
     for (const gx of [-82, 172, 426]) {
       const gz = -(ROAD_HALF_WIDTH + 23.0);
-      const sg = buildTribuneGroup(192);
-      sg.position.set(gx, 0, gz);
-      this.group.add(sg);
+      spawnStandAndCrowd(192, new THREE.Vector3(gx, 0, gz), 0, true);
     }
 
-    // Secondary Circuit-Specific Iconic Corner Tribunes
+    // 2. Secondary Circuit-Specific Iconic Corner Tribunes
     const cornerStands = this.trackDef.cornerTribunes || [];
     for (const cs of cornerStands) {
       const dist = ROAD_HALF_WIDTH + 24.5;
       const fr = this.sampleAt(cs.s, cs.side * dist);
       const yaw = Math.atan2(fr.tangent.z, fr.tangent.x);
-      const sg = buildTribuneGroup(cs.span || 115);
-      sg.position.copy(fr.pos);
-      // Orient +Z face of tribune directly toward the track centerline!
-      sg.rotation.y = -yaw + (cs.side < 0 ? 0 : Math.PI);
-      this.group.add(sg);
+      const standYaw = -yaw + (cs.side < 0 ? 0 : Math.PI);
+      spawnStandAndCrowd(cs.span || 115, fr.pos, standYaw, false);
     }
 
-    // Single high-efficiency animation driver for all cheering crowds, flags & camera flashes!
+    // 3. Populate VIP Paddock Club Rooftop Terrace (facing -Z toward Pit Lane & Main Straight!)
+    if (this._paddockTerraceBounds) {
+      const tb = this._paddockTerraceBounds;
+      const vipCount = 96;
+      for (let i = 0; i < vipCount; i++) {
+        const h1 = fastHash2D(i, 1, 887);
+        const h2 = fastHash2D(i, 2, 887);
+        const vx = tb.centerX - tb.width * 0.47 + (i / vipCount) * (tb.width * 0.94) + (h1 - 0.5) * 1.6;
+        const vz = tb.zFront + 0.85 + h2 * 3.8;
+        worldDummy.position.set(vx, tb.yBase, vz);
+        worldDummy.rotation.set(0, Math.PI + (h1 - 0.5) * 0.45, 0);
+        worldDummy.scale.setScalar(0.96 + h2 * 0.18);
+        worldDummy.updateMatrix();
+        allFanInstances.push({
+          matrix: worldDummy.matrix.clone(),
+          color: shirtPaletteCols[i % shirtPaletteCols.length],
+        });
+
+        if (i % 12 === 4) {
+          worldDummy.position.set(vx, tb.yBase, vz - 0.25);
+          worldDummy.rotation.set(0, Math.PI, 0);
+          worldDummy.scale.setScalar(0.95);
+          worldDummy.updateMatrix();
+          allFlagInstances.push({
+            matrix: worldDummy.matrix.clone(),
+            bodyCol: shirtPaletteCols[(i + 2) % shirtPaletteCols.length],
+            flagCol: flagPaletteCols[(i >> 2) % flagPaletteCols.length],
+          });
+        }
+      }
+    }
+
+    // Flush Batched Blender .glb Grandstand Structures & Roofs
+    if (glbStructMatrices.length && envCache?.grandstandStructGeo && envCache?.grandstandRoofGeo) {
+      const gsStructInst = new THREE.InstancedMesh(envCache.grandstandStructGeo, structMat, glbStructMatrices.length);
+      const gsRoofInst = new THREE.InstancedMesh(envCache.grandstandRoofGeo, canopyMat, glbRoofMatrices.length);
+      glbStructMatrices.forEach((m, i) => {
+        gsStructInst.setMatrixAt(i, m);
+        gsRoofInst.setMatrixAt(i, m);
+      });
+      gsStructInst.instanceMatrix.needsUpdate = true;
+      gsRoofInst.instanceMatrix.needsUpdate = true;
+      gsStructInst.castShadow = true;
+      gsStructInst.receiveShadow = true;
+      gsRoofInst.castShadow = true;
+      this.group.add(gsStructInst, gsRoofInst);
+    }
+
+    // Single GPU-Instanced Cheering Stadium Crowd (Mexican Wave + Individual Jumping!)
+    if (allFanInstances.length) {
+      const fanInst = new THREE.InstancedMesh(spectatorGeo, crowdInstMat, allFanInstances.length);
+      allFanInstances.forEach((item, i) => {
+        fanInst.setMatrixAt(i, item.matrix);
+        fanInst.setColorAt(i, item.color);
+      });
+      fanInst.instanceMatrix.needsUpdate = true;
+      if (fanInst.instanceColor) fanInst.instanceColor.needsUpdate = true;
+      this.group.add(fanInst);
+    }
+
+    // Single GPU-Instanced 3D Flag-Waving Supporters (Rippling 3D Team Banners!)
+    if (allFlagInstances.length) {
+      const fwBodyInst = new THREE.InstancedMesh(flagWaverBodyGeo, flagBodyMat, allFlagInstances.length);
+      const fwClothInst = new THREE.InstancedMesh(flagWaverClothGeo, flagClothMat, allFlagInstances.length);
+      allFlagInstances.forEach((item, i) => {
+        fwBodyInst.setMatrixAt(i, item.matrix);
+        fwBodyInst.setColorAt(i, item.bodyCol);
+        fwClothInst.setMatrixAt(i, item.matrix);
+        fwClothInst.setColorAt(i, item.flagCol);
+      });
+      fwBodyInst.instanceMatrix.needsUpdate = true;
+      fwClothInst.instanceMatrix.needsUpdate = true;
+      if (fwBodyInst.instanceColor) fwBodyInst.instanceColor.needsUpdate = true;
+      if (fwClothInst.instanceColor) fwClothInst.instanceColor.needsUpdate = true;
+      this.group.add(fwBodyInst, fwClothInst);
+    }
+
+    // 4. Billowing Team-Colored Motorsport Smoke Flares above Grandstands!
+    let smokeInst = null;
+    const puffsPerFlare = 14;
+    if (allFlareSources.length) {
+      const smokeTex = this._makeFlareSmokeTexture();
+      const p1 = new THREE.PlaneGeometry(1.0, 1.0);
+      const p2 = new THREE.PlaneGeometry(1.0, 1.0);
+      p2.rotateY(Math.PI * 0.5);
+      const smokePuffGeo = mergeSubGeometries([p1, p2]);
+      const smokeMat = new THREE.MeshBasicMaterial({
+        map: smokeTex,
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.42,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      smokeInst = new THREE.InstancedMesh(smokePuffGeo, smokeMat, allFlareSources.length * puffsPerFlare);
+      smokeInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+
+      const sparkGeo = new THREE.SphereGeometry(0.24, 8, 6);
+      for (let sIdx = 0; sIdx < allFlareSources.length; sIdx++) {
+        const src = allFlareSources[sIdx];
+        const spark = new THREE.Mesh(sparkGeo, new THREE.MeshBasicMaterial({ color: src.color }));
+        spark.position.copy(src.pos).add(new THREE.Vector3(0, 1.25, 0));
+        this.group.add(spark);
+        for (let p = 0; p < puffsPerFlare; p++) {
+          smokeInst.setColorAt(sIdx * puffsPerFlare + p, src.color);
+        }
+      }
+      if (smokeInst.instanceColor) smokeInst.instanceColor.needsUpdate = true;
+      this.group.add(smokeInst);
+    }
+
+    // 5. Celebratory Stadium Confetti & Foil Streamer Cascades (Start/Finish & VIP Terrace!)
+    const confettiCount = 240;
+    const confettiGeo = new THREE.PlaneGeometry(0.28, 0.15);
+    const confettiMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      side: THREE.DoubleSide,
+    });
+    const confettiInst = new THREE.InstancedMesh(confettiGeo, confettiMat, confettiCount);
+    confettiInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    const confettiPalette = [
+      new THREE.Color(0xffd600),
+      new THREE.Color(0xff1744),
+      new THREE.Color(0x00e5ff),
+      new THREE.Color(0xffffff),
+      new THREE.Color(0xff6d00),
+      new THREE.Color(0x00e676),
+    ];
+    const confettiSeeds = [];
+    for (let i = 0; i < confettiCount; i++) {
+      const h1 = fastHash2D(i, 1, 941);
+      const h2 = fastHash2D(i, 2, 941);
+      const h3 = fastHash2D(i, 3, 941);
+      const onPaddockSide = i % 3 === 0;
+      const baseX = -115 + h1 * 285; // Spans Showroom #1 Grid Slot (-27.6m) through Start Gantry (0m) & T1 approach!
+      const baseZ = onPaddockSide
+        ? (PIT_LANE_CONFIG.lateralOffset + 4.5 + h2 * 5.0)
+        : -(ROAD_HALF_WIDTH + 15.5 + h2 * 11.0);
+      const baseY = onPaddockSide ? 14.5 : 16.2;
+      confettiSeeds.push({ baseX, baseY, baseZ, phase: h3, drift: (h1 - 0.5) * 4.5, spin: 2.5 + h2 * 5.5 });
+      confettiInst.setColorAt(i, confettiPalette[i % confettiPalette.length]);
+    }
+    if (confettiInst.instanceColor) confettiInst.instanceColor.needsUpdate = true;
+    this.group.add(confettiInst);
+
+    const animDummy = new THREE.Object3D();
     this.animatedProps.push((t) => {
-      for (let i = 0; i < allWaveCohorts.length; i++) {
-        const cw = allWaveCohorts[i];
-        cw.group.position.y = Math.abs(Math.sin(t * 6.4 + cw.phase)) * 0.28;
+      const excite = this.crowdExcitement || 0.22;
+
+      // Update rising & swirling motorsport flare smoke plumes
+      if (smokeInst) {
+        let idx = 0;
+        for (let sIdx = 0; sIdx < allFlareSources.length; sIdx++) {
+          const src = allFlareSources[sIdx];
+          for (let p = 0; p < puffsPerFlare; p++) {
+            const age = (t * (0.30 + excite * 0.12) + p / puffsPerFlare + src.seed * 0.17) % 1.0;
+            const liftY = 1.35 + age * (10.5 + excite * 3.5);
+            const driftX = age * age * 6.8 + Math.sin(t * 1.9 + p + src.seed) * (0.45 + age * 0.9);
+            const driftZ = Math.cos(t * 1.5 + p * 0.7 + src.seed) * (0.35 + age * 0.8);
+            const sc = (1.15 + age * 4.8) * Math.sin(Math.min(1.0, age * 4.2) * Math.PI * 0.5) * (1.0 - age * 0.55);
+            animDummy.position.set(src.pos.x + driftX, src.pos.y + liftY, src.pos.z + driftZ);
+            animDummy.rotation.set(0, t * 0.65 + p * 0.8, Math.sin(t + p) * 0.25);
+            animDummy.scale.setScalar(Math.max(0.05, sc));
+            animDummy.updateMatrix();
+            smokeInst.setMatrixAt(idx++, animDummy.matrix);
+          }
+        }
+        smokeInst.instanceMatrix.needsUpdate = true;
       }
-      for (let i = 0; i < allSupporterFlags.length; i++) {
-        const sf = allSupporterFlags[i];
-        sf.mesh.rotation.y = Math.sin(t * 6.2 + sf.phase) * 0.40;
+
+      // Update tumbling celebratory stadium confetti
+      const confettiScale = 0.72 + Math.min(1.2, excite * 0.55);
+      for (let i = 0; i < confettiCount; i++) {
+        const cs = confettiSeeds[i];
+        const fall = (t * (0.24 + excite * 0.12) + cs.phase) % 1.0;
+        const y = cs.baseY - fall * 13.8;
+        const x = cs.baseX + Math.sin(t * 2.1 + cs.phase * 12.0) * 1.35 + fall * cs.drift;
+        const z = cs.baseZ + Math.cos(t * 1.8 + cs.phase * 9.0) * 0.95;
+        animDummy.position.set(x, y, z);
+        animDummy.rotation.set(t * cs.spin + i, t * (cs.spin * 0.8) + cs.phase * 6.0, t * 2.2);
+        animDummy.scale.setScalar(confettiScale);
+        animDummy.updateMatrix();
+        confettiInst.setMatrixAt(i, animDummy.matrix);
       }
+      confettiInst.instanceMatrix.needsUpdate = true;
+
+      // Update strobing HDR camera flashes
       for (let i = 0; i < allCameraFlashes.length; i++) {
         const cf = allCameraFlashes[i];
-        const pulse = Math.sin(t * 4.7 + cf.seed) * Math.sin(t * 13.3 + cf.seed * 1.9);
-        if (pulse > 0.84) {
+        const straightWave = cf.isMainStraight
+          ? Math.max(0, Math.sin(t * 7.2 - cf.standIdx * 1.15)) * (0.14 + excite * 0.08)
+          : 0.0;
+        const pulse = Math.sin(t * 5.2 + cf.seed) * Math.sin(t * 14.1 + cf.seed * 1.9) + straightWave;
+        const threshold = (cf.isMainStraight ? 0.70 : 0.80) - Math.min(0.18, excite * 0.10);
+        if (pulse > threshold) {
           cf.mesh.visible = true;
-          const s = 0.75 + (pulse - 0.84) * 7.5;
+          const s = 0.85 + (pulse - threshold) * 8.5;
           cf.mesh.scale.setScalar(s);
-          cf.mesh.rotation.z = t * 2.5 + cf.seed;
+          cf.mesh.rotation.z = t * 2.8 + cf.seed;
         } else {
           cf.mesh.visible = false;
         }
@@ -2341,8 +3559,8 @@ export class FujiTrack {
   }
 
   _buildFujiBiome() {
-    // 1. Majestic 3-Strata Mount Fuji at authentic alpine vista distance (~1550m ahead of straight, >385m clear of Turn 1!)
-    const fujiPos = new THREE.Vector3(1860, -14, -195);
+    // 1. Majestic 3-Strata Mount Fuji aligned down the Main Straight Showroom Vista (>200m clear of Turn 1, fog-immune alpine clarity!)
+    const fujiPos = new THREE.Vector3(1680, -10, -135);
     const slopeTex = this._makeFujiVolcanicSlopeTexture();
     const snowTex = this._makeFujiSnowCrownTexture();
 
@@ -2350,22 +3568,25 @@ export class FujiTrack {
       color: 0x1e4a2b,
       roughness: 0.88,
       metalness: 0.02,
-      emissive: new THREE.Color(0x091c10),
-      emissiveIntensity: 0.14,
+      emissive: new THREE.Color(0x0c2415),
+      emissiveIntensity: 0.18,
+      fog: false,
     });
     const slopeMat = new THREE.MeshStandardMaterial({
       map: slopeTex,
-      roughness: 0.84,
+      roughness: 0.82,
       metalness: 0.05,
-      emissive: new THREE.Color(0x101e38),
-      emissiveIntensity: 0.16,
+      emissive: new THREE.Color(0x16294a),
+      emissiveIntensity: 0.22,
+      fog: false,
     });
     const snowMat = new THREE.MeshStandardMaterial({
       map: snowTex,
-      roughness: 0.36,
+      roughness: 0.34,
       metalness: 0.04,
-      emissive: new THREE.Color(0xdbeafe),
-      emissiveIntensity: 0.18,
+      emissive: new THREE.Color(0xe6f2ff),
+      emissiveIntensity: 0.26,
+      fog: false,
     });
 
     let fuji;
@@ -2384,23 +3605,23 @@ export class FujiTrack {
           ch.material = slopeMat;
         }
       });
-      // Normalize GLB bounds precisely to 1320m base diameter (r=660m) x 435m height!
+      // Normalize GLB bounds to 1420m base diameter x 615m height so the snow crown towers above the Start Gantry!
       fuji.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(fuji);
       const sz = new THREE.Vector3();
       box.getSize(sz);
       const spanXZ = Math.max(sz.x, sz.z);
-      const sxz = spanXZ > 1 ? 1320 / spanXZ : 1.35;
-      const sy = sz.y > 1 ? 435 / sz.y : 2.55;
+      const sxz = spanXZ > 1 ? 1420 / spanXZ : 1.45;
+      const sy = sz.y > 1 ? 615 / sz.y : 3.45;
       fuji.scale.set(sxz, sy, sxz);
     } else {
       fuji = new THREE.Group();
-      const forestSkirt = new THREE.Mesh(new THREE.CylinderGeometry(420, 680, 115, 48, 1, false), forestBaseMat);
-      forestSkirt.position.y = 57.5;
-      const rockMid = new THREE.Mesh(new THREE.CylinderGeometry(165, 445, 205, 48, 1, false), slopeMat);
-      rockMid.position.y = 212;
-      const snowCrown = new THREE.Mesh(new THREE.CylinderGeometry(58, 188, 135, 48, 1, false), snowMat);
-      snowCrown.position.y = 372;
+      const forestSkirt = new THREE.Mesh(new THREE.CylinderGeometry(450, 710, 145, 48, 1, false), forestBaseMat);
+      forestSkirt.position.y = 72.5;
+      const rockMid = new THREE.Mesh(new THREE.CylinderGeometry(180, 470, 285, 48, 1, false), slopeMat);
+      rockMid.position.y = 285;
+      const snowCrown = new THREE.Mesh(new THREE.CylinderGeometry(64, 205, 195, 48, 1, false), snowMat);
+      snowCrown.position.y = 520;
       fuji.add(forestSkirt, rockMid, snowCrown);
       hasForestMesh = true;
     }
@@ -2410,28 +3631,42 @@ export class FujiTrack {
     // Ensure lush cedar-forested Shizuoka foothill ridge ring hugs Mount Fuji's base
     if (!hasForestMesh) {
       const foothillSkirt = new THREE.Mesh(
-        new THREE.CylinderGeometry(480, 710, 96, 48, 1, true),
+        new THREE.CylinderGeometry(500, 730, 120, 48, 1, true),
         forestBaseMat
       );
-      foothillSkirt.position.set(fujiPos.x, fujiPos.y + 46, fujiPos.z);
+      foothillSkirt.position.set(fujiPos.x, fujiPos.y + 58, fujiPos.z);
       this.group.add(foothillSkirt);
+    }
+
+    // Flanking Shizuoka Alpine Foothill Ridges framing the Main Straight horizon left & right of Mount Fuji
+    const ridgeSpecs = [
+      { x: 1240, z: -435, rTop: 95, rBot: 310, h: 148 },
+      { x: 1090, z: -620, rTop: 75, rBot: 265, h: 118 },
+      { x: 1360, z:  590, rTop: 105, rBot: 330, h: 156 },
+    ];
+    for (const rs of ridgeSpecs) {
+      const ridge = new THREE.Mesh(new THREE.CylinderGeometry(rs.rTop, rs.rBot, rs.h, 24), forestBaseMat);
+      ridge.position.set(rs.x, rs.h * 0.5 - 8, rs.z);
+      ridge.scale.set(1.0, 1.0, 1.35);
+      this.group.add(ridge);
     }
 
     // Sculpted Atmospheric Mist & Lenticular Cloud Collar around Mount Fuji's mid-flanks
     const cloudMat = new THREE.MeshBasicMaterial({
       color: 0xf4f9ff,
       transparent: true,
-      opacity: 0.52,
+      opacity: 0.54,
       depthWrite: false,
+      fog: false,
     });
     for (let i = 0; i < 18; i++) {
       const ang = (Math.PI * 2 * i) / 18;
-      const puff = new THREE.Mesh(new THREE.SphereGeometry(72 + (i % 3) * 24, 16, 12), cloudMat);
+      const puff = new THREE.Mesh(new THREE.SphereGeometry(76 + (i % 3) * 26, 16, 12), cloudMat);
       puff.scale.set(2.4, 0.32, 1.35);
       puff.position.set(
-        fujiPos.x + Math.cos(ang) * 545,
-        132 + (i % 4) * 20,
-        fujiPos.z + Math.sin(ang) * 545
+        fujiPos.x + Math.cos(ang) * 565,
+        185 + (i % 4) * 24,
+        fujiPos.z + Math.sin(ang) * 565
       );
       this.group.add(puff);
     }
@@ -3857,53 +5092,91 @@ export class FujiTrack {
     });
   }
 
+  _applyTreeWindShader(mat, maxHeight = 9.5) {
+    const uniforms = this._crowdUniforms;
+    const hStr = maxHeight.toFixed(1);
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uWindTime = uniforms.uTime;
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+          uniform float uWindTime;`
+        )
+        .replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+          float hFrac = clamp(position.y / ${hStr}, 0.0, 1.0);
+          float swayWeight = hFrac * hFrac;
+          float tSeed = 0.0;
+          #ifdef USE_INSTANCING
+            vec3 tInst = instanceMatrix[3].xyz;
+            tSeed = fract(sin(dot(tInst.xz, vec2(14.37, 61.91))) * 35713.11) * 6.2831;
+          #endif
+          transformed.x += sin(uWindTime * 1.65 + tSeed + position.y * 0.35) * 0.24 * swayWeight;
+          transformed.z += cos(uWindTime * 1.28 + tSeed * 1.3 + position.x * 0.4) * 0.18 * swayWeight;`
+        );
+    };
+    mat.customProgramCacheKey = () => `f1_tree_wind_${hStr}`;
+    return mat;
+  }
+
+  _getTreeGeometriesAndMaterials() {
+    const envCache = FujiTrack._envGlbCache;
+    let decTrunkGeo = envCache?.deciduousTrunk;
+    let decCrownGeo = envCache?.deciduousCanopy;
+    let pineTrunkGeo = envCache?.pineTrunk;
+    let pineCrownGeo = envCache?.pineCanopy;
+
+    if (!decTrunkGeo) {
+      const mainStem = new THREE.CylinderGeometry(0.28, 0.52, 4.1, 8);
+      mainStem.translate(0, 2.05, 0);
+      const limbL = new THREE.CylinderGeometry(0.13, 0.24, 2.3, 6);
+      limbL.rotateZ(0.56); limbL.rotateX(0.18); limbL.translate(-0.62, 3.85, 0.18);
+      const limbR = new THREE.CylinderGeometry(0.12, 0.22, 2.2, 6);
+      limbR.rotateZ(-0.54); limbR.rotateX(-0.20); limbR.translate(0.60, 3.95, -0.18);
+      const limbB = new THREE.CylinderGeometry(0.11, 0.20, 2.0, 6);
+      limbB.rotateX(0.52); limbB.translate(0.06, 4.05, 0.56);
+      decTrunkGeo = mergeSubGeometries([mainStem, limbL, limbR, limbB]);
+    }
+    if (!pineTrunkGeo) {
+      const pStem = new THREE.CylinderGeometry(0.18, 0.46, 7.2, 8);
+      pStem.translate(0, 3.6, 0);
+      pineTrunkGeo = pStem;
+    }
+    if (!decCrownGeo) {
+      const bough1 = new THREE.DodecahedronGeometry(2.55, 1);
+      bough1.scale(1.24, 0.74, 1.14); bough1.translate(-1.68, 4.95, 0.42);
+      const bough2 = new THREE.DodecahedronGeometry(2.45, 1);
+      bough2.scale(1.18, 0.72, 1.16); bough2.translate(1.72, 5.12, -0.38);
+      const bough3 = new THREE.DodecahedronGeometry(2.35, 1);
+      bough3.scale(1.14, 0.74, 1.22); bough3.translate(0.15, 5.05, 1.55);
+      const bough4 = new THREE.DodecahedronGeometry(2.28, 1);
+      bough4.scale(1.16, 0.76, 1.12); bough4.translate(-0.24, 5.58, -1.38);
+      const bough5 = new THREE.DodecahedronGeometry(2.68, 1);
+      bough5.scale(1.20, 0.82, 1.18); bough5.translate(0.08, 6.55, 0.06);
+      decCrownGeo = mergeSubGeometries([bough1, bough2, bough3, bough4, bough5]);
+    }
+    if (!pineCrownGeo) {
+      const pineT1 = new THREE.ConeGeometry(3.35, 4.6, 9); pineT1.translate(0, 4.85, 0);
+      const pineT2 = new THREE.ConeGeometry(2.68, 4.4, 9); pineT2.translate(0, 7.35, 0);
+      const pineT3 = new THREE.ConeGeometry(1.88, 4.2, 9); pineT3.translate(0, 9.75, 0);
+      pineCrownGeo = mergeSubGeometries([pineT1, pineT2, pineT3]);
+    }
+
+    const trunkMat = new THREE.MeshStandardMaterial({
+      color: envCache?.barkMap ? 0xd8c6b4 : 0x4a3423,
+      map: envCache?.barkMap || null,
+      roughness: 0.90,
+    });
+    return { envCache, decTrunkGeo, decCrownGeo, pineTrunkGeo, pineCrownGeo, trunkMat };
+  }
+
   _scatterForestTrees({ count, foliageColors, spruceRatio, blossomPetals = false }) {
-    // Organic Multi-Branch Forked Bark Trunk (grounded at y=0, zero lollipop stick!)
-    const mainStem = new THREE.CylinderGeometry(0.28, 0.52, 4.1, 8);
-    mainStem.translate(0, 2.05, 0);
-    const limbL = new THREE.CylinderGeometry(0.13, 0.24, 2.3, 6);
-    limbL.rotateZ(0.56);
-    limbL.rotateX(0.18);
-    limbL.translate(-0.62, 3.85, 0.18);
-    const limbR = new THREE.CylinderGeometry(0.12, 0.22, 2.2, 6);
-    limbR.rotateZ(-0.54);
-    limbR.rotateX(-0.20);
-    limbR.translate(0.60, 3.95, -0.18);
-    const limbB = new THREE.CylinderGeometry(0.11, 0.20, 2.0, 6);
-    limbB.rotateX(0.52);
-    limbB.translate(0.06, 4.05, 0.56);
-    const trunkGeo = mergeSubGeometries([mainStem, limbL, limbR, limbB]);
+    const { envCache, decTrunkGeo, decCrownGeo, pineTrunkGeo, pineCrownGeo, trunkMat } = this._getTreeGeometriesAndMaterials();
 
-    // 5-Cluster Asymmetrical Spreading Broadleaf / Sakura / Maple / Oak Canopy (ZERO single-sphere lollipop!)
-    const bough1 = new THREE.DodecahedronGeometry(2.55, 1);
-    bough1.scale(1.24, 0.74, 1.14);
-    bough1.translate(-1.68, 4.95, 0.42);
-    const bough2 = new THREE.DodecahedronGeometry(2.45, 1);
-    bough2.scale(1.18, 0.72, 1.16);
-    bough2.translate(1.72, 5.12, -0.38);
-    const bough3 = new THREE.DodecahedronGeometry(2.35, 1);
-    bough3.scale(1.14, 0.74, 1.22);
-    bough3.translate(0.15, 5.05, 1.55);
-    const bough4 = new THREE.DodecahedronGeometry(2.28, 1);
-    bough4.scale(1.16, 0.76, 1.12);
-    bough4.translate(-0.24, 5.58, -1.38);
-    const bough5 = new THREE.DodecahedronGeometry(2.68, 1);
-    bough5.scale(1.20, 0.82, 1.18);
-    bough5.translate(0.08, 6.55, 0.06);
-    const crownRoundGeo = mergeSubGeometries([bough1, bough2, bough3, bough4, bough5]);
-
-    // 3-Tiered Layered Evergreen Cedar / Pine / Cypress Canopy
-    const pineT1 = new THREE.ConeGeometry(3.35, 4.6, 9);
-    pineT1.translate(0, 4.85, 0);
-    const pineT2 = new THREE.ConeGeometry(2.68, 4.4, 9);
-    pineT2.translate(0, 7.35, 0);
-    const pineT3 = new THREE.ConeGeometry(1.88, 4.2, 9);
-    pineT3.translate(0, 9.75, 0);
-    const crownPineGeo = mergeSubGeometries([pineT1, pineT2, pineT3]);
-
-    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4a3423, roughness: 0.9 });
-
-    const trunks = [];
+    const decTrunks = [];
+    const pineTrunks = [];
     const roundBuckets = foliageColors.map(() => []);
     const pineBuckets = foliageColors.map(() => []);
     const petalRings = [];
@@ -3924,29 +5197,26 @@ export class FujiTrack {
 
       const sc = 0.88 + fastHash2D(i, 3, 91) * 0.68;
       const rotY = fastHash2D(i, 4, 91) * Math.PI * 2;
-
-      dummy.position.set(fr.pos.x, fr.pos.y, fr.pos.z);
-      dummy.rotation.set(0, rotY, 0);
-      dummy.scale.set(sc, sc, sc);
-      dummy.updateMatrix();
-      trunks.push(dummy.matrix.clone());
-
       const cIdx = i % foliageColors.length;
       const isSpruce = fastHash2D(i, 5, 91) < spruceRatio;
+
       if (isSpruce) {
-        // Tall slender cypress (Monza) or layered alpine cedar / pine proportions
         const slim = this.trackDef.theme === 'MONZA' ? 0.58 : 0.96;
         dummy.position.set(fr.pos.x, fr.pos.y, fr.pos.z);
+        dummy.rotation.set(0, rotY, 0);
         dummy.scale.set(sc * slim, sc * 1.08, sc * slim);
         dummy.updateMatrix();
+        pineTrunks.push(dummy.matrix.clone());
         pineBuckets[cIdx].push(dummy.matrix.clone());
       } else {
         dummy.position.set(fr.pos.x, fr.pos.y, fr.pos.z);
+        dummy.rotation.set(0, rotY, 0);
         dummy.scale.set(sc * 1.08, sc * 0.98, sc * 1.08);
         dummy.updateMatrix();
+        decTrunks.push(dummy.matrix.clone());
         roundBuckets[cIdx].push(dummy.matrix.clone());
 
-        if (blossomPetals && cIdx <= 2 && petalRings.length < 70) {
+        if (blossomPetals && cIdx <= 2 && petalRings.length < 75) {
           dummy.position.set(fr.pos.x, fr.pos.y + 0.04, fr.pos.z);
           dummy.rotation.set(-Math.PI / 2, 0, 0);
           dummy.scale.setScalar(sc * 3.8);
@@ -3956,30 +5226,40 @@ export class FujiTrack {
       }
     }
 
-    if (trunks.length) {
-      const trunkInst = new THREE.InstancedMesh(trunkGeo, trunkMat, trunks.length);
-      trunks.forEach((m, k) => trunkInst.setMatrixAt(k, m));
-      trunkInst.instanceMatrix.needsUpdate = true;
-      this.group.add(trunkInst);
+    if (decTrunks.length) {
+      const dtInst = new THREE.InstancedMesh(decTrunkGeo, trunkMat, decTrunks.length);
+      decTrunks.forEach((m, k) => dtInst.setMatrixAt(k, m));
+      dtInst.instanceMatrix.needsUpdate = true;
+      this.group.add(dtInst);
+    }
+    if (pineTrunks.length) {
+      const ptInst = new THREE.InstancedMesh(pineTrunkGeo, trunkMat, pineTrunks.length);
+      pineTrunks.forEach((m, k) => ptInst.setMatrixAt(k, m));
+      ptInst.instanceMatrix.needsUpdate = true;
+      this.group.add(ptInst);
     }
 
     foliageColors.forEach((col, idx) => {
       const isSakura = blossomPetals && idx <= 2;
-      const mat = new THREE.MeshStandardMaterial({
-        color: col,
-        roughness: 0.74,
-        emissive: new THREE.Color(col),
-        emissiveIntensity: isSakura ? 0.14 : 0.05,
-      });
+      const mat = this._applyTreeWindShader(
+        new THREE.MeshStandardMaterial({
+          color: col,
+          map: envCache?.foliageMap || null,
+          roughness: 0.72,
+          emissive: new THREE.Color(col),
+          emissiveIntensity: isSakura ? 0.15 : 0.05,
+        }),
+        9.5
+      );
       if (roundBuckets[idx].length) {
-        const inst = new THREE.InstancedMesh(crownRoundGeo, mat, roundBuckets[idx].length);
+        const inst = new THREE.InstancedMesh(decCrownGeo, mat, roundBuckets[idx].length);
         roundBuckets[idx].forEach((m, k) => inst.setMatrixAt(k, m));
         inst.instanceMatrix.needsUpdate = true;
         inst.castShadow = true;
         this.group.add(inst);
       }
       if (pineBuckets[idx].length) {
-        const inst = new THREE.InstancedMesh(crownPineGeo, mat, pineBuckets[idx].length);
+        const inst = new THREE.InstancedMesh(pineCrownGeo, mat, pineBuckets[idx].length);
         pineBuckets[idx].forEach((m, k) => inst.setMatrixAt(k, m));
         inst.instanceMatrix.needsUpdate = true;
         inst.castShadow = true;
@@ -4002,57 +5282,61 @@ export class FujiTrack {
     }
   }
 
-  _scatterPalmTrees(count) {
-    // Gracefully Curved 3-Segment Riviera / Strip Palm Trunk
-    const seg1 = new THREE.CylinderGeometry(0.32, 0.42, 3.5, 8);
-    seg1.rotateZ(-0.04);
-    seg1.translate(0.07, 1.72, 0);
-    const seg2 = new THREE.CylinderGeometry(0.25, 0.33, 3.5, 8);
-    seg2.rotateZ(-0.09);
-    seg2.translate(0.30, 5.10, 0);
-    const seg3 = new THREE.CylinderGeometry(0.19, 0.26, 3.3, 8);
-    seg3.rotateZ(-0.14);
-    seg3.translate(0.68, 8.38, 0);
-    const trunkGeo = mergeSubGeometries([seg1, seg2, seg3]);
+  _scatterPalmTrees(count, extraPositions = null) {
+    const envCache = FujiTrack._envGlbCache;
+    let trunkGeo = envCache?.palmTrunk;
+    let frondGeo = envCache?.palmCanopy;
 
-    // 7-Frond Arched Radiating Palm Crown (Inner Ascending Petiole + Outer Drooping Frond Tip)
-    const frondParts = [];
-    const crownHeart = new THREE.DodecahedronGeometry(0.62, 0);
-    crownHeart.translate(0.90, 9.85, 0);
-    frondParts.push(crownHeart);
-
-    for (let f = 0; f < 7; f++) {
-      const az = (Math.PI * 2 * f) / 7;
-      const innerBlade = new THREE.BoxGeometry(2.35, 0.14, 0.72);
-      innerBlade.rotateZ(0.28);
-      innerBlade.translate(1.15, 0.28, 0);
-      innerBlade.rotateY(az);
-      innerBlade.translate(0.90, 9.95, 0);
-
-      const outerTip = new THREE.ConeGeometry(0.48, 2.55, 5);
-      outerTip.scale(1.0, 1.0, 0.26);
-      outerTip.rotateZ(-1.92);
-      outerTip.translate(3.25, -0.05, 0);
-      outerTip.rotateY(az);
-      outerTip.translate(0.90, 9.95, 0);
-
-      frondParts.push(innerBlade, outerTip);
+    if (!trunkGeo) {
+      const seg1 = new THREE.CylinderGeometry(0.32, 0.42, 3.5, 8);
+      seg1.rotateZ(-0.04); seg1.translate(0.07, 1.72, 0);
+      const seg2 = new THREE.CylinderGeometry(0.25, 0.33, 3.5, 8);
+      seg2.rotateZ(-0.09); seg2.translate(0.30, 5.10, 0);
+      const seg3 = new THREE.CylinderGeometry(0.19, 0.26, 3.3, 8);
+      seg3.rotateZ(-0.14); seg3.translate(0.68, 8.38, 0);
+      trunkGeo = mergeSubGeometries([seg1, seg2, seg3]);
     }
-    const frondGeo = mergeSubGeometries(frondParts);
 
-    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x735338, roughness: 0.86 });
-    const frondMat = new THREE.MeshStandardMaterial({
-      color: this.trackDef.theme === 'VEGAS' ? 0x1e824c : 0x278042,
-      roughness: 0.68,
-      emissive: new THREE.Color(this.trackDef.theme === 'VEGAS' ? 0x0a3822 : 0x061f10),
-      emissiveIntensity: 0.22,
+    if (!frondGeo) {
+      const frondParts = [];
+      const crownHeart = new THREE.DodecahedronGeometry(0.62, 0);
+      crownHeart.translate(0.90, 9.85, 0);
+      frondParts.push(crownHeart);
+      for (let f = 0; f < 7; f++) {
+        const az = (Math.PI * 2 * f) / 7;
+        const innerBlade = new THREE.BoxGeometry(2.35, 0.14, 0.72);
+        innerBlade.rotateZ(0.28); innerBlade.translate(1.15, 0.28, 0);
+        innerBlade.rotateY(az); innerBlade.translate(0.90, 9.95, 0);
+        const outerTip = new THREE.ConeGeometry(0.48, 2.55, 5);
+        outerTip.scale(1.0, 1.0, 0.26); outerTip.rotateZ(-1.92);
+        outerTip.translate(3.25, -0.05, 0); outerTip.rotateY(az);
+        outerTip.translate(0.90, 9.95, 0);
+        frondParts.push(innerBlade, outerTip);
+      }
+      frondGeo = mergeSubGeometries(frondParts);
+    }
+
+    const trunkMat = new THREE.MeshStandardMaterial({
+      color: envCache?.barkMap ? 0xd9c2a8 : 0x735338,
+      map: envCache?.barkMap || null,
+      roughness: 0.86,
     });
+    const frondMat = this._applyTreeWindShader(
+      new THREE.MeshStandardMaterial({
+        color: this.trackDef.theme === 'VEGAS' ? 0x1e824c : 0x278042,
+        map: envCache?.foliageMap || null,
+        roughness: 0.66,
+        emissive: new THREE.Color(this.trackDef.theme === 'VEGAS' ? 0x0a3822 : 0x061f10),
+        emissiveIntensity: 0.22,
+      }),
+      11.5
+    );
 
     const palmMatrices = [];
     const dummy = new THREE.Object3D();
 
     for (let i = 0; i < count; i++) {
-      const s = (i * (TRACK_GAME_LENGTH / count)) % TRACK_GAME_LENGTH;
+      const s = (i * (TRACK_GAME_LENGTH / Math.max(1, count))) % TRACK_GAME_LENGTH;
       if (this.trackDef.tunnelRangeS && s >= this.trackDef.tunnelRangeS[0] - 5 && s <= this.trackDef.tunnelRangeS[1] + 5) {
         continue;
       }
@@ -4069,6 +5353,18 @@ export class FujiTrack {
       palmMatrices.push(dummy.matrix.clone());
     }
 
+    if (Array.isArray(extraPositions)) {
+      for (let i = 0; i < extraPositions.length; i++) {
+        const ep = extraPositions[i];
+        if (this._minDistToTrack(ep.x, ep.z) < ROAD_HALF_WIDTH + 11.5) continue;
+        dummy.position.set(ep.x, ep.y || 0, ep.z);
+        dummy.rotation.set(0, ep.rotY || i * 1.7, 0);
+        dummy.scale.setScalar(ep.scale || 1.05);
+        dummy.updateMatrix();
+        palmMatrices.push(dummy.matrix.clone());
+      }
+    }
+
     if (palmMatrices.length) {
       const tInst = new THREE.InstancedMesh(trunkGeo, trunkMat, palmMatrices.length);
       const fInst = new THREE.InstancedMesh(frondGeo, frondMat, palmMatrices.length);
@@ -4083,81 +5379,297 @@ export class FujiTrack {
     }
   }
 
+  // Dedicated 3D Blender Scenic Vista Groves along the Main Straight & Showroom Horizon!
+  _buildMainStraightScenicVistaTrees() {
+    const theme = this.trackDef.theme;
+    const spots = [];
+
+    // 1. Courtyard Groves in the open plazas between Main Straight Grandstand Blocks (X in [22..68] & [276..322])!
+    for (const gapCenterX of [45, 299]) {
+      for (let k = 0; k < 10; k++) {
+        const h1 = fastHash2D(k, 1, gapCenterX);
+        const h2 = fastHash2D(k, 2, gapCenterX);
+        spots.push({
+          x: gapCenterX + (h1 - 0.5) * 38,
+          z: -(ROAD_HALF_WIDTH + 14.5 + h2 * 22.0),
+          scale: 1.02 + h2 * 0.42,
+          rotY: h1 * Math.PI * 2,
+        });
+      }
+    }
+
+    // 2. Tall Horizon Parkland Groves rising behind the Main Straight Grandstands & framing Turn 1!
+    for (let i = 0; i < 68; i++) {
+      const h1 = fastHash2D(i, 1, 512);
+      const h2 = fastHash2D(i, 2, 512);
+      const x = -185 + (i / 68) * 820 + (h1 - 0.5) * 10;
+      const z = x > 528 ? -(ROAD_HALF_WIDTH + 16.0 + h2 * 52.0) : -(ROAD_HALF_WIDTH + 43.0 + h2 * 48.0);
+      spots.push({ x, z, scale: 1.15 + h2 * 0.62, rotY: h1 * Math.PI * 2 });
+    }
+
+    // 3. Paddock Parkland & Turn 1 Right-Side Vista Groves behind the Pit Garages!
+    for (let i = 0; i < 46; i++) {
+      const h1 = fastHash2D(i, 1, 733);
+      const h2 = fastHash2D(i, 2, 733);
+      const x = -175 + (i / 46) * 760 + (h1 - 0.5) * 12;
+      const z = x > 345 ? (ROAD_HALF_WIDTH + 17.5 + h2 * 48.0) : (PIT_LANE_CONFIG.lateralOffset + 25.0 + h2 * 44.0);
+      spots.push({ x, z, scale: 1.12 + h2 * 0.58, rotY: h1 * Math.PI * 2 });
+    }
+
+    if (theme === 'MONACO' || theme === 'VEGAS') {
+      this._scatterPalmTrees(0, spots);
+      return;
+    }
+
+    const palette = theme === 'FUJI'
+      ? { cols: [0xff9ec6, 0xffb7d5, 0x1d5932, 0x276e3f], spruce: 0.46 }
+      : (theme === 'MONZA'
+        ? { cols: [0xd97706, 0xdc2626, 0xeab308, 0x1e5631], spruce: 0.36 }
+        : (theme === 'SUZUKA'
+          ? { cols: [0xdc2626, 0xea580c, 0xf59e0b, 0x1e5631], spruce: 0.40 }
+          : { cols: [0x1f6332, 0x29753e, 0x358244, 0x4d7c2b], spruce: 0.32 }));
+
+    const { envCache, decTrunkGeo, decCrownGeo, pineTrunkGeo, pineCrownGeo, trunkMat } = this._getTreeGeometriesAndMaterials();
+    const decTrunks = [];
+    const pineTrunks = [];
+    const decCrowns = palette.cols.map(() => []);
+    const pineCrowns = palette.cols.map(() => []);
+    const dummy = new THREE.Object3D();
+
+    for (let i = 0; i < spots.length; i++) {
+      const sp = spots[i];
+      if (this._minDistToTrack(sp.x, sp.z) < ROAD_HALF_WIDTH + 13.0) continue;
+      const cIdx = i % palette.cols.length;
+      const isPine = fastHash2D(i, 4, 619) < palette.spruce;
+      const slim = theme === 'MONZA' && isPine ? 0.62 : 1.0;
+
+      dummy.position.set(sp.x, 0, sp.z);
+      dummy.rotation.set(0, sp.rotY, 0);
+      dummy.scale.set(sp.scale * slim, sp.scale * (isPine ? 1.12 : 1.02), sp.scale * slim);
+      dummy.updateMatrix();
+      if (isPine) {
+        pineTrunks.push(dummy.matrix.clone());
+        pineCrowns[cIdx].push(dummy.matrix.clone());
+      } else {
+        decTrunks.push(dummy.matrix.clone());
+        decCrowns[cIdx].push(dummy.matrix.clone());
+      }
+    }
+
+    if (decTrunks.length) {
+      const inst = new THREE.InstancedMesh(decTrunkGeo, trunkMat, decTrunks.length);
+      decTrunks.forEach((m, k) => inst.setMatrixAt(k, m));
+      inst.instanceMatrix.needsUpdate = true;
+      this.group.add(inst);
+    }
+    if (pineTrunks.length) {
+      const inst = new THREE.InstancedMesh(pineTrunkGeo, trunkMat, pineTrunks.length);
+      pineTrunks.forEach((m, k) => inst.setMatrixAt(k, m));
+      inst.instanceMatrix.needsUpdate = true;
+      this.group.add(inst);
+    }
+
+    palette.cols.forEach((col, idx) => {
+      const isSakura = theme === 'FUJI' && idx <= 1;
+      const mat = this._applyTreeWindShader(
+        new THREE.MeshStandardMaterial({
+          color: col,
+          map: envCache?.foliageMap || null,
+          roughness: 0.72,
+          emissive: new THREE.Color(col),
+          emissiveIntensity: isSakura ? 0.16 : 0.05,
+        }),
+        9.5
+      );
+      if (decCrowns[idx].length) {
+        const inst = new THREE.InstancedMesh(decCrownGeo, mat, decCrowns[idx].length);
+        decCrowns[idx].forEach((m, k) => inst.setMatrixAt(k, m));
+        inst.instanceMatrix.needsUpdate = true;
+        inst.castShadow = true;
+        this.group.add(inst);
+      }
+      if (pineCrowns[idx].length) {
+        const inst = new THREE.InstancedMesh(pineCrownGeo, mat, pineCrowns[idx].length);
+        pineCrowns[idx].forEach((m, k) => inst.setMatrixAt(k, m));
+        inst.instanceMatrix.needsUpdate = true;
+        inst.castShadow = true;
+        this.group.add(inst);
+      }
+    });
+  }
+
   // --------------------------------------------------------------------------
-  // 10. FIA MARSHAL BOOTHS + DIGITAL LED FLAG PANELS, PUDDLES & SKIDMARKS
+  // 10. FIA MARSHAL BOOTHS + 3D ANIMATED TRACKSIDE FLAG MARSHALS, PUDDLES & SKIDMARKS
   // --------------------------------------------------------------------------
+  _makeCheckeredMarshalFlagTexture() {
+    const c = document.createElement('canvas');
+    c.width = 128;
+    c.height = 128;
+    const ctx = c.getContext('2d');
+    for (let r = 0; r < 4; r++) {
+      for (let col = 0; col < 4; col++) {
+        ctx.fillStyle = (r + col) % 2 === 0 ? '#ffffff' : '#11141a';
+        ctx.fillRect(col * 32, r * 32, 32, 32);
+      }
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(2, 2);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
   _buildMarshalPosts() {
     this.marshalPosts = [];
+    const envCache = FujiTrack._envGlbCache;
     const poleMat = new THREE.MeshStandardMaterial({ color: 0xd0d8e4, metalness: 0.68, roughness: 0.3 });
     const boothMat = new THREE.MeshStandardMaterial({ color: 0xf2f6fc, roughness: 0.45 });
     const orangeMat = new THREE.MeshStandardMaterial({
       color: 0xff6d00,
-      roughness: 0.35,
+      roughness: 0.38,
       emissive: new THREE.Color(0xff5500),
       emissiveIntensity: 0.22,
     });
+    const checkeredTex = this._makeCheckeredMarshalFlagTexture();
 
-    for (const sec of FUJI_SECTORS) {
-      const postS = sec.start + 10;
-      if (this.trackDef.tunnelRangeS && postS >= this.trackDef.tunnelRangeS[0] && postS <= this.trackDef.tunnelRangeS[1]) {
-        continue;
-      }
-      if (this.trackDef.overpassRangeS && postS >= this.trackDef.overpassRangeS[0] - 8 && postS <= this.trackDef.overpassRangeS[1] + 8) {
-        continue;
-      }
+    let marshalBodyGeo = envCache?.marshalBodyGeo;
+    if (!marshalBodyGeo) {
+      const torso = new THREE.BoxGeometry(0.52, 0.78, 0.32); torso.translate(0, 0.78, 0);
+      const legs = new THREE.BoxGeometry(0.42, 0.56, 0.26); legs.translate(0, 0.28, 0);
+      const head = new THREE.SphereGeometry(0.18, 8, 6); head.translate(0, 1.38, 0);
+      const staff = new THREE.CylinderGeometry(0.03, 0.035, 2.15, 6); staff.translate(0, 1.98, 0.36);
+      marshalBodyGeo = mergeSubGeometries([legs, torso, head, staff]);
+    }
+    let marshalClothGeo = envCache?.marshalClothGeo;
+    if (!marshalClothGeo) {
+      const fg = new THREE.PlaneGeometry(1.65, 1.05, 7, 3);
+      fg.translate(0.825, 2.52, 0.36);
+      marshalClothGeo = fg;
+    }
 
-      const fr = this.sampleAt(postS, -(ROAD_HALF_WIDTH + 6.9));
+    const spawnMarshalStation = (postS, sectorId, isStartStand = false) => {
+      const lat = -(ROAD_HALF_WIDTH + (isStartStand ? 4.85 : 6.9));
+      const fr = this.sampleAt(postS, lat);
       const yaw = Math.atan2(fr.tangent.z, fr.tangent.x);
 
       const mGroup = new THREE.Group();
       mGroup.position.copy(fr.pos);
       mGroup.rotation.y = -yaw;
 
-      // FIA White & Safety-Orange Trackside Marshal Hut
-      const booth = new THREE.Mesh(new THREE.BoxGeometry(2.1, 2.2, 1.65), boothMat);
-      booth.position.set(0, 1.1, -0.8);
-      const stripe = new THREE.Mesh(new THREE.BoxGeometry(2.16, 0.42, 1.72), orangeMat);
-      stripe.position.set(0, 0.55, -0.8);
-      const canopy = new THREE.Mesh(new THREE.BoxGeometry(2.45, 0.16, 2.15), this.darkFrameMat);
-      canopy.position.set(0, 2.26, -0.68);
-      mGroup.add(booth, stripe, canopy);
+      if (isStartStand) {
+        // Elevated Start/Finish FIA Starter's Rostrum Platform right beside the Start Gantry!
+        const rostrum = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.55, 2.0), this.darkFrameMat);
+        rostrum.position.set(0, 0.775, -0.35);
+        const rail = new THREE.Mesh(new THREE.BoxGeometry(2.48, 0.92, 0.10), orangeMat);
+        rail.position.set(0, 1.98, 0.62);
+        mGroup.add(rostrum, rail);
+      } else {
+        const booth = new THREE.Mesh(new THREE.BoxGeometry(2.1, 2.2, 1.65), boothMat);
+        booth.position.set(0, 1.1, -0.8);
+        const stripe = new THREE.Mesh(new THREE.BoxGeometry(2.16, 0.42, 1.72), orangeMat);
+        stripe.position.set(0, 0.55, -0.8);
+        const canopy = new THREE.Mesh(new THREE.BoxGeometry(2.45, 0.16, 2.15), this.darkFrameMat);
+        canopy.position.set(0, 2.26, -0.68);
+        mGroup.add(booth, stripe, canopy);
+      }
 
-      // Cantilevered Mast + FIA Digital LED Matrix Flag Panel + Waving Yellow Flag
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.095, 4.7, 8), poleMat);
-      pole.position.set(0, 2.35, 0.25);
-      mGroup.add(pole);
-
+      pole.position.set(-0.85, 2.35, 0.25);
       const ledHousing = new THREE.Mesh(new THREE.BoxGeometry(0.24, 1.05, 1.15), this.darkFrameMat);
-      ledHousing.position.set(0, 4.15, 0.88);
-      const ledMat = new THREE.MeshBasicMaterial({ color: 0x0b3d1e });
+      ledHousing.position.set(-0.85, 4.15, 0.88);
+      const ledMat = new THREE.MeshBasicMaterial({ color: 0x00c853 });
       const ledScreen = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.82, 0.92), ledMat);
-      ledScreen.position.set(0, 4.15, 0.88);
-      mGroup.add(ledHousing, ledScreen);
+      ledScreen.position.set(-0.85, 4.15, 0.88);
+      mGroup.add(pole, ledHousing, ledScreen);
 
-      const flagMat = new THREE.MeshBasicMaterial({ color: 0xffea00, side: THREE.DoubleSide });
-      const flag = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1.05), flagMat);
-      flag.position.set(0, 3.35, 1.08);
-      flag.visible = false;
-      mGroup.add(flag);
+      // Articulated 3D Trackside Marshal waving rippled 3D Signal Flag!
+      const marshalRig = new THREE.Group();
+      marshalRig.position.set(0.45, isStartStand ? 1.55 : 0.0, 0.15);
+
+      const mBody = new THREE.Mesh(marshalBodyGeo, orangeMat);
+      mBody.castShadow = true;
+      const flagMat = this._applyFlagRippleShader(
+        new THREE.MeshStandardMaterial({
+          color: 0x00e676,
+          roughness: 0.38,
+          side: THREE.DoubleSide,
+          emissive: new THREE.Color(0x00a854),
+          emissiveIntensity: 0.28,
+        }),
+        1.65
+      );
+      const flag = new THREE.Mesh(marshalClothGeo, flagMat);
+      flag.castShadow = true;
+      marshalRig.add(mBody, flag);
+      mGroup.add(marshalRig);
 
       this.group.add(mGroup);
-      this.marshalPosts.push({ sectorId: sec.id, flag, flagMat, ledMat });
+      this.marshalPosts.push({
+        sectorId,
+        isStartStand,
+        marshalRig,
+        flag,
+        flagMat,
+        ledMat,
+        checkeredTex,
+      });
+    };
+
+    // Dedicated Start/Finish Flag Marshal Rostrum at s = 2.4 (visible from Showroom #1 Grid Slot!)
+    spawnMarshalStation(2.4, FUJI_SECTORS[0]?.id || 'S1', true);
+
+    for (const sec of FUJI_SECTORS) {
+      const postS = sec.start + 12;
+      if (this.trackDef.tunnelRangeS && postS >= this.trackDef.tunnelRangeS[0] && postS <= this.trackDef.tunnelRangeS[1]) {
+        continue;
+      }
+      if (this.trackDef.overpassRangeS && postS >= this.trackDef.overpassRangeS[0] - 8 && postS <= this.trackDef.overpassRangeS[1] + 8) {
+        continue;
+      }
+      spawnMarshalStation(postS, sec.id, false);
     }
   }
 
   updateMarshalFlags(yellowSectorsSet, vscActive, elapsedSec) {
-    const wave = Math.sin(elapsedSec * 12.0) * 0.38;
     const flashOn = elapsedSec % 0.36 < 0.18;
-    for (const mp of this.marshalPosts) {
-      const isYellow = vscActive || yellowSectorsSet.has(mp.sectorId);
-      mp.flag.visible = isYellow;
-      if (isYellow) {
-        const col = flashOn ? 0xffea00 : 0xff9d00;
+    for (let i = 0; i < this.marshalPosts.length; i++) {
+      const mp = this.marshalPosts[i];
+      const isYellow = Boolean(vscActive || yellowSectorsSet?.has(mp.sectorId));
+      const isCheckered = Boolean(this._checkeredFlagActive && mp.isStartStand);
+
+      mp.flag.visible = true;
+      const swayRate = isYellow || isCheckered ? 9.5 : 4.2;
+      const swayAmp = isYellow || isCheckered ? 0.32 : 0.14;
+      if (mp.marshalRig) {
+        mp.marshalRig.rotation.y = Math.sin(elapsedSec * swayRate + i * 1.3) * swayAmp;
+      }
+
+      if (isCheckered) {
+        if (mp.flagMat.map !== mp.checkeredTex) {
+          mp.flagMat.map = mp.checkeredTex;
+          mp.flagMat.needsUpdate = true;
+        }
+        mp.flagMat.color.setHex(0xffffff);
+        mp.flagMat.emissive?.setHex(0x444444);
+        if (mp.ledMat) mp.ledMat.color.setHex(flashOn ? 0xffffff : 0x00e676);
+      } else if (isYellow) {
+        if (mp.flagMat.map !== null) {
+          mp.flagMat.map = null;
+          mp.flagMat.needsUpdate = true;
+        }
+        const col = flashOn ? 0xffea00 : 0xffab00;
         mp.flagMat.color.setHex(col);
-        mp.flag.rotation.y = wave;
+        mp.flagMat.emissive?.setHex(0x805500);
         if (mp.ledMat) mp.ledMat.color.setHex(flashOn ? 0xffe600 : 0x594300);
-      } else if (mp.ledMat) {
-        mp.ledMat.color.setHex(0x093b1e);
+      } else {
+        if (mp.flagMat.map !== null) {
+          mp.flagMat.map = null;
+          mp.flagMat.needsUpdate = true;
+        }
+        mp.flagMat.color.setHex(0x00e676);
+        mp.flagMat.emissive?.setHex(0x006937);
+        if (mp.ledMat) mp.ledMat.color.setHex(0x00c853);
       }
     }
   }
@@ -4196,6 +5708,7 @@ export class FujiTrack {
   }
 
   setPuddles1982Mode(activeInGrandPrix) {
+    this._forcePuddles1982 = Boolean(activeInGrandPrix);
     for (const p of this.puddles) {
       p.forceActive1982 = activeInGrandPrix;
       p.mesh.visible = activeInGrandPrix;
