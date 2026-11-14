@@ -239,7 +239,11 @@ export class ProceduralAudioEngine {
     const t = Math.max(0, this._num(startTime, this.ctx.currentTime));
     const tc = Math.max(0.002, this._num(timeConstant, 0.025));
     const v = this._num(value, 0);
+    param._lastTarget = v;
     try {
+      if (this.ctx.state !== 'running' || this.ctx.currentTime === 0) {
+        param.value = v;
+      }
       param.setTargetAtTime(v, t, tc);
     } catch (_) {}
   }
@@ -313,7 +317,7 @@ export class ProceduralAudioEngine {
 
     if (this.initialized && this.ctx) {
       const now = this.ctx.currentTime;
-      const targetMaster = this.muted ? 0.0 : 0.62 * this.mixerLevels.master;
+      const targetMaster = this.muted ? 0.0 : 0.52 * this.mixerLevels.master;
       this._setTarget(this.masterGain?.gain, targetMaster, now, 0.03);
       this._setTarget(this.engineBus?.gain, this.mixerLevels.engine, now, 0.03);
       this._setTarget(this.sfxBus?.gain, this.mixerLevels.sfx, now, 0.03);
@@ -364,33 +368,32 @@ export class ProceduralAudioEngine {
       this.ctx = new AudioCtx();
     }
 
-    // Master Broadcast Bus: Subsonic Highpass -> Low-Mid Warmth -> Presence -> Bus Limiter
+    // Master Broadcast Bus: Subsonic Highpass -> Low-Mid Warmth -> Smooth High Roll-Off -> Soft Limiter
     const masterHP = this.ctx.createBiquadFilter();
     masterHP.type = 'highpass';
-    masterHP.frequency.value = 28;
+    masterHP.frequency.value = 30;
     masterHP.Q.value = 0.707;
 
     const masterWarmth = this.ctx.createBiquadFilter();
     masterWarmth.type = 'peaking';
-    masterWarmth.frequency.value = 138;
-    masterWarmth.Q.value = 0.85;
-    masterWarmth.gain.value = 1.4;
+    masterWarmth.frequency.value = 145;
+    masterWarmth.Q.value = 0.75;
+    masterWarmth.gain.value = 1.8;
 
     const masterPresence = this.ctx.createBiquadFilter();
-    masterPresence.type = 'peaking';
-    masterPresence.frequency.value = 2480;
-    masterPresence.Q.value = 0.9;
-    masterPresence.gain.value = 1.3;
+    masterPresence.type = 'highshelf';
+    masterPresence.frequency.value = 1850;
+    masterPresence.gain.value = -3.5;
 
     this.compressor = this.ctx.createDynamicsCompressor();
-    this.compressor.threshold.value = -10.5;
-    this.compressor.knee.value = 12;
-    this.compressor.ratio.value = 4.8;
-    this.compressor.attack.value = 0.003;
-    this.compressor.release.value = 0.12;
+    this.compressor.threshold.value = -12.0;
+    this.compressor.knee.value = 14;
+    this.compressor.ratio.value = 3.5;
+    this.compressor.attack.value = 0.008;
+    this.compressor.release.value = 0.16;
 
     this.masterGain = this.ctx.createGain();
-    this.masterGain.gain.value = this.muted ? 0.0 : 0.62 * this.mixerLevels.master;
+    this.masterGain.gain.value = this.muted ? 0.0 : 0.52 * this.mixerLevels.master;
 
     // Dedicated Mixer Sub-Buses
     this.engineBus = this.ctx.createGain();
@@ -413,13 +416,13 @@ export class ProceduralAudioEngine {
     masterPresence.connect(this.compressor);
     this.compressor.connect(this.ctx.destination);
 
-    // Precompute buffers & physical/arcade PeriodicWaves
+    // Precompute buffers & warm low-order harmonic PeriodicWaves
     this._noisePinkBuf = this._createNoiseBuffer(2.6, true);
     this._noiseWhiteBuf = this._createNoiseBuffer(1.4, false);
     this._noiseLfsrBuf = this._createNamcoLfsrBuffer(1.6);
     this._createPhysicalAndNamcoWaves();
-    this._shaperCurveEngine = this._makeSaturationCurve(2.05, 0.07);
-    this._shaperCurveTransient = this._makeSaturationCurve(1.80, 0.04);
+    this._shaperCurveEngine = this._makeSaturationCurve(1.22, 0.02);
+    this._shaperCurveTransient = this._makeSaturationCurve(1.18, 0.01);
 
     // Build Convolution Reverb Sends, Engine Power Unit, 1982 Namco WSG, Surface & Pad
     this._setupConvolutionReverbBus();
@@ -469,7 +472,7 @@ export class ProceduralAudioEngine {
   setMuted(m) {
     this.muted = !!m;
     if (this.masterGain && this.ctx) {
-      const target = this.muted ? 0.0 : 0.62 * this.mixerLevels.master;
+      const target = this.muted ? 0.0 : 0.52 * this.mixerLevels.master;
       this._setTarget(this.masterGain.gain, target, this.ctx.currentTime, 0.035);
     }
     if (this.muted) {
@@ -515,218 +518,25 @@ export class ProceduralAudioEngine {
   }
 
   _loadSampleBanksAsync() {
-    if (!this.ctx || typeof fetch !== 'function') return Promise.resolve(false);
-    if (this._sampleLoadPromise) return this._sampleLoadPromise;
-
-    this._sampleLoadPromise = Promise.allSettled(
-      SAMPLE_BANK_SPECS.map(async (spec) => {
-        const url = this._resolveAudioUrl(spec.file);
-        const resp = await fetch(url);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${spec.file}`);
-        const buf = await resp.arrayBuffer();
-        const audioBuf = await this._decodeAudioBufferCompat(buf);
-        this.sampleBuffers[spec.key] = audioBuf;
-        return spec.key;
-      })
-    )
-      .then(() => {
-        const hasCoreEngine = Boolean(
-          this.sampleBuffers.engineIdle &&
-          this.sampleBuffers.engineMid &&
-          this.sampleBuffers.engineHigh &&
-          this.sampleBuffers.engineOverrun
-        );
-        if (hasCoreEngine && !this._sampleGraphWired) {
-          this._wireDecodedSampleLoops();
-        } else {
-          this._bindImpulseResponsesIfReady();
-        }
-        this.samplesLoaded = hasCoreEngine;
-        return this.samplesLoaded;
-      })
-      .catch(() => false);
-
+    // Bypassed by design: pure, warm, phase-coherent WebAudio multi-harmonic synthesis
+    // avoids looped .wav pitch-shift droning and metallic ConvolverNode comb-filtering.
+    this.samplesLoaded = false;
+    this._sampleLoadPromise = Promise.resolve(false);
     return this._sampleLoadPromise;
   }
 
   _bindImpulseResponsesIfReady() {
-    if (!this.ctx) return;
-    if (this.cockpitConvolver && this.sampleBuffers.irCockpit && !this.cockpitConvolver.buffer) {
-      try {
-        this.cockpitConvolver.buffer = this.sampleBuffers.irCockpit;
-      } catch (_) {}
-    }
-    if (this.valleyConvolver && this.sampleBuffers.irValley && !this.valleyConvolver.buffer) {
-      try {
-        this.valleyConvolver.buffer = this.sampleBuffers.irValley;
-      } catch (_) {}
-    }
+    // Bypassed: metallic ConvolverNode IRs disabled for warm, comb-filter-free audio.
   }
 
   _wireDecodedSampleLoops() {
-    if (!this.ctx || this._sampleGraphWired) return;
-    this._sampleGraphWired = true;
-    const now = this.ctx.currentTime;
-
-    this._bindImpulseResponsesIfReady();
-
-    // 1. 4-Layer Loop-Locked Engine Sample Bank -> exhaustFormant -> shiftCutGain -> engineGain
-    const makeLoopSrc = (buf, offsetSec = 0) => {
-      const src = this.ctx.createBufferSource();
-      src.buffer = buf;
-      src.loop = true;
-      const safeOff = buf.duration > 0.05 ? offsetSec % buf.duration : 0;
-      src.start(now, safeOff);
-      return src;
-    };
-
-    if (
-      this.sampleBuffers.engineIdle &&
-      this.sampleBuffers.engineMid &&
-      this.sampleBuffers.engineHigh &&
-      this.sampleBuffers.engineOverrun &&
-      this.engineSampleBus
-    ) {
-      this.sampleIdleGain = this.ctx.createGain();
-      this.sampleIdleGain.gain.value = 0.0;
-      this.sampleMidGain = this.ctx.createGain();
-      this.sampleMidGain.gain.value = 0.0;
-      this.sampleHighGain = this.ctx.createGain();
-      this.sampleHighGain.gain.value = 0.0;
-      this.sampleOverrunGain = this.ctx.createGain();
-      this.sampleOverrunGain.gain.value = 0.0;
-
-      this.sampleIdleSrc = makeLoopSrc(this.sampleBuffers.engineIdle, 0.0);
-      this.sampleMidSrc = makeLoopSrc(this.sampleBuffers.engineMid, 0.12);
-      this.sampleHighSrc = makeLoopSrc(this.sampleBuffers.engineHigh, 0.24);
-      this.sampleOverrunSrc = makeLoopSrc(this.sampleBuffers.engineOverrun, 0.36);
-
-      this.sampleIdleSrc.connect(this.sampleIdleGain);
-      this.sampleMidSrc.connect(this.sampleMidGain);
-      this.sampleHighSrc.connect(this.sampleHighGain);
-      this.sampleOverrunSrc.connect(this.sampleOverrunGain);
-
-      this.sampleIdleGain.connect(this.engineSampleBus);
-      this.sampleMidGain.connect(this.engineSampleBus);
-      this.sampleHighGain.connect(this.engineSampleBus);
-      this.sampleOverrunGain.connect(this.engineSampleBus);
-
-      // Smoothly crossfade from procedural startup fallback into Studio Sample-Bank Engine!
-      this._sampleBankBlend = 1.0;
-      this._setTarget(this.engineSampleBus.gain, 1.0, now, 0.055);
-      // Retain subtle 18% phase-coherent sub-fundamental + overhead airbox reinforcement
-      if (this.engineSynthMixGain) {
-        this._setTarget(this.engineSynthMixGain.gain, 0.18, now, 0.055);
-      }
-    }
-
-    // 2. Straight-Cut / Helical Dog-Engagement Gearbox Sample Loop
-    if (this.sampleBuffers.gearboxWhine && this.gearboxGain) {
-      this.gearboxSampleGain = this.ctx.createGain();
-      this.gearboxSampleGain.gain.value = 0.42;
-      this.gearboxSampleSrc = makeLoopSrc(this.sampleBuffers.gearboxWhine, 0.05);
-      const gbSampleFilter = this.ctx.createBiquadFilter();
-      gbSampleFilter.type = 'bandpass';
-      gbSampleFilter.frequency.value = 1650;
-      gbSampleFilter.Q.value = 1.35;
-      this.gearboxSampleSrc.connect(gbSampleFilter);
-      gbSampleFilter.connect(this.gearboxSampleGain);
-      this.gearboxSampleGain.connect(this.gearboxGain);
-      if (this.gearboxSynthGain) {
-        this._setTarget(this.gearboxSynthGain.gain, 0.15, now, 0.05);
-      }
-    }
-
-    // 3. Progressive Tire Grip-Limit Scrub (`65-95%`) & Full Lockup Screech (`>95%`) Loops
-    if (this.sampleBuffers.tireScrub) {
-      this.tireScrubFilter = this.ctx.createBiquadFilter();
-      this.tireScrubFilter.type = 'lowpass';
-      this.tireScrubFilter.frequency.value = 2600;
-      this.tireScrubGain = this.ctx.createGain();
-      this.tireScrubGain.gain.value = 0.0;
-      this.tireScrubSrc = makeLoopSrc(this.sampleBuffers.tireScrub, 0.1);
-      this.tireScrubSrc.connect(this.tireScrubFilter);
-      this.tireScrubFilter.connect(this.tireScrubGain);
-      this.tireScrubGain.connect(this.sfxBus);
-      if (this.reverbSendSfx) this.tireScrubGain.connect(this.reverbSendSfx);
-    }
-
-    if (this.sampleBuffers.tireScreech) {
-      this.tireScreechGain = this.ctx.createGain();
-      this.tireScreechGain.gain.value = 0.0;
-      this.tireScreechSrc = makeLoopSrc(this.sampleBuffers.tireScreech, 0.25);
-      this.tireScreechSrc.connect(this.tireScreechGain);
-      this.tireScreechGain.connect(this.sfxBus);
-      if (this.reverbSendSfx) this.tireScreechGain.connect(this.reverbSendSfx);
-    }
-
-    // 4. Concrete FIA Serrated Sawtooth Kerb Loop
-    if (this.sampleBuffers.curbSawtooth && this.curbGain) {
-      this.curbSampleGain = this.ctx.createGain();
-      this.curbSampleGain.gain.value = 0.92;
-      this.curbSampleSrc = makeLoopSrc(this.sampleBuffers.curbSawtooth, 0.0);
-      this.curbSampleSrc.connect(this.curbSampleGain);
-      this.curbSampleGain.connect(this.curbGain);
-      if (this.curbSynthGain) {
-        this._setTarget(this.curbSynthGain.gain, 0.18, now, 0.04);
-      }
-    }
-
-    // 5. Stereo Binaural Cockpit & Boundary-Layer Aero Wind Loop
-    if (this.sampleBuffers.aeroWind && this.aeroGain) {
-      this.aeroSampleFilter = this.ctx.createBiquadFilter();
-      this.aeroSampleFilter.type = 'lowpass';
-      this.aeroSampleFilter.frequency.value = 2200;
-      this.aeroSampleGain = this.ctx.createGain();
-      this.aeroSampleGain.gain.value = 0.95;
-      this.aeroSampleSrc = makeLoopSrc(this.sampleBuffers.aeroWind, 0.18);
-      this.aeroSampleSrc.connect(this.aeroSampleFilter);
-      this.aeroSampleFilter.connect(this.aeroSampleGain);
-      this.aeroSampleGain.connect(this.aeroGain);
-      if (this.aeroSynthGain) {
-        this._setTarget(this.aeroSynthGain.gain, 0.12, now, 0.05);
-      }
-    }
-
-    // 6. 900C Carbon-Ceramic Slotted Brake Rotor Pad Hiss & Brembo Squeal Loop
-    if (this.sampleBuffers.brakeRotor) {
-      this.brakeRotorSquealFilter = this.ctx.createBiquadFilter();
-      this.brakeRotorSquealFilter.type = 'peaking';
-      this.brakeRotorSquealFilter.frequency.value = 3210;
-      this.brakeRotorSquealFilter.Q.value = 4.2;
-      this.brakeRotorSquealFilter.gain.value = 0.0;
-      this.brakeRotorGain = this.ctx.createGain();
-      this.brakeRotorGain.gain.value = 0.0;
-      this.brakeRotorSrc = makeLoopSrc(this.sampleBuffers.brakeRotor, 0.07);
-      this.brakeRotorSrc.connect(this.brakeRotorSquealFilter);
-      this.brakeRotorSquealFilter.connect(this.brakeRotorGain);
-      this.brakeRotorGain.connect(this.sfxBus);
-      if (this.reverbSendSfx) this.brakeRotorGain.connect(this.reverbSendSfx);
-    }
-
-    // 7. Granular 4,000-Voice Motorsport Grandstand Crowd Swell Loop
-    if (this.sampleBuffers.crowdRoar && this.crowdBedGain) {
-      this.crowdSampleFilter = this.ctx.createBiquadFilter();
-      this.crowdSampleFilter.type = 'lowpass';
-      this.crowdSampleFilter.frequency.value = 2800;
-      this.crowdSamplePanner = this._createPanner(0.0);
-      this.crowdSampleGain = this.ctx.createGain();
-      this.crowdSampleGain.gain.value = 1.0;
-      this.crowdSampleSrc = makeLoopSrc(this.sampleBuffers.crowdRoar, 0.4);
-      this.crowdSampleSrc.connect(this.crowdSampleFilter);
-      this.crowdSampleFilter.connect(this.crowdSamplePanner);
-      this.crowdSamplePanner.connect(this.crowdSampleGain);
-      this.crowdSampleGain.connect(this.crowdBedGain);
-      if (this.crowdSynthGain) {
-        this._setTarget(this.crowdSynthGain.gain, 0.0, now, 0.08);
-      }
-    }
+    // Bypassed: looped .wav buffers disabled in favor of warm multi-harmonic synth.
   }
 
   // --------------------------------------------------------------------------
-  // PHYSICAL OTTO-CYCLE & 1982 NAMCO 4-BIT WSG WAVETABLE BUILDERS
+  // WARM LOW-ORDER HARMONIC & 1982 NAMCO WSG WAVETABLE BUILDERS
   // --------------------------------------------------------------------------
-  _makeSaturationCurve(drive = 2.05, asym = 0.07) {
+  _makeSaturationCurve(drive = 1.22, asym = 0.02) {
     const n = 2048;
     const curve = new Float32Array(n);
     const norm = Math.tanh(drive);
@@ -762,36 +572,35 @@ export class ProceduralAudioEngine {
         b5 = -0.7616 * b5 - white * 0.0168980;
         const out = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
         b6 = white * 0.115926;
-        data[i] = out * 0.11;
+        data[i] = out * 0.10;
       } else {
-        data[i] = white * 0.62;
+        data[i] = white * 0.45;
       }
     }
     return buf;
   }
 
-  // Authentic 1982 Namco 06xx/54xx 15-Bit LFSR Sample-and-Hold Crunchy Explosion Buffer
   _createNamcoLfsrBuffer(seconds = 1.6) {
     const sr = this.ctx.sampleRate;
     const len = Math.floor(sr * seconds);
     const buf = this.ctx.createBuffer(1, len, sr);
     const data = buf.getChannelData(0);
-    const holdSamples = Math.max(2, Math.round(sr / 5800));
+    const holdSamples = Math.max(2, Math.round(sr / 4200));
     let lfsr = 0x7fff;
-    let currentOut = 0.65;
+    let currentOut = 0.45;
     for (let i = 0; i < len; i++) {
       if (i % holdSamples === 0) {
         const bit = ((lfsr >> 0) ^ (lfsr >> 1)) & 1;
         lfsr = ((lfsr >> 1) | (bit << 14)) & 0x7fff;
         const step4Bit = ((lfsr & 0x0f) / 7.5) - 1.0;
-        currentOut = step4Bit * 0.72;
+        currentOut = step4Bit * 0.52;
       }
       data[i] = currentOut;
     }
     return buf;
   }
 
-  _waveFromDiscreteTable(samples, nHarmonics = 16) {
+  _waveFromDiscreteTable(samples, nHarmonics = 8) {
     const N = samples.length;
     const real = new Float32Array(nHarmonics + 1);
     const imag = new Float32Array(nHarmonics + 1);
@@ -812,195 +621,148 @@ export class ProceduralAudioEngine {
   _createPhysicalAndNamcoWaves() {
     if (typeof this.ctx.createPeriodicWave !== 'function') return;
     try {
-      // 1. Physical Otto-Cycle Asymmetric Blowdown Pressure Pulse Waveform (64-pt cycle)
-      const otto64 = new Float32Array(64);
-      for (let i = 0; i < 64; i++) {
-        const u = i / 64;
-        const tr = u / 0.095;
-        const blowdown = tr < 9.0 ? (tr * tr) * Math.exp(2.0 - 2.0 * Math.pow(tr, 0.85)) : 0.0;
-        const scav = -0.36 * Math.exp(-u / 0.28) * Math.sin(TWO_PI * 3.0 * u);
-        otto64[i] = blowdown + scav;
-      }
-      this._ottoPulseWave = this._waveFromDiscreteTable(otto64, 22);
+      // 1. Warm, smooth 6-harmonic engine purr/roar wave (steep 1/k^1.85 roll-off, zero high buzz)
+      const warmReal = new Float32Array([0, 0.0, 0.12, 0.04, 0.02, 0.0, 0.0]);
+      const warmImag = new Float32Array([0, 1.0, 0.44, 0.22, 0.09, 0.04, 0.015]);
+      this._ottoPulseWave = this.ctx.createPeriodicWave(warmReal, warmImag);
 
-      // Uneven V10 collector interference wave
-      const ottoV10 = new Float32Array(64);
-      for (let i = 0; i < 64; i++) {
-        ottoV10[i] = otto64[i] + 0.72 * otto64[(i + 25) % 64];
-      }
-      this._ottoV10Wave = this._waveFromDiscreteTable(ottoV10, 20);
+      const warmFifthReal = new Float32Array([0, 0.0, 0.08, 0.03, 0.0, 0.0]);
+      const warmFifthImag = new Float32Array([0, 1.0, 0.35, 0.14, 0.05, 0.015]);
+      this._ottoV10Wave = this.ctx.createPeriodicWave(warmFifthReal, warmFifthImag);
 
-      // 2. Authentic 1982 Namco Pole Position 32-Step x 4-Bit (0..15) PROM Wavetables!
-      // PROM Wave A: Asymmetric 4-bit stepped cylinder pulse counter
+      // 2. Smooth 8-harmonic 1982 Namco WSG waves (warm arcade tone without piercing alias buzz)
       const promEngineA4Bit = [
         15, 15, 14, 12, 9, 6, 3, 1,
         0, 0, 2, 5, 8, 6, 3, 1,
         13, 15, 13, 10, 7, 4, 2, 0,
         1, 3, 6, 9, 11, 8, 4, 1,
       ].map((v) => (v / 7.5) - 1.0);
-      this._namcoWsgEngineWaveA = this._waveFromDiscreteTable(promEngineA4Bit, 16);
+      this._namcoWsgEngineWaveA = this._waveFromDiscreteTable(promEngineA4Bit, 6);
 
-      // PROM Wave B: 4-bit hollow exhaust divider harmonic
       const promEngineB4Bit = [
         14, 15, 15, 13, 8, 3, 1, 0,
         2, 7, 11, 12, 9, 5, 2, 0,
         0, 2, 6, 10, 13, 11, 7, 3,
         1, 0, 2, 5, 8, 10, 9, 6,
       ].map((v) => (v / 7.5) - 1.0);
-      this._namcoWsgEngineWaveB = this._waveFromDiscreteTable(promEngineB4Bit, 16);
+      this._namcoWsgEngineWaveB = this._waveFromDiscreteTable(promEngineB4Bit, 6);
 
-      // PROM Wave C: 1982 Namco WSG Brass / Heraldry Trumpet 4-bit PROM
       const promBrass4Bit = [
         8, 12, 15, 15, 13, 10, 11, 14,
         15, 12, 7, 3, 1, 0, 2, 6,
         9, 11, 10, 7, 4, 2, 1, 0,
         1, 3, 5, 7, 8, 7, 6, 7,
       ].map((v) => (v / 7.5) - 1.0);
-      this._namcoWsgBrassWave = this._waveFromDiscreteTable(promBrass4Bit, 14);
+      this._namcoWsgBrassWave = this._waveFromDiscreteTable(promBrass4Bit, 6);
 
-      // 25% Duty-Cycle Rectangular Pulse for Sub-Divider
-      const nHarm = 18;
+      const nHarm = 7;
       const pReal = new Float32Array(nHarm);
       const pImag = new Float32Array(nHarm);
-      const duty = 0.25;
+      const duty = 0.35;
       for (let k = 1; k < nHarm; k++) {
-        pReal[k] = (2 / (k * Math.PI)) * Math.sin(TWO_PI * k * duty);
-        pImag[k] = (2 / (k * Math.PI)) * (1 - Math.cos(TWO_PI * k * duty));
+        pReal[k] = (2 / (k * Math.PI)) * Math.sin(TWO_PI * k * duty) / Math.pow(k, 0.55);
+        pImag[k] = (2 / (k * Math.PI)) * (1 - Math.cos(TWO_PI * k * duty)) / Math.pow(k, 0.55);
       }
       this._namcoPulse25Wave = this.ctx.createPeriodicWave(pReal, pImag);
     } catch (_) {}
   }
 
   // --------------------------------------------------------------------------
-  // DUAL CONVOLUTION REVERB ARCHITECTURE (`ir_carbon_cockpit` & `ir_grand_prix_valley`)
+  // CONVOLUTION REVERB BUS (BYPASSED / SILENCED TO PREVENT METALLIC COMBING)
   // --------------------------------------------------------------------------
   _setupConvolutionReverbBus() {
     this.reverbSendEngine = this.ctx.createGain();
-    this.reverbSendEngine.gain.value = 1.0;
+    this.reverbSendEngine.gain.value = 0.0;
 
     this.reverbSendSfx = this.ctx.createGain();
-    this.reverbSendSfx.gain.value = 0.85;
+    this.reverbSendSfx.gain.value = 0.0;
 
     this.cockpitConvolver = this.ctx.createConvolver();
-    this.cockpitConvolver.normalize = true;
-    const cockpitIrLp = this.ctx.createBiquadFilter();
-    cockpitIrLp.type = 'lowpass';
-    cockpitIrLp.frequency.value = 3400;
     this.cockpitWetGain = this.ctx.createGain();
     this.cockpitWetGain.gain.value = 0.0;
 
     this.valleyConvolver = this.ctx.createConvolver();
-    this.valleyConvolver.normalize = true;
-    const valleyPreDelay = this.ctx.createDelay(0.05);
-    valleyPreDelay.delayTime.value = 0.012;
-    const valleyHp = this.ctx.createBiquadFilter();
-    valleyHp.type = 'highpass';
-    valleyHp.frequency.value = 115;
     this.valleyWetGain = this.ctx.createGain();
     this.valleyWetGain.gain.value = 0.0;
-
-    // Cockpit Convolver Chain -> engineBus
-    this.reverbSendEngine.connect(this.cockpitConvolver);
-    this.reverbSendSfx.connect(this.cockpitConvolver);
-    this.cockpitConvolver.connect(cockpitIrLp);
-    cockpitIrLp.connect(this.cockpitWetGain);
-    this.cockpitWetGain.connect(this.engineBus);
-
-    // Grand Prix Valley Slapback Convolver Chain -> sfxBus & engineBus blend
-    this.reverbSendEngine.connect(valleyPreDelay);
-    this.reverbSendSfx.connect(valleyPreDelay);
-    valleyPreDelay.connect(valleyHp);
-    valleyHp.connect(this.valleyConvolver);
-    this.valleyConvolver.connect(this.valleyWetGain);
-    this.valleyWetGain.connect(this.sfxBus);
   }
 
   // --------------------------------------------------------------------------
-  // 2026 STUDIO HYBRID F1 POWER UNIT (4-LAYER SAMPLES + PHYSICAL SYNTH/ERS)
+  // WARM, CLEAN, PUNCHY MULTI-HARMONIC ENGINE SYNTHESIZER (65 Hz - 420 Hz BODY)
   // --------------------------------------------------------------------------
   _setupF1PowerUnit() {
-    // 1. Sample-Bank Mix Bus (receives idle / mid / high / overrun .wav loops once decoded)
     this.engineSampleBus = this.ctx.createGain();
     this.engineSampleBus.gain.value = 0.0;
 
-    // 2. Physical Otto-Cycle PeriodicWave Synth Bank (instant <80ms startup + sub-bass weight)
+    // 1. Sub-Bass Foundation (0.5x fundamental: 32.5 Hz - 210 Hz pure sine chest warmth)
     this.oscSub = this.ctx.createOscillator();
-    this.oscSub.type = 'triangle';
-    this.oscSub.frequency.value = 58;
+    this.oscSub.type = 'sine';
+    this.oscSub.frequency.value = 34;
 
+    // 2. Warm Fundamental Body (1.0x fundamental: 65 Hz - 420 Hz smooth 6-harmonic wave)
     this.oscFund = this.ctx.createOscillator();
     if (this._ottoPulseWave) this.oscFund.setPeriodicWave(this._ottoPulseWave);
-    else this.oscFund.type = 'sawtooth';
-    this.oscFund.frequency.value = 116;
+    else this.oscFund.type = 'triangle';
+    this.oscFund.frequency.value = 68;
 
+    // 3. Smooth 2nd-Harmonic Octave (2.0x fundamental: triangle wave for warm purr)
     this.oscOct = this.ctx.createOscillator();
-    if (this._ottoPulseWave) this.oscOct.setPeriodicWave(this._ottoPulseWave);
-    else this.oscOct.type = 'sawtooth';
-    this.oscOct.detune.value = 4.5;
-    this.oscOct.frequency.value = 232;
+    this.oscOct.type = 'triangle';
+    this.oscOct.detune.value = 2.5;
+    this.oscOct.frequency.value = 136;
 
+    // 4. Warm Musical 5th Growl (1.5x fundamental: pure sine/triangle power-chord warmth)
     this.oscFifth = this.ctx.createOscillator();
-    if (this._ottoV10Wave) this.oscFifth.setPeriodicWave(this._ottoV10Wave);
-    else this.oscFifth.type = 'sawtooth';
-    this.oscFifth.detune.value = -4.0;
-    this.oscFifth.frequency.value = 290;
+    this.oscFifth.type = 'sine';
+    this.oscFifth.detune.value = -2.0;
+    this.oscFifth.frequency.value = 102;
 
+    // 5. High-frequency rasp permanently muted (zero buzz)
     this.oscRasp = this.ctx.createOscillator();
-    if (this._ottoV10Wave) this.oscRasp.setPeriodicWave(this._ottoV10Wave);
-    else this.oscRasp.type = 'sawtooth';
-    this.oscRasp.detune.value = 6.0;
-    this.oscRasp.frequency.value = 348;
+    this.oscRasp.type = 'sine';
+    this.oscRasp.frequency.value = 204;
 
+    // Subtle organic pitch warmth (0.7 cents max)
     this.vibratoOsc = this.ctx.createOscillator();
     this.vibratoOsc.type = 'sine';
-    this.vibratoOsc.frequency.value = 24.5;
+    this.vibratoOsc.frequency.value = 18.0;
     this.vibratoDepth = this.ctx.createGain();
-    this.vibratoDepth.gain.value = 2.8;
+    this.vibratoDepth.gain.value = 0.7;
     this.vibratoOsc.connect(this.vibratoDepth);
     this.vibratoDepth.connect(this.oscFund.detune);
     this.vibratoDepth.connect(this.oscOct.detune);
-    this.vibratoDepth.connect(this.oscFifth.detune);
-    this.vibratoDepth.connect(this.oscRasp.detune);
 
     this.subGain = this.ctx.createGain();
-    this.subGain.gain.value = 0.44;
+    this.subGain.gain.value = 0.48;
     this.fundGain = this.ctx.createGain();
-    this.fundGain.gain.value = 0.46;
+    this.fundGain.gain.value = 0.44;
     this.octGain = this.ctx.createGain();
-    this.octGain.gain.value = 0.30;
+    this.octGain.gain.value = 0.18;
     this.fifthGain = this.ctx.createGain();
-    this.fifthGain.gain.value = 0.14;
+    this.fifthGain.gain.value = 0.08;
     this.raspGain = this.ctx.createGain();
-    this.raspGain.gain.value = 0.04;
+    this.raspGain.gain.value = 0.0;
 
     this.engineSynthMixGain = this.ctx.createGain();
     this.engineSynthMixGain.gain.value = 1.0;
 
-    // Overhead Carbon Airbox Induction Rush
-    const airboxSrc = this.ctx.createBufferSource();
-    airboxSrc.buffer = this._noisePinkBuf;
-    airboxSrc.loop = true;
+    // Airbox noise permanently muted (zero background white/pink noise hiss)
     this.airboxFilter = this.ctx.createBiquadFilter();
-    this.airboxFilter.type = 'bandpass';
-    this.airboxFilter.frequency.value = 950;
-    this.airboxFilter.Q.value = 2.4;
+    this.airboxFilter.type = 'lowpass';
+    this.airboxFilter.frequency.value = 400;
     this.airboxGain = this.ctx.createGain();
     this.airboxGain.gain.value = 0.0;
-    airboxSrc.connect(this.airboxFilter);
-    this.airboxFilter.connect(this.airboxGain);
 
-    // 3. Dynamic Dual-Peaking Exhaust Collector + Carbon Intake Formants
+    // Warm Low-Mid Exhaust Body EQ (no harsh peaking resonance)
     this.exhaustFormant = this.ctx.createBiquadFilter();
-    this.exhaustFormant.type = 'peaking';
-    this.exhaustFormant.frequency.value = 460;
-    this.exhaustFormant.Q.value = 1.55;
-    this.exhaustFormant.gain.value = 4.2;
+    this.exhaustFormant.type = 'lowshelf';
+    this.exhaustFormant.frequency.value = 210;
+    this.exhaustFormant.gain.value = 2.2;
 
     this.intakeFormant = this.ctx.createBiquadFilter();
     this.intakeFormant.type = 'peaking';
-    this.intakeFormant.frequency.value = 1180;
-    this.intakeFormant.Q.value = 1.85;
-    this.intakeFormant.gain.value = 4.5;
+    this.intakeFormant.frequency.value = 420;
+    this.intakeFormant.Q.value = 0.7;
+    this.intakeFormant.gain.value = 0.0;
     this.formantFilter = this.intakeFormant;
 
     const shaper = this.ctx.createWaveShaper();
@@ -1009,17 +771,20 @@ export class ProceduralAudioEngine {
 
     const dcBlock = this.ctx.createBiquadFilter();
     dcBlock.type = 'highpass';
-    dcBlock.frequency.value = 32;
+    dcBlock.frequency.value = 30;
+    dcBlock.Q.value = 0.707;
 
+    // Smooth 12 dB/oct Butterworth Low-Pass Tracking Filter (tracks 3.2x fundamental)
     this.lowpassFilter = this.ctx.createBiquadFilter();
     this.lowpassFilter.type = 'lowpass';
-    this.lowpassFilter.frequency.value = 3600;
-    this.lowpassFilter.Q.value = 0.75;
+    this.lowpassFilter.frequency.value = 320;
+    this.lowpassFilter.Q.value = 0.65;
 
-    const antiHarshShelf = this.ctx.createBiquadFilter();
-    antiHarshShelf.type = 'highshelf';
-    antiHarshShelf.frequency.value = 5600;
-    antiHarshShelf.gain.value = -2.8;
+    // Secondary Warm Roll-Off Filter (eliminates any frequency > 1,350 Hz)
+    const antiHarshLp = this.ctx.createBiquadFilter();
+    antiHarshLp.type = 'lowpass';
+    antiHarshLp.frequency.value = 1350;
+    antiHarshLp.Q.value = 0.55;
 
     this.shiftCutGain = this.ctx.createGain();
     this.shiftCutGain.gain.value = 1.0;
@@ -1027,7 +792,6 @@ export class ProceduralAudioEngine {
     this.engineGain = this.ctx.createGain();
     this.engineGain.gain.value = 0.0;
 
-    // Synth oscillators -> engineSynthMixGain; sub-bass + airbox + sampleBus -> formant chain
     this.oscSub.connect(this.subGain);
     this.oscFund.connect(this.fundGain);
     this.oscOct.connect(this.octGain);
@@ -1041,101 +805,47 @@ export class ProceduralAudioEngine {
 
     this.subGain.connect(this.exhaustFormant);
     this.engineSynthMixGain.connect(this.exhaustFormant);
-    this.engineSampleBus.connect(this.exhaustFormant);
-    this.airboxGain.connect(this.exhaustFormant);
 
     this.exhaustFormant.connect(this.intakeFormant);
     this.intakeFormant.connect(shaper);
     shaper.connect(dcBlock);
     dcBlock.connect(this.lowpassFilter);
-    this.lowpassFilter.connect(antiHarshShelf);
-    antiHarshShelf.connect(this.shiftCutGain);
+    this.lowpassFilter.connect(antiHarshLp);
+    antiHarshLp.connect(this.shiftCutGain);
     this.shiftCutGain.connect(this.engineGain);
 
-    // Dry center + Haas micro-width + Convolution Reverb Send
-    const drySplit = this.ctx.createGain();
-    drySplit.gain.value = 0.88;
-    this.engineGain.connect(drySplit);
-    drySplit.connect(this.engineBus);
+    // Direct phase-coherent connection to engineBus (zero Haas delay comb-filtering!)
+    this.engineGain.connect(this.engineBus);
 
-    if (this.reverbSendEngine) {
-      this.engineGain.connect(this.reverbSendEngine);
-    }
-
-    // Subtle stereo chassis/exhaust width (active even before IR finishes decoding)
-    const delayL = this.ctx.createDelay(0.05);
-    delayL.delayTime.value = 0.0095;
-    const panL = this._createPanner(-0.46);
-    const wetL = this.ctx.createGain();
-    wetL.gain.value = 0.11;
-    this.engineGain.connect(delayL);
-    delayL.connect(panL);
-    panL.connect(wetL);
-    wetL.connect(this.engineBus);
-
-    const delayR = this.ctx.createDelay(0.05);
-    delayR.delayTime.value = 0.0142;
-    const panR = this._createPanner(0.46);
-    const wetR = this.ctx.createGain();
-    wetR.gain.value = 0.11;
-    this.engineGain.connect(delayR);
-    delayR.connect(panR);
-    panR.connect(wetR);
-    wetR.connect(this.engineBus);
-
-    // 4. Hybrid MGU-H Turbo, Silicon-Carbide MGU-K Inverter & Gearbox Whine
+    // Silent nodes retained solely for property compatibility (zero mosquito whine)
     this.oscTurbo = this.ctx.createOscillator();
     this.oscTurbo.type = 'sine';
-    this.oscTurbo.frequency.value = 2100;
+    this.oscTurbo.frequency.value = 400;
     this.turboGain = this.ctx.createGain();
     this.turboGain.gain.value = 0.0;
-    this.oscTurbo.connect(this.turboGain);
-    this.turboGain.connect(this.engineBus);
 
     this.oscMgukInverter = this.ctx.createOscillator();
-    this.oscMgukInverter.type = 'triangle';
-    this.oscMgukInverter.frequency.value = 2200;
+    this.oscMgukInverter.type = 'sine';
+    this.oscMgukInverter.frequency.value = 400;
     this.mgukFilter = this.ctx.createBiquadFilter();
-    this.mgukFilter.type = 'bandpass';
-    this.mgukFilter.frequency.value = 2200;
-    this.mgukFilter.Q.value = 4.6;
+    this.mgukFilter.type = 'lowpass';
+    this.mgukFilter.frequency.value = 400;
     this.mgukGain = this.ctx.createGain();
     this.mgukGain.gain.value = 0.0;
-    this.oscMgukInverter.connect(this.mgukFilter);
-    this.mgukFilter.connect(this.mgukGain);
-    this.mgukGain.connect(this.engineBus);
 
     this.oscGearbox = this.ctx.createOscillator();
-    this.oscGearbox.type = 'triangle';
-    this.oscGearbox.frequency.value = 800;
+    this.oscGearbox.type = 'sine';
+    this.oscGearbox.frequency.value = 300;
     this.oscGearboxHarm = this.ctx.createOscillator();
     this.oscGearboxHarm.type = 'sine';
-    this.oscGearboxHarm.frequency.value = 1600;
-    const gbHarmGain = this.ctx.createGain();
-    gbHarmGain.gain.value = 0.40;
-
+    this.oscGearboxHarm.frequency.value = 600;
     this.gbBand = this.ctx.createBiquadFilter();
-    this.gbBand.type = 'bandpass';
-    this.gbBand.frequency.value = 1350;
-    this.gbBand.Q.value = 2.8;
+    this.gbBand.type = 'lowpass';
+    this.gbBand.frequency.value = 500;
     this.gearboxSynthGain = this.ctx.createGain();
-    this.gearboxSynthGain.gain.value = 1.0;
-
+    this.gearboxSynthGain.gain.value = 0.0;
     this.gearboxGain = this.ctx.createGain();
     this.gearboxGain.gain.value = 0.0;
-
-    this.oscGearbox.connect(this.gbBand);
-    this.oscGearboxHarm.connect(gbHarmGain);
-    gbHarmGain.connect(this.gbBand);
-    this.gbBand.connect(this.gearboxSynthGain);
-    this.gearboxSynthGain.connect(this.gearboxGain);
-    this.gearboxGain.connect(this.engineBus);
-    if (this.reverbSendEngine) {
-      const gbRevSend = this.ctx.createGain();
-      gbRevSend.gain.value = 0.25;
-      this.gearboxGain.connect(gbRevSend);
-      gbRevSend.connect(this.reverbSendEngine);
-    }
 
     this.oscSub.start();
     this.oscFund.start();
@@ -1143,51 +853,37 @@ export class ProceduralAudioEngine {
     this.oscFifth.start();
     this.oscRasp.start();
     this.vibratoOsc.start();
-    airboxSrc.start();
-    this.oscTurbo.start();
-    this.oscMgukInverter.start();
-    this.oscGearbox.start();
-    this.oscGearboxHarm.start();
   }
 
   // --------------------------------------------------------------------------
-  // 1:1 1982 NAMCO POLE POSITION 4-BIT WSG PROM WAVETABLE ENGINE & SKID CHIRP
+  // WARM 1982 NAMCO ARCADE ENGINE (SMOOTH LOW-PASSED RETRO TONE)
   // --------------------------------------------------------------------------
   _setupNamco1982Engine() {
     this.psgOscA = this.ctx.createOscillator();
     if (this._namcoWsgEngineWaveA) this.psgOscA.setPeriodicWave(this._namcoWsgEngineWaveA);
-    else this.psgOscA.type = 'square';
+    else this.psgOscA.type = 'triangle';
     this.psgOscA.frequency.value = 54;
 
     this.psgOscB = this.ctx.createOscillator();
-    if (this._namcoWsgEngineWaveB) this.psgOscB.setPeriodicWave(this._namcoWsgEngineWaveB);
-    else this.psgOscB.type = 'square';
-    this.psgOscB.frequency.value = 81.5;
-    this.psgOscB.detune.value = 6;
+    this.psgOscB.type = 'triangle';
+    this.psgOscB.frequency.value = 81;
+    this.psgOscB.detune.value = 3;
 
     this.psgSubOsc = this.ctx.createOscillator();
-    if (this._namcoPulse25Wave) this.psgSubOsc.setPeriodicWave(this._namcoPulse25Wave);
-    else this.psgSubOsc.type = 'square';
+    this.psgSubOsc.type = 'sine';
     this.psgSubOsc.frequency.value = 27;
 
     const gainA = this.ctx.createGain();
-    gainA.gain.value = 0.54;
+    gainA.gain.value = 0.42;
     const gainB = this.ctx.createGain();
-    gainB.gain.value = 0.35;
+    gainB.gain.value = 0.22;
     const gainSub = this.ctx.createGain();
-    gainSub.gain.value = 0.30;
-
-    // Authentic 1982 upright arcade wooden cabinet 6.5" full-range speaker box EQ
-    const cabPunch = this.ctx.createBiquadFilter();
-    cabPunch.type = 'peaking';
-    cabPunch.frequency.value = 390;
-    cabPunch.Q.value = 1.35;
-    cabPunch.gain.value = 4.2;
+    gainSub.gain.value = 0.36;
 
     this.psgFilter = this.ctx.createBiquadFilter();
     this.psgFilter.type = 'lowpass';
-    this.psgFilter.frequency.value = 2250;
-    this.psgFilter.Q.value = 1.2;
+    this.psgFilter.frequency.value = 820;
+    this.psgFilter.Q.value = 0.65;
 
     this.psgEngineGain = this.ctx.createGain();
     this.psgEngineGain.gain.value = 0.0;
@@ -1195,37 +891,28 @@ export class ProceduralAudioEngine {
     this.psgOscA.connect(gainA);
     this.psgOscB.connect(gainB);
     this.psgSubOsc.connect(gainSub);
-    gainA.connect(cabPunch);
-    gainB.connect(cabPunch);
-    gainSub.connect(cabPunch);
-    cabPunch.connect(this.psgFilter);
+    gainA.connect(this.psgFilter);
+    gainB.connect(this.psgFilter);
+    gainSub.connect(this.psgFilter);
     this.psgFilter.connect(this.psgEngineGain);
     this.psgEngineGain.connect(this.engineBus);
 
-    // 1982 Namco Pole Position FM Square Tire-Chirp Synthesizer (active in isRetroMode!)
     this.retroSkidOsc = this.ctx.createOscillator();
-    if (this._namcoPulse25Wave) this.retroSkidOsc.setPeriodicWave(this._namcoPulse25Wave);
-    else this.retroSkidOsc.type = 'square';
-    this.retroSkidOsc.frequency.value = 1280;
-
+    this.retroSkidOsc.type = 'triangle';
+    this.retroSkidOsc.frequency.value = 420;
     this.retroSkidLfo = this.ctx.createOscillator();
-    this.retroSkidLfo.type = 'square';
-    this.retroSkidLfo.frequency.value = 21.5;
-    const retroLfoDepth = this.ctx.createGain();
-    retroLfoDepth.gain.value = 185;
-    this.retroSkidLfo.connect(retroLfoDepth);
-    retroLfoDepth.connect(this.retroSkidOsc.frequency);
-
-    const retroSkidBp = this.ctx.createBiquadFilter();
-    retroSkidBp.type = 'bandpass';
-    retroSkidBp.frequency.value = 1350;
-    retroSkidBp.Q.value = 2.4;
+    this.retroSkidLfo.type = 'sine';
+    this.retroSkidLfo.frequency.value = 14.0;
+    const retroSkidLp = this.ctx.createBiquadFilter();
+    retroSkidLp.type = 'lowpass';
+    retroSkidLp.frequency.value = 580;
+    retroSkidLp.Q.value = 0.7;
 
     this.retroSkidGain = this.ctx.createGain();
     this.retroSkidGain.gain.value = 0.0;
 
-    this.retroSkidOsc.connect(retroSkidBp);
-    retroSkidBp.connect(this.retroSkidGain);
+    this.retroSkidOsc.connect(retroSkidLp);
+    retroSkidLp.connect(this.retroSkidGain);
     this.retroSkidGain.connect(this.sfxBus);
 
     this.psgOscA.start();
@@ -1236,74 +923,53 @@ export class ProceduralAudioEngine {
   }
 
   _setupSurfaceAndAeroLoops() {
-    // 1. Aero Wind Rush (`aero_wind_cockpit_loop.wav` + procedural fallback) -> sfxBus
-    const aeroSrc = this.ctx.createBufferSource();
-    aeroSrc.buffer = this._noisePinkBuf;
-    aeroSrc.loop = true;
+    // 1. Aero Wind (kept at 0.0 during continuous driving so there is zero constant wind hiss)
     this.aeroFilter = this.ctx.createBiquadFilter();
-    this.aeroFilter.type = 'bandpass';
-    this.aeroFilter.frequency.value = 480;
-    this.aeroFilter.Q.value = 0.72;
+    this.aeroFilter.type = 'lowpass';
+    this.aeroFilter.frequency.value = 340;
     this.aeroSynthGain = this.ctx.createGain();
-    this.aeroSynthGain.gain.value = 1.0;
+    this.aeroSynthGain.gain.value = 0.0;
     this.aeroGain = this.ctx.createGain();
     this.aeroGain.gain.value = 0.0;
-    aeroSrc.connect(this.aeroFilter);
-    this.aeroFilter.connect(this.aeroSynthGain);
-    this.aeroSynthGain.connect(this.aeroGain);
-    this.aeroGain.connect(this.sfxBus);
-    aeroSrc.start();
 
-    // 2. Grass / Gravel Runoff & Procedural Tire Fallback -> sfxBus
+    // 2. Subtle, Soft, Low-Passed Tire Scrub (active ONLY on heavy skids: skidIntensity > 0.65)
     const skidSrc = this.ctx.createBufferSource();
     skidSrc.buffer = this._noisePinkBuf;
     skidSrc.loop = true;
 
     this.skidFilter = this.ctx.createBiquadFilter();
-    this.skidFilter.type = 'bandpass';
-    this.skidFilter.frequency.value = 980;
-    this.skidFilter.Q.value = 3.8;
+    this.skidFilter.type = 'lowpass';
+    this.skidFilter.frequency.value = 520;
+    this.skidFilter.Q.value = 0.707;
 
     this.skidHarmFilter = this.ctx.createBiquadFilter();
-    this.skidHarmFilter.type = 'bandpass';
-    this.skidHarmFilter.frequency.value = 1880;
-    this.skidHarmFilter.Q.value = 4.4;
+    this.skidHarmFilter.type = 'lowpass';
+    this.skidHarmFilter.frequency.value = 480;
+    this.skidHarmFilter.Q.value = 0.707;
     this.skidHarmGain = this.ctx.createGain();
-    this.skidHarmGain.gain.value = 0.35;
-
-    const skidLfo = this.ctx.createOscillator();
-    skidLfo.type = 'sine';
-    skidLfo.frequency.value = 7.5;
-    const skidLfoGain = this.ctx.createGain();
-    skidLfoGain.gain.value = 28;
-    skidLfo.connect(skidLfoGain);
-    skidLfoGain.connect(this.skidFilter.frequency);
-    skidLfo.start();
+    this.skidHarmGain.gain.value = 0.0;
 
     this.skidGain = this.ctx.createGain();
     this.skidGain.gain.value = 0.0;
     skidSrc.connect(this.skidFilter);
-    skidSrc.connect(this.skidHarmFilter);
-    this.skidHarmFilter.connect(this.skidHarmGain);
     this.skidFilter.connect(this.skidGain);
-    this.skidHarmGain.connect(this.skidGain);
     this.skidGain.connect(this.sfxBus);
     skidSrc.start();
 
-    // 3. Serrated FIA Kerb Sawtooth Rumble (`curb_sawtooth_loop.wav` + chassis sub-osc) -> sfxBus
+    // 3. Warm, Soft Low-Frequency Kerb Bass Thrum (65-120 Hz triangle/sine, low-passed at 210 Hz)
     this.curbOsc = this.ctx.createOscillator();
-    this.curbOsc.type = 'sawtooth';
-    this.curbOsc.frequency.value = 120;
+    this.curbOsc.type = 'triangle';
+    this.curbOsc.frequency.value = 85;
     this.curbSubOsc = this.ctx.createOscillator();
-    this.curbSubOsc.type = 'triangle';
-    this.curbSubOsc.frequency.value = 60;
+    this.curbSubOsc.type = 'sine';
+    this.curbSubOsc.frequency.value = 42.5;
     const curbSubGain = this.ctx.createGain();
     curbSubGain.gain.value = 0.65;
 
     this.curbFilter = this.ctx.createBiquadFilter();
     this.curbFilter.type = 'lowpass';
-    this.curbFilter.frequency.value = 340;
-    this.curbFilter.Q.value = 2.0;
+    this.curbFilter.frequency.value = 210;
+    this.curbFilter.Q.value = 0.707;
     this.curbSynthGain = this.ctx.createGain();
     this.curbSynthGain.gain.value = 1.0;
 
@@ -1316,110 +982,27 @@ export class ProceduralAudioEngine {
     this.curbFilter.connect(this.curbSynthGain);
     this.curbSynthGain.connect(this.curbGain);
     this.curbGain.connect(this.sfxBus);
-    if (this.reverbSendSfx) {
-      const curbRev = this.ctx.createGain();
-      curbRev.gain.value = 0.35;
-      this.curbGain.connect(curbRev);
-      curbRev.connect(this.reverbSendSfx);
-    }
     this.curbOsc.start();
     this.curbSubOsc.start();
 
-    // 4. Wet Tarmac Rooster-Tail Spray & Hydroplane Sizzle -> sfxBus
-    const rainSrc = this.ctx.createBufferSource();
-    rainSrc.buffer = this._noisePinkBuf;
-    rainSrc.loop = true;
-    const rainHP = this.ctx.createBiquadFilter();
-    rainHP.type = 'highpass';
-    rainHP.frequency.value = 680;
-    const rainSizzle = this.ctx.createBiquadFilter();
-    rainSizzle.type = 'peaking';
-    rainSizzle.frequency.value = 2150;
-    rainSizzle.Q.value = 1.25;
-    rainSizzle.gain.value = 4.5;
-    const rainLP = this.ctx.createBiquadFilter();
-    rainLP.type = 'lowpass';
-    rainLP.frequency.value = 6800;
+    // 4. Rain, Brake & Continuous Crowd Loops Kept Silent (0.0) to Eliminate Background Noise/Hiss
     this.rainGain = this.ctx.createGain();
     this.rainGain.gain.value = 0.0;
-    rainSrc.connect(rainHP);
-    rainHP.connect(rainSizzle);
-    rainSizzle.connect(rainLP);
-    rainLP.connect(this.rainGain);
-    this.rainGain.connect(this.sfxBus);
-    rainSrc.start();
 
-    // 5. Carbon-Ceramic Brake Rotor Procedural Fallback (until `brake_carbon_rotor_loop.wav` decodes)
-    const brakeSrc = this.ctx.createBufferSource();
-    brakeSrc.buffer = this._noiseWhiteBuf;
-    brakeSrc.loop = true;
     this.brakeSynthFilter = this.ctx.createBiquadFilter();
-    this.brakeSynthFilter.type = 'bandpass';
-    this.brakeSynthFilter.frequency.value = 2950;
-    this.brakeSynthFilter.Q.value = 1.8;
+    this.brakeSynthFilter.type = 'lowpass';
+    this.brakeSynthFilter.frequency.value = 400;
     this.brakeSynthGain = this.ctx.createGain();
     this.brakeSynthGain.gain.value = 0.0;
-    brakeSrc.connect(this.brakeSynthFilter);
-    this.brakeSynthFilter.connect(this.brakeSynthGain);
-    this.brakeSynthGain.connect(this.sfxBus);
-    brakeSrc.start();
-
-    // 6. Stadium Grandstand Crowd Bed (`crowd_grandstand_roar_loop.wav` + startup fallback)
-    const crowdSrcL = this.ctx.createBufferSource();
-    crowdSrcL.buffer = this._noisePinkBuf;
-    crowdSrcL.loop = true;
-    const crowdSrcR = this.ctx.createBufferSource();
-    crowdSrcR.buffer = this._noisePinkBuf;
-    crowdSrcR.loop = true;
 
     this.crowdBedFilterL = this.ctx.createBiquadFilter();
-    this.crowdBedFilterL.type = 'bandpass';
-    this.crowdBedFilterL.frequency.value = 580;
-    this.crowdBedFilterL.Q.value = 1.45;
-
     this.crowdBedFilterR = this.ctx.createBiquadFilter();
-    this.crowdBedFilterR.type = 'bandpass';
-    this.crowdBedFilterR.frequency.value = 1320;
-    this.crowdBedFilterR.Q.value = 1.65;
-
-    const crowdTierPanL = this._createPanner(-0.38);
-    const crowdTierPanR = this._createPanner(0.38);
-
-    const crowdShimmerSrc = this.ctx.createBufferSource();
-    crowdShimmerSrc.buffer = this._noisePinkBuf;
-    crowdShimmerSrc.loop = true;
     this.crowdBedShimmer = this.ctx.createBiquadFilter();
-    this.crowdBedShimmer.type = 'bandpass';
-    this.crowdBedShimmer.frequency.value = 2650;
-    this.crowdBedShimmer.Q.value = 1.35;
-    const crowdShimmerGain = this.ctx.createGain();
-    crowdShimmerGain.gain.value = 0.18;
-
     this.crowdBedPanner = this._createPanner(0.0);
     this.crowdSynthGain = this.ctx.createGain();
-    this.crowdSynthGain.gain.value = 1.0;
+    this.crowdSynthGain.gain.value = 0.0;
     this.crowdBedGain = this.ctx.createGain();
     this.crowdBedGain.gain.value = 0.0;
-
-    crowdSrcL.connect(this.crowdBedFilterL);
-    this.crowdBedFilterL.connect(crowdTierPanL);
-    crowdTierPanL.connect(this.crowdBedPanner);
-
-    crowdSrcR.connect(this.crowdBedFilterR);
-    this.crowdBedFilterR.connect(crowdTierPanR);
-    crowdTierPanR.connect(this.crowdBedPanner);
-
-    crowdShimmerSrc.connect(this.crowdBedShimmer);
-    this.crowdBedShimmer.connect(crowdShimmerGain);
-    crowdShimmerGain.connect(this.crowdBedPanner);
-
-    this.crowdBedPanner.connect(this.crowdSynthGain);
-    this.crowdSynthGain.connect(this.crowdBedGain);
-    this.crowdBedGain.connect(this.sfxBus);
-
-    crowdSrcL.start(0, 0.0);
-    crowdSrcR.start(0, Math.min(1.15, (this._noisePinkBuf?.duration || 2.0) * 0.44));
-    crowdShimmerSrc.start(0, 0.25);
   }
 
   _setupShowroomPad() {
@@ -1468,7 +1051,7 @@ export class ProceduralAudioEngine {
   }
 
   // --------------------------------------------------------------------------
-  // CONTINUOUS REAL-TIME TELEMETRY HYBRID SAMPLE + CONVOLUTION REVERB UPDATE
+  // CONTINUOUS REAL-TIME WARM MULTI-HARMONIC ENGINE & CLEAN SURFACE UPDATE
   // --------------------------------------------------------------------------
   updateContinuous(
     playerCar,
@@ -1499,7 +1082,6 @@ export class ProceduralAudioEngine {
       Boolean(playerCar && playerCar.isRetroMode);
     this.isRetroMode = isRetro;
 
-    // Resolve Cockpit View (`cameraIndex === 2` or boolean/object flag)
     const cockpitMode =
       isCockpitView === true ||
       isCockpitView === 2 ||
@@ -1511,747 +1093,212 @@ export class ProceduralAudioEngine {
       Boolean(playerCar && (playerCar.isCockpitView || playerCar.cameraIndex === 2));
     this._isCockpitView = cockpitMode;
 
-    // Crossfade Showroom Paddock Pad vs Live Race Acoustics
+    // Crossfade Showroom Paddock Pad vs Live Race Audio
     if (this.menuPadGain) {
-      this._setTarget(this.menuPadGain.gain, inShowroomMenu ? 0.062 : 0.0, now, 0.28);
+      this._setTarget(this.menuPadGain.gain, inShowroomMenu ? 0.055 : 0.0, now, 0.28);
     }
+
+    // Keep all background noise & convolver sends permanently 0.0 (zero drone/hiss)
+    if (this.cockpitWetGain) this._setTarget(this.cockpitWetGain.gain, 0.0, now, 0.05);
+    if (this.valleyWetGain) this._setTarget(this.valleyWetGain.gain, 0.0, now, 0.05);
+    if (this.turboGain) this._setTarget(this.turboGain.gain, 0.0, now, 0.04);
+    if (this.mgukGain) this._setTarget(this.mgukGain.gain, 0.0, now, 0.04);
+    if (this.gearboxGain) this._setTarget(this.gearboxGain.gain, 0.0, now, 0.04);
+    if (this.aeroGain) this._setTarget(this.aeroGain.gain, 0.0, now, 0.04);
+    if (this.rainGain) this._setTarget(this.rainGain.gain, 0.0, now, 0.04);
+    if (this.brakeSynthGain) this._setTarget(this.brakeSynthGain.gain, 0.0, now, 0.04);
+    if (this.crowdBedGain) this._setTarget(this.crowdBedGain.gain, 0.0, now, 0.06);
 
     if (!isRacingOrQuali || !playerCar || playerCar.exploded) {
       this._setTarget(this.engineGain.gain, 0.0, now, 0.045);
       this._setTarget(this.psgEngineGain.gain, 0.0, now, 0.045);
-      this._setTarget(this.turboGain.gain, 0.0, now, 0.045);
-      if (this.mgukGain) this._setTarget(this.mgukGain.gain, 0.0, now, 0.045);
-      this._setTarget(this.gearboxGain.gain, 0.0, now, 0.045);
-      this._setTarget(this.aeroGain.gain, 0.0, now, 0.055);
-      this._setTarget(this.skidGain.gain, 0.0, now, 0.045);
-      if (this.tireScrubGain) this._setTarget(this.tireScrubGain.gain, 0.0, now, 0.04);
-      if (this.tireScreechGain) this._setTarget(this.tireScreechGain.gain, 0.0, now, 0.04);
+      this._setTarget(this.skidGain.gain, 0.0, now, 0.04);
       if (this.retroSkidGain) this._setTarget(this.retroSkidGain.gain, 0.0, now, 0.035);
-      if (this.brakeRotorGain) this._setTarget(this.brakeRotorGain.gain, 0.0, now, 0.045);
-      if (this.brakeSynthGain) this._setTarget(this.brakeSynthGain.gain, 0.0, now, 0.045);
       this._setTarget(this.curbGain.gain, 0.0, now, 0.025);
-      this._setTarget(this.rainGain.gain, 0.0, now, 0.075);
-      if (this.cockpitWetGain) this._setTarget(this.cockpitWetGain.gain, 0.0, now, 0.08);
-      if (this.valleyWetGain) this._setTarget(this.valleyWetGain.gain, 0.0, now, 0.08);
-      if (this.crowdBedGain && nowMs - this._lastExplicitCrowdUpdateMs > 180) {
-        this._setTarget(this.crowdBedGain.gain, 0.0, now, 0.12);
-      }
       this._turboSpool = 0;
       return;
     }
 
-    const rpm = Math.max(3200, Math.min(14600, this._num(playerCar.rpm, 3800)));
-    const rpmNorm = Math.max(0, Math.min(1.08, (rpm - 3200) / (13500 - 3200)));
+    const rpm = Math.max(3200, Math.min(14200, this._num(playerCar.rpm, 3800)));
+    const rpmNorm = Math.max(0, Math.min(1.0, (rpm - 3200) / (13500 - 3200)));
     const throttle = Math.max(0, Math.min(1, this._num(playerCar.throttleInput, 0)));
-    const brake = Math.max(0, Math.min(1, Math.max(
-      this._num(playerCar.brakeInput, 0),
-      this._num(playerCar.assistBrakeApplied, 0)
-    )));
     const speedKmh = Math.max(0, this._num(playerCar.speedKmh, 0));
     const speedNorm = Math.min(1, speedKmh / 320);
-    const moisture = Math.max(0, Math.min(1, this._num(moistureW, 0)));
     const overRev = this._num(playerCar.overRevTimer, 0) > 0;
 
-    // Smooth intake manifold load envelope (fast throttle-on bite, crisp butterfly vacuum snap on lift-off)
-    const loadAlpha = throttle > this._manifoldLoad ? Math.min(1, dtSec * 18.0) : Math.min(1, dtSec * 11.5);
+    // Smooth intake manifold load envelope
+    const loadAlpha = throttle > this._manifoldLoad ? Math.min(1, dtSec * 14.0) : Math.min(1, dtSec * 8.5);
     this._manifoldLoad += (throttle - this._manifoldLoad) * loadAlpha;
-
-    // Off-throttle high-RPM MGU-H waste-gate flutter & extra unburnt-fuel exhaust crackle accent
-    if (!isRetro && this._prevThrottle > 0.62 && throttle < 0.18 && rpm > 8400 && speedKmh > 95) {
-      if (nowMs - this._lastCrackleMs > 480) {
-        this._lastCrackleMs = nowMs;
-        if (rpm > 9400) {
-          this.playWastegateFlutter(Math.min(1.0, (rpm - 8800) / 4000));
-        }
-        this.playOverrunCrackles(rpm > 10000 ? 3 : 2);
-      }
-    }
     this._prevThrottle = throttle;
 
-    // Automatic side-by-side slingshot pass-by Doppler whoosh when pulling out of a close draft tow
-    const inSlip = !!playerCar.inSlipstream || this._num(playerCar.slipstreamFactor, 0) > 0.55;
-    if (this._prevSlipstream && !inSlip && speedKmh > 175 && throttle > 0.5) {
-      const sidePan = playerCar.steerInput ? Math.sign(playerCar.steerInput) * 0.72 : null;
-      this.playOvertakeWhoosh(Math.max(38, speedKmh * 0.22), sidePan);
-    }
-    this._prevSlipstream = inSlip;
-
-    const slipBoost = playerCar.inSlipstream ? 1.024 : 1.0;
-    const load = 0.34 + this._manifoldLoad * 0.66 + (overRev ? 0.20 : 0);
+    const slipBoost = playerCar.inSlipstream ? 1.015 : 1.0;
+    const load = 0.35 + this._manifoldLoad * 0.65;
 
     // ------------------------------------------------------------------------
-    // 1. DUAL CONVOLUTION REVERB VIEW ROUTING (`ir_carbon_cockpit` vs `ir_grand_prix_valley`)
-    // ------------------------------------------------------------------------
-    if (this.cockpitWetGain && this.valleyWetGain) {
-      if (isRetro) {
-        this._setTarget(this.cockpitWetGain.gain, 0.0, now, 0.05);
-        this._setTarget(this.valleyWetGain.gain, 0.0, now, 0.05);
-      } else if (cockpitMode) {
-        // Tight early-reflection 3K carbon survival cell & helmet space + faint exterior bleed
-        this._setTarget(this.cockpitWetGain.gain, 0.28, now, 0.06);
-        this._setTarget(this.valleyWetGain.gain, 0.045, now, 0.06);
-      } else {
-        // Outdoor Grand Prix pit-wall & valley slapback echo (boosted near concrete grandstands!)
-        const valleySend = 0.19 + this._nearGrandstandCached * 0.14;
-        this._setTarget(this.cockpitWetGain.gain, 0.0, now, 0.06);
-        this._setTarget(this.valleyWetGain.gain, valleySend, now, 0.06);
-      }
-    }
-
-    // ------------------------------------------------------------------------
-    // 2A. 1982 NAMCO 4-BIT WSG PROM ARCADE ENGINE (`isRetroMode`)
+    // 1A. WARM 1982 NAMCO ARCADE ENGINE (`isRetroMode`)
     // ------------------------------------------------------------------------
     if (isRetro) {
-      const rawPsg = (42 + rpmNorm * 198 + (overRev ? 42 : 0)) * slipBoost;
-      // Authentic Namco WSG frequency-accumulator register quantization
-      const psgBase = Math.round(rawPsg * 2.0) * 0.5;
-      this._setTarget(this.psgOscA.frequency, this._clampFreq(psgBase), now, 0.012);
-      this._setTarget(
-        this.psgOscB.frequency,
-        this._clampFreq(psgBase * (overRev ? 1.66 : 1.502)),
-        now,
-        0.012
-      );
-      this._setTarget(this.psgSubOsc.frequency, this._clampFreq(psgBase * 0.5), now, 0.012);
+      const psgBase = (52 + rpmNorm * 168) * slipBoost;
+      this._setTarget(this.psgOscA.frequency, this._clampFreq(psgBase), now, 0.018);
+      this._setTarget(this.psgOscB.frequency, this._clampFreq(psgBase * 1.5), now, 0.018);
+      this._setTarget(this.psgSubOsc.frequency, this._clampFreq(psgBase * 0.5), now, 0.018);
       this._setTarget(
         this.psgFilter.frequency,
-        this._clampFreq(1200 + rpmNorm * 1500 * (0.55 + throttle * 0.45)),
+        this._clampFreq(psgBase * 3.2 * (0.75 + 0.25 * load)),
         now,
-        0.018
+        0.024
       );
-      this._setTarget(this.psgEngineGain.gain, 0.17 + load * 0.125, now, 0.02);
-
-      // Silence 2026 sample/hybrid nodes cleanly
+      this._setTarget(this.psgEngineGain.gain, 0.14 + load * 0.09, now, 0.025);
       this._setTarget(this.engineGain.gain, 0.0, now, 0.03);
-      this._setTarget(this.turboGain.gain, 0.0, now, 0.03);
-      if (this.mgukGain) this._setTarget(this.mgukGain.gain, 0.0, now, 0.03);
-      this._setTarget(this.gearboxGain.gain, 0.0, now, 0.03);
-      if (this.tireScrubGain) this._setTarget(this.tireScrubGain.gain, 0.0, now, 0.03);
-      if (this.tireScreechGain) this._setTarget(this.tireScreechGain.gain, 0.0, now, 0.03);
-      if (this.brakeRotorGain) this._setTarget(this.brakeRotorGain.gain, 0.0, now, 0.03);
-      if (this.brakeSynthGain) this._setTarget(this.brakeSynthGain.gain, 0.0, now, 0.03);
     } else {
       // ----------------------------------------------------------------------
-      // 2B. 2026 STUDIO 4-LAYER ENGINE `.WAV` CROSSFADE + PHYSICAL RESONATORS
+      // 1B. WARM LOW-PASS FILTERED SUB-BASS + SMOOTH HARMONIC ENGINE PURR/ROAR
+      //     (65 Hz - 420 Hz Fundamental Body + 12 dB/oct Filter at 3.2x f0)
       // ----------------------------------------------------------------------
       this._setTarget(this.psgEngineGain.gain, 0.0, now, 0.03);
 
-      // Drive 4 loop-locked engine `.wav` AudioBufferSourceNodes by exact RPM ratio & throttle load!
-      if (
-        this.sampleIdleSrc &&
-        this.sampleMidSrc &&
-        this.sampleHighSrc &&
-        this.sampleOverrunSrc
-      ) {
-        const rateIdle = this._clampRate((rpm / 3500) * slipBoost, 0.52, 2.55);
-        const rateMid = this._clampRate((rpm / 8500) * slipBoost, 0.38, 1.75);
-        const rateHigh = this._clampRate((rpm / 13500) * slipBoost, 0.46, 1.22);
-        const rateOverrun = this._clampRate((rpm / 8500) * slipBoost, 0.40, 1.72);
+      // Warm fundamental frequency spans 65 Hz (idle) -> 420 Hz (13,500 RPM redline)
+      const f0 = (65 + Math.pow(rpmNorm, 0.96) * 355) * slipBoost;
+      this._setTarget(this.oscSub.frequency, this._clampFreq(f0 * 0.5), now, 0.020);
+      this._setTarget(this.oscFund.frequency, this._clampFreq(f0), now, 0.020);
+      this._setTarget(this.oscOct.frequency, this._clampFreq(f0 * 2.0), now, 0.020);
+      this._setTarget(this.oscFifth.frequency, this._clampFreq(f0 * 1.5), now, 0.020);
+      this._setTarget(this.oscRasp.frequency, this._clampFreq(f0 * 2.0), now, 0.020);
 
-        this._setTarget(this.sampleIdleSrc.playbackRate, rateIdle, now, 0.015);
-        this._setTarget(this.sampleMidSrc.playbackRate, rateMid, now, 0.015);
-        this._setTarget(this.sampleHighSrc.playbackRate, rateHigh, now, 0.015);
-        this._setTarget(this.sampleOverrunSrc.playbackRate, rateOverrun, now, 0.015);
-
-        // Equal-power RPM band crossfade: Idle (3.5k) <-> Mid Bark (8.5k) <-> High Scream (13.5k)
-        const uIdleToMid = this._smooth01((rpm - 4100) / (7700 - 4100));
-        const uMidToHigh = this._smooth01((rpm - 9100) / (12500 - 9100));
-
-        const wIdleRpm = Math.cos(uIdleToMid * HALF_PI);
-        const wMidRpm = Math.sin(uIdleToMid * HALF_PI) * Math.cos(uMidToHigh * HALF_PI);
-        const wHighRpm = Math.sin(uMidToHigh * HALF_PI);
-
-        // Separate On-Throttle Induction Bark from Off-Throttle Overrun Crackle/Vacuum!
-        const overrunBlend =
-          (1.0 - this._smooth01(this._manifoldLoad / 0.56)) *
-          this._smooth01((rpm - 4300) / 3500) *
-          this._smooth01((speedKmh - 32) / 55);
-
-        const onThrottleDrive = (1.0 - overrunBlend * 0.72) * (0.48 + 0.52 * this._manifoldLoad);
-
-        this._setTarget(
-          this.sampleIdleGain.gain,
-          wIdleRpm * (0.82 + 0.22 * this._manifoldLoad),
-          now,
-          0.022
-        );
-        this._setTarget(
-          this.sampleMidGain.gain,
-          wMidRpm * onThrottleDrive * 1.05,
-          now,
-          0.020
-        );
-        this._setTarget(
-          this.sampleHighGain.gain,
-          wHighRpm * onThrottleDrive * (0.80 + 0.28 * this._manifoldLoad),
-          now,
-          0.020
-        );
-        this._setTarget(
-          this.sampleOverrunGain.gain,
-          overrunBlend * 0.88,
-          now,
-          0.024
-        );
-      }
-
-      // Phase-coherent sub-fundamental + Physical Otto fallback tracking
-      const f0 = (114 + Math.pow(Math.min(1.1, rpmNorm), 1.03) * 336) * slipBoost;
-      this._setTarget(this.oscSub.frequency, this._clampFreq(f0 * 0.5), now, 0.016);
-      this._setTarget(this.oscFund.frequency, this._clampFreq(f0), now, 0.016);
-      this._setTarget(this.oscOct.frequency, this._clampFreq(f0 * 2.0), now, 0.016);
-      this._setTarget(
-        this.oscFifth.frequency,
-        this._clampFreq(f0 * (overRev ? 2.66 : 2.5)),
-        now,
-        0.016
-      );
-      this._setTarget(this.oscRasp.frequency, this._clampFreq(f0 * 3.0), now, 0.016);
-
-      const v10Bloom = Math.max(0, Math.min(1, (rpm - 7200) / 5200));
-      const subChestScale = this.samplesLoaded ? 0.22 : 0.44;
+      // Deep sub-bass purr at low/mid RPM, smooth harmonic roar under throttle load
       this._setTarget(
         this.subGain.gain,
-        subChestScale * (1.0 - v10Bloom * 0.22) * (cockpitMode ? 1.15 : 1.0),
+        0.48 * (1.0 - rpmNorm * 0.18),
         now,
-        0.024
+        0.028
       );
-      this._setTarget(this.fifthGain.gain, 0.08 + v10Bloom * (0.20 + throttle * 0.06), now, 0.022);
       this._setTarget(
-        this.raspGain.gain,
-        (0.02 + v10Bloom * throttle * 0.09) * (cockpitMode ? 0.82 : 1.0),
+        this.fundGain.gain,
+        0.42 + this._manifoldLoad * 0.08,
         now,
-        0.022
+        0.025
       );
+      this._setTarget(
+        this.octGain.gain,
+        0.15 + this._manifoldLoad * 0.09,
+        now,
+        0.025
+      );
+      this._setTarget(
+        this.fifthGain.gain,
+        0.06 + this._manifoldLoad * 0.08,
+        now,
+        0.025
+      );
+      this._setTarget(this.raspGain.gain, 0.0, now, 0.025);
+      this._setTarget(this.airboxGain.gain, 0.0, now, 0.025);
+      this._setTarget(this.vibratoDepth.gain, overRev ? 1.8 : 0.7, now, 0.03);
 
-      // Overhead Carbon Airbox Induction Rush (prominent right above driver's helmet!)
-      this._setTarget(this.airboxFilter.frequency, this._clampFreq(580 + rpmNorm * 1820), now, 0.025);
-      this._setTarget(
-        this.airboxGain.gain,
-        this._manifoldLoad * (0.032 + rpmNorm * 0.095) * (cockpitMode ? 1.45 : 0.90),
-        now,
-        0.026
-      );
-      const onLimiter = rpm > 12850 && throttle > 0.65;
-      this._setTarget(this.vibratoDepth.gain, overRev || onLimiter ? 9.5 : 2.6, now, 0.025);
+      // Warm low-shelf body EQ (180-240 Hz warmth, zero nasal mid-high peaking)
+      this._setTarget(this.exhaustFormant.frequency, 210, now, 0.03);
+      this._setTarget(this.exhaustFormant.gain, 2.2, now, 0.03);
+      this._setTarget(this.intakeFormant.gain, 0.0, now, 0.03);
 
-      // Dynamic Exhaust & Intake Formant Sculpting + Helmet Shell Acoustic Filtering
-      this._setTarget(
-        this.exhaustFormant.frequency,
-        this._clampFreq(340 + rpmNorm * 660 * load),
-        now,
-        0.024
-      );
-      this._setTarget(
-        this.exhaustFormant.gain,
-        this.samplesLoaded ? (cockpitMode ? 4.4 : 3.2) : (cockpitMode ? 7.0 : 5.8),
-        now,
-        0.03
-      );
-      this._setTarget(
-        this.intakeFormant.frequency,
-        this._clampFreq(860 + rpmNorm * 1920 * load),
-        now,
-        0.024
-      );
-      this._setTarget(
-        this.intakeFormant.gain,
-        this.samplesLoaded ? (2.2 + this._manifoldLoad * 2.6) : 5.6,
-        now,
-        0.03
-      );
-
-      const helmetShellLpMul = cockpitMode ? 0.78 : 1.0;
-      const baseCut = this.samplesLoaded ? 2150 : 1280;
-      const spanCut = this.samplesLoaded ? 6800 : 4400;
+      // Smooth 12 dB/oct low-pass tracking filter at 3.2x fundamental (208 Hz -> 1,344 Hz max)
+      const trackCutoff = f0 * 3.2 * (0.78 + 0.22 * this._manifoldLoad) * (cockpitMode ? 0.92 : 1.0);
       this._setTarget(
         this.lowpassFilter.frequency,
-        this._clampFreq((baseCut + rpmNorm * spanCut * (0.38 + this._manifoldLoad * 0.62)) * helmetShellLpMul),
+        this._clampFreq(Math.min(1344, Math.max(195, trackCutoff))),
         now,
-        0.022
+        0.025
       );
 
-      // Authentic 80 km/h FIA Pit-Lane Limiter Ignition Stutter
+      // Gentle pit-lane limiter modulation when in pit lane
       const pitLimiterActive =
         playerCar.inPitLane &&
         playerCar.pitPhase !== 'STOPPED' &&
         speedKmh >= 76.5 &&
         throttle > 0.2;
-      const pitMod = pitLimiterActive ? (Math.sin(now * 72.0) > 0 ? 1.08 : 0.54) : 1.0;
-      const baseEngGain = this.samplesLoaded ? (0.24 + load * 0.21) : (0.165 + load * 0.165);
+      const pitMod = pitLimiterActive ? (Math.sin(now * 52.0) > 0 ? 1.02 : 0.72) : 1.0;
+
+      // Balanced, pleasant engine gain suitable for hours of comfortable listening
+      const baseEngGain = 0.15 + load * 0.125;
       this._setTarget(
         this.engineGain.gain,
-        baseEngGain * pitMod * (cockpitMode ? 0.94 : 1.0),
+        baseEngGain * pitMod * (cockpitMode ? 0.95 : 1.0),
         now,
-        0.022
-      );
-
-      // 3. Hybrid MGU-H Turbo, Silicon-Carbide MGU-K Inverter & Spur-Gear Transmission Whine
-      const targetSpool = throttle * (0.32 + 0.68 * Math.min(1, rpmNorm));
-      const spoolRate = targetSpool > this._turboSpool ? 0.16 : 0.07;
-      this._turboSpool += (targetSpool - this._turboSpool) * spoolRate;
-
-      this._setTarget(
-        this.oscTurbo.frequency,
-        this._clampFreq(1860 + rpmNorm * 2550 + this._turboSpool * 540),
-        now,
-        0.038
-      );
-      this._setTarget(
-        this.turboGain.gain,
-        (0.005 + this._turboSpool * 0.018) * (cockpitMode ? 1.25 : 0.85),
-        now,
-        0.038
-      );
-
-      if (this.oscMgukInverter && this.mgukFilter && this.mgukGain) {
-        const regenBrake = brake > 0.20 && speedKmh > 52 ? brake : 0.0;
-        const ersLoad = Math.max(throttle * 0.92, regenBrake * 0.96);
-        const mgukFreq = regenBrake > throttle
-          ? 1520 + speedNorm * 3080
-          : 1640 + rpmNorm * 2820 + throttle * 520;
-        this._setTarget(this.oscMgukInverter.frequency, this._clampFreq(mgukFreq), now, 0.026);
-        this._setTarget(this.mgukFilter.frequency, this._clampFreq(mgukFreq), now, 0.026);
-        const mgukMotionGate = Math.min(1, speedKmh / 42);
-        const mgukTargetGain = cockpitMode
-          ? mgukMotionGate * (0.012 + ersLoad * 0.030)
-          : mgukMotionGate * (0.002 + ersLoad * 0.006);
-        this._setTarget(this.mgukGain.gain, mgukTargetGain, now, 0.03);
-      }
-
-      // Straight-Cut / Helical Dog-Ring Gearbox Whine (`gearbox_spur_whine_loop.wav` + harmonic)
-      const drivetrainLoad = 0.42 + 0.58 * Math.max(this._manifoldLoad, brake * 0.82);
-      if (this.gearboxSampleSrc) {
-        const gbRate = this._clampRate(0.42 + (speedKmh / 200) * 0.96, 0.35, 2.25);
-        this._setTarget(this.gearboxSampleSrc.playbackRate, gbRate, now, 0.024);
-      }
-      const gbFreq = cockpitMode ? 800 + speedNorm * 2600 : 420 + speedNorm * 1980;
-      this._setTarget(this.oscGearbox.frequency, this._clampFreq(gbFreq), now, 0.025);
-      this._setTarget(this.oscGearboxHarm.frequency, this._clampFreq(gbFreq * 2.0), now, 0.025);
-      this._setTarget(this.gbBand.frequency, this._clampFreq(gbFreq * 1.05), now, 0.028);
-      this._setTarget(this.gbBand.Q, cockpitMode ? 4.0 : 2.6, now, 0.03);
-      const gbTargetGain = cockpitMode
-        ? speedNorm * (0.055 + 0.055 * drivetrainLoad)
-        : speedNorm * (0.020 + 0.024 * drivetrainLoad);
-      this._setTarget(this.gearboxGain.gain, gbTargetGain, now, 0.032);
-    }
-
-    // ------------------------------------------------------------------------
-    // 4. HIGH-SPEED BINAURAL AERO WIND RUSH (`aero_wind_cockpit_loop.wav`)
-    // ------------------------------------------------------------------------
-    const aeroNorm = Math.max(0, Math.min(1, (speedKmh - (cockpitMode ? 85 : 108)) / (cockpitMode ? 220 : 208)));
-    const slipDuck = playerCar.inSlipstream ? 0.78 : 1.0;
-    if (this.aeroSampleSrc && this.aeroSampleFilter) {
-      const aeroRate = this._clampRate(0.72 + speedNorm * 0.62 + (playerCar.inSlipstream ? -0.08 : 0), 0.55, 1.55);
-      this._setTarget(this.aeroSampleSrc.playbackRate, aeroRate, now, 0.045);
-      this._setTarget(
-        this.aeroSampleFilter.frequency,
-        this._clampFreq(cockpitMode ? 980 + aeroNorm * 2600 : 760 + aeroNorm * 1900),
-        now,
-        0.045
+        0.025
       );
     }
-    const aeroCenter = cockpitMode
-      ? 490 + aeroNorm * 1060 + (playerCar.inSlipstream ? -130 : 0)
-      : 390 + aeroNorm * 740 + (playerCar.inSlipstream ? -115 : 0);
-    this._setTarget(this.aeroFilter.frequency, this._clampFreq(aeroCenter), now, 0.045);
-    const aeroTargetGain = isRetro
-      ? aeroNorm * aeroNorm * 0.05
-      : (cockpitMode ? Math.pow(aeroNorm, 1.50) * 0.25 * slipDuck : aeroNorm * aeroNorm * 0.165 * slipDuck);
-    this._setTarget(this.aeroGain.gain, aeroTargetGain, now, 0.048);
 
     // ------------------------------------------------------------------------
-    // 5. PROGRESSIVE TIRE GRIP-LIMIT AUDIO (`65% -> 95%` GROAN, `>95%` SCREECH)
-    //    + WHEEL-FREQUENCY `tireFlatSpot` THUMP + CARBON BRAKE ROTOR SQUEAL
+    // 2. SUBTLE, SOFT, LOW-PASSED TIRE SCRUB ONLY ON HEAVY SKIDS (> 0.65)
     // ------------------------------------------------------------------------
     const skidRaw = Math.max(0, this._num(playerCar.skidIntensity, 0));
-    let peakTireSlipUtil = 0;
-    let peakBrakeLockRatio = 0;
-    if (playerCar.tires && typeof playerCar.tires === 'object') {
-      const cKeys = ['FL', 'FR', 'RL', 'RR'];
-      for (let i = 0; i < 4; i++) {
-        const t = playerCar.tires[cKeys[i]];
-        if (t) {
-          const alphaNorm = Math.abs(this._num(t.slipAngleRad, 0)) / 0.115;
-          const kappaVal = this._num(t.slipRatio, 0);
-          const kappaNorm = Math.abs(kappaVal) / 0.145;
-          peakTireSlipUtil = Math.max(peakTireSlipUtil, Math.hypot(alphaNorm, kappaNorm));
-          if (kappaVal < -0.14) {
-            peakBrakeLockRatio = Math.max(peakBrakeLockRatio, (-kappaVal - 0.14) / 0.22);
-          }
-        }
-      }
-    }
-    const explicitGripUtil = Math.max(
-      this._num(playerCar.gripUtilization, 0),
-      this._num(playerCar.lateralGripUtil, 0),
-      Math.abs(this._num(playerCar.latG, 0)) / 4.25
-    );
-    const skidMappedUtil = skidRaw > 0.02 ? 0.62 + skidRaw * 0.48 : 0;
-    const gripUtil = speedKmh > 22
-      ? Math.max(peakTireSlipUtil, explicitGripUtil, skidMappedUtil)
-      : 0;
+    const heavySkid = speedKmh > 28 && skidRaw > 0.65
+      ? this._smooth01((skidRaw - 0.65) / 0.35)
+      : 0.0;
 
     if (isRetro) {
-      // Authentic 1982 Namco Arcade FM Square Tire-Chirp on hard slides + grass buzz
-      if (playerCar.onGrass && speedKmh > 18) {
-        this._setTarget(this.skidFilter.frequency, 310, now, 0.025);
-        this._setTarget(this.skidFilter.Q, 1.4, now, 0.025);
-        this._setTarget(this.skidGain.gain, Math.min(0.18, (speedKmh / 240) * 0.16), now, 0.03);
-        this._setTarget(this.retroSkidGain.gain, 0.0, now, 0.025);
-      } else {
-        this._setTarget(this.skidGain.gain, 0.0, now, 0.03);
-        const retroSlide = this._smooth01((gripUtil - 0.78) / 0.24);
-        this._setTarget(
-          this.retroSkidOsc.frequency,
-          this._clampFreq(1180 + speedNorm * 320),
-          now,
-          0.02
-        );
-        this._setTarget(this.retroSkidGain.gain, retroSlide * 0.095, now, 0.022);
-      }
+      this._setTarget(this.skidGain.gain, 0.0, now, 0.03);
+      this._setTarget(
+        this.retroSkidOsc.frequency,
+        this._clampFreq(380 + speedNorm * 140),
+        now,
+        0.025
+      );
+      this._setTarget(this.retroSkidGain.gain, heavySkid * 0.038, now, 0.028);
     } else {
       if (this.retroSkidGain) this._setTarget(this.retroSkidGain.gain, 0.0, now, 0.025);
-
-      if (playerCar.onGrass && speedKmh > 18) {
-        // Coarse grass/gravel aggregate scrub
-        const grassVol = Math.min(0.22, (speedKmh / 240) * 0.20);
-        this._setTarget(this.skidFilter.frequency, 420, now, 0.03);
-        this._setTarget(this.skidFilter.Q, 1.15, now, 0.03);
-        this._setTarget(this.skidHarmGain.gain, 0.14, now, 0.03);
+      if (playerCar.onGrass && speedKmh > 25) {
+        const grassVol = Math.min(0.055, (speedKmh / 240) * 0.05);
+        this._setTarget(this.skidFilter.frequency, 320, now, 0.03);
+        this._setTarget(this.skidFilter.Q, 0.707, now, 0.03);
         this._setTarget(this.skidGain.gain, grassVol, now, 0.035);
-        if (this.tireScrubGain) this._setTarget(this.tireScrubGain.gain, 0.04, now, 0.04);
-        if (this.tireScreechGain) this._setTarget(this.tireScreechGain.gain, 0.0, now, 0.03);
-      } else if (this.tireScrubGain && this.tireScreechGain) {
-        // Studio Progressive Tire Grip-Limit Sample Architecture (Assetto Corsa / iRacing style!):
-        // Stage 1 (65% -> 95% grip): warm Pirelli rubber hysteresis scrub groan builds smoothly
-        const scrubRise = this._smooth01((gripUtil - 0.65) / 0.28);
-        const screechRise = Math.max(
-          this._smooth01((gripUtil - 0.94) / 0.22),
-          brake > 0.76 ? Math.min(1.0, peakBrakeLockRatio) : 0.0
-        );
-        const helmetTireScale = cockpitMode ? 0.90 : 1.0;
-
-        const scrubVol = scrubRise * (1.0 - screechRise * 0.52) * 0.30 * helmetTireScale;
-        const screechVol = screechRise * 0.27 * helmetTireScale;
-
-        if (this.tireScrubSrc && this.tireScrubFilter) {
-          const scrubRate = this._clampRate(0.84 + speedNorm * 0.26 + scrubRise * 0.14, 0.65, 1.45);
-          this._setTarget(this.tireScrubSrc.playbackRate, scrubRate, now, 0.028);
-          this._setTarget(
-            this.tireScrubFilter.frequency,
-            this._clampFreq(1450 + scrubRise * 1650),
-            now,
-            0.03
-          );
-        }
-        if (this.tireScreechSrc) {
-          const screechRate = this._clampRate(0.90 + speedNorm * 0.22 + screechRise * 0.08, 0.72, 1.38);
-          this._setTarget(this.tireScreechSrc.playbackRate, screechRate, now, 0.025);
-        }
-
-        this._setTarget(this.tireScrubGain.gain, scrubVol, now, 0.028);
-        this._setTarget(this.tireScreechGain.gain, screechVol, now, 0.024);
-        this._setTarget(this.skidGain.gain, 0.0, now, 0.03);
+      } else if (heavySkid > 0.001) {
+        this._setTarget(this.skidFilter.frequency, this._clampFreq(440 + heavySkid * 140), now, 0.03);
+        this._setTarget(this.skidFilter.Q, 0.75, now, 0.03);
+        this._setTarget(this.skidGain.gain, heavySkid * 0.048, now, 0.03);
       } else {
-        // Pre-decode procedural progressive scrub/squeal fallback
-        const scrubRise = this._smooth01((gripUtil - 0.65) / 0.32);
-        const baseSkidFreq = 780 + scrubRise * 620 + Math.min(340, speedKmh * 1.1);
-        this._setTarget(this.skidFilter.frequency, this._clampFreq(baseSkidFreq), now, 0.028);
-        this._setTarget(this.skidFilter.Q, 3.6 + scrubRise * 1.4, now, 0.03);
-        this._setTarget(this.skidHarmFilter.frequency, this._clampFreq(baseSkidFreq * 1.65), now, 0.028);
-        this._setTarget(this.skidGain.gain, scrubRise * 0.20, now, 0.03);
-      }
-
-      // Rhythmic Wheel-Rotation-Frequency `thump-thump-thump` when `car.tireFlatSpot` is active!
-      let flFlat = 0;
-      let frFlat = 0;
-      let rlFlat = 0;
-      let rrFlat = 0;
-      if (Array.isArray(playerCar.tireFlatSpot)) {
-        flFlat = this._num(playerCar.tireFlatSpot[0], 0);
-        frFlat = this._num(playerCar.tireFlatSpot[1], 0);
-        rlFlat = this._num(playerCar.tireFlatSpot[2], 0);
-        rrFlat = this._num(playerCar.tireFlatSpot[3], 0);
-      } else if (typeof playerCar.tireFlatSpot === 'number') {
-        flFlat = playerCar.tireFlatSpot;
-        frFlat = playerCar.tireFlatSpot;
-      } else if (playerCar.tires && typeof playerCar.tires === 'object') {
-        flFlat = this._num(playerCar.tires.FL?.flatSpot, 0);
-        frFlat = this._num(playerCar.tires.FR?.flatSpot, 0);
-        rlFlat = this._num(playerCar.tires.RL?.flatSpot, 0);
-        rrFlat = this._num(playerCar.tires.RR?.flatSpot, 0);
-      }
-      const maxFlatSpot = Math.max(0, Math.min(1, Math.max(flFlat, frFlat, rlFlat, rrFlat)));
-      if (maxFlatSpot > 0.045 && speedKmh > 18 && !playerCar.inPitLane && !this.muted) {
-        const speedMps = speedKmh / 3.6;
-        // Exact 18-inch F1 Pirelli wheel rotation frequency: f_w = v / (2 * pi * 0.36m)
-        const wheelHz = speedMps / (TWO_PI * 0.36);
-        this._flatSpotWheelPhase += dtSec * wheelHz;
-        if (this._flatSpotWheelPhase >= 1.0) {
-          this._flatSpotWheelPhase %= 1.0;
-          if (nowMs - this._lastFlatSpotThumpMs >= 23) {
-            this._lastFlatSpotThumpMs = nowMs;
-            const leftMax = Math.max(flFlat, rlFlat);
-            const rightMax = Math.max(frFlat, rrFlat);
-            const flatPan = Math.max(-0.55, Math.min(0.55, (rightMax - leftMax) * 1.4));
-            this._playFlatSpotWheelThump(maxFlatSpot, flatPan, speedNorm, brake, cockpitMode);
-          }
-        }
-      }
-
-      // Authentic 900C Carbon-Ceramic Slotted Brake Rotor Pad Hiss & Brembo Squeal
-      const heatIn = brake * speedNorm * dtSec * 2.35;
-      const coolOut = (0.42 + speedNorm * 0.85) * dtSec * 0.52;
-      this._brakeRotorTemp = Math.max(0.08, Math.min(1.0, this._brakeRotorTemp + heatIn - coolOut));
-
-      const brakeGate = brake > 0.18 && speedKmh > 36 && !playerCar.inPitLane
-        ? this._smooth01((brake - 0.18) / 0.62) * this._smooth01((speedKmh - 34) / 72)
-        : 0.0;
-
-      // High-temp carbon brake squeal bites hardest in medium-low hairpin deceleration (55..185 km/h)
-      const squealSpeedWindow =
-        this._smooth01((speedKmh - 42) / 38) * (1.0 - 0.65 * this._smooth01((speedKmh - 195) / 85));
-      const hotSquealDb = brakeGate * this._smooth01((this._brakeRotorTemp - 0.32) / 0.55) * squealSpeedWindow * 9.5;
-
-      if (this.brakeRotorGain) {
-        if (this.brakeRotorSrc) {
-          this._setTarget(
-            this.brakeRotorSrc.playbackRate,
-            this._clampRate(0.82 + speedNorm * 0.38, 0.70, 1.35),
-            now,
-            0.03
-          );
-        }
-        if (this.brakeRotorSquealFilter) {
-          this._setTarget(this.brakeRotorSquealFilter.gain, hotSquealDb, now, 0.035);
-        }
-        const rotorVol = brakeGate * (0.14 + 0.08 * this._brakeRotorTemp) * (cockpitMode ? 1.15 : 0.88);
-        this._setTarget(this.brakeRotorGain.gain, rotorVol, now, 0.028);
-        if (this.brakeSynthGain) this._setTarget(this.brakeSynthGain.gain, 0.0, now, 0.03);
-      } else if (this.brakeSynthGain) {
-        this._setTarget(this.brakeSynthGain.gain, brakeGate * 0.055, now, 0.03);
+        this._setTarget(this.skidGain.gain, 0.0, now, 0.03);
       }
     }
 
     // ------------------------------------------------------------------------
-    // 6. SPEED-MODULATED SERRATED FIA KERB SAWTOOTH RUMBLE (`curb_sawtooth_loop.wav`)
+    // 3. WARM, SOFT LOW-FREQUENCY KERB BASS THRUM (ONLY WHEN RIDING CURBS)
     // ------------------------------------------------------------------------
-    const onCurb = !!playerCar.onCurb && speedKmh > 16;
+    const onCurb = !!playerCar.onCurb && speedKmh > 20;
     const curbSpeedNorm = Math.min(1, speedKmh / 310);
-    const curbFreq = 115 + curbSpeedNorm * 145;
-    if (this.curbSampleSrc) {
-      const curbRate = this._clampRate(0.55 + (speedKmh / 180) * 0.72, 0.45, 1.85);
-      this._setTarget(this.curbSampleSrc.playbackRate, curbRate, now, 0.015);
-    }
-    this._setTarget(this.curbOsc.frequency, this._clampFreq(curbFreq), now, 0.014);
-    this._setTarget(this.curbSubOsc.frequency, this._clampFreq(curbFreq * 0.5), now, 0.014);
-    this._setTarget(this.curbFilter.frequency, this._clampFreq(240 + curbSpeedNorm * 240), now, 0.018);
+    const curbFreq = 72 + curbSpeedNorm * 52;
+    this._setTarget(this.curbOsc.frequency, this._clampFreq(curbFreq), now, 0.016);
+    this._setTarget(this.curbSubOsc.frequency, this._clampFreq(curbFreq * 0.5), now, 0.016);
+    this._setTarget(this.curbFilter.frequency, this._clampFreq(165 + curbSpeedNorm * 55), now, 0.02);
     this._setTarget(
       this.curbGain.gain,
-      onCurb ? Math.min(0.30, (0.11 + curbSpeedNorm * 0.16) * (cockpitMode ? 1.18 : 1.0)) : 0.0,
+      onCurb ? Math.min(0.065, 0.032 + curbSpeedNorm * 0.033) : 0.0,
       now,
-      0.014
+      0.018
     );
-
-    // ------------------------------------------------------------------------
-    // 7. WET TARMAC WATER-SPRAY HISS & COCKPIT CARBON-FLOOR MARBLE PINGS
-    // ------------------------------------------------------------------------
-    const hydroBoost = this._num(playerCar.aquaplaneTimer, 0) > 0 ? 0.075 : 0.0;
-    const rainVol = !isRetro && moisture > 0.06
-      ? Math.min(0.22, moisture * 0.11 + (speedKmh / 310) * moisture * 0.12 + hydroBoost)
-      : 0.0;
-    this._setTarget(this.rainGain.gain, rainVol, now, 0.055);
-
-    if (cockpitMode && !isRetro && !this.muted && speedKmh > 92 && nowMs - this._lastMarblePingMs > 72) {
-      const absLat = Math.abs(this._num(playerCar.lateralOffset, 0));
-      const offLineFactor = absLat > 3.0 ? Math.min(1.0, (absLat - 3.0) / 2.2) : 0.0;
-      const marbleProbPerFrame =
-        speedNorm * 0.016 +
-        offLineFactor * 0.080 +
-        (onCurb ? 0.050 : 0.0) +
-        (gripUtil > 0.85 ? 0.035 : 0.0);
-      if (Math.random() < marbleProbPerFrame) {
-        this._lastMarblePingMs = nowMs;
-        this._playMarbleCarbonPing(speedNorm, this._num(playerCar.lateralOffset, 0));
-      }
-    }
-
-    // ------------------------------------------------------------------------
-    // 8. AUTOMATIC GRANDSTAND CROWD AMBIENCE FALLBACK
-    // ------------------------------------------------------------------------
-    if (!isRetro && nowMs - this._lastExplicitCrowdUpdateMs > 180 && Number.isFinite(playerCar.s)) {
-      const sMod = ((playerCar.s % 1000) + 1000) % 1000;
-      const distMainStraight = Math.min(sMod, 1000 - sMod);
-      const mainGrandstand = Math.max(0, 1 - distMainStraight / 145);
-      const stadiumComplex = Math.max(0, 1 - Math.abs(sMod - 495) / 75) * 0.72;
-      const autoNear = Math.max(mainGrandstand, stadiumComplex);
-      const autoExcite = Math.min(
-        1.0,
-        0.25 + throttle * 0.30 + (inSlip ? 0.25 : 0) + (speedKmh > 280 ? 0.25 : 0)
-      );
-      this._applyCrowdAmbienceInternal(speedKmh, autoNear, autoExcite, now, nowMs);
-    }
   }
 
-  _playFlatSpotWheelThump(flatSeverity = 0.5, panPos = 0.0, speedNorm = 0.5, brake = 0.0, cockpitMode = false) {
-    if (!this.initialized || this.muted || !this.ctx) return;
-    const now = this.ctx.currentTime;
-    const sev = Math.max(0.05, Math.min(1.0, flatSeverity));
-    const loadBoost = 1.0 + brake * 0.62;
-    const helmetScale = cockpitMode ? 1.22 : 0.90;
-    const amp = Math.min(0.28, (0.045 + sev * 0.145) * loadBoost * helmetScale);
+  _playFlatSpotWheelThump() {}
 
-    const panner = this._createPanner(panPos);
-    panner.connect(this.sfxBus);
-
-    // Physical rubber carcass flat-spot thump (damped 98 -> 42 Hz carcass drum + 215 Hz carbon wishbone tap)
-    const carcassOsc = this.ctx.createOscillator();
-    carcassOsc.type = 'sine';
-    const fStart = 88 + speedNorm * 34;
-    this._setVal(carcassOsc.frequency, this._clampFreq(fStart), now);
-    this._expRamp(carcassOsc.frequency, 38, now + 0.034);
-
-    const wishboneOsc = this.ctx.createOscillator();
-    wishboneOsc.type = 'triangle';
-    this._setVal(wishboneOsc.frequency, this._clampFreq(195 + speedNorm * 65), now);
-    this._expRamp(wishboneOsc.frequency, 74, now + 0.022);
-    const wbGain = this.ctx.createGain();
-    wbGain.gain.value = 0.28;
-
-    const g = this.ctx.createGain();
-    this._setVal(g.gain, 0.002, now);
-    this._linRamp(g.gain, amp, now + 0.004);
-    this._expRamp(g.gain, 0.0008, now + 0.038);
-
-    carcassOsc.connect(g);
-    wishboneOsc.connect(wbGain);
-    wbGain.connect(g);
-    g.connect(panner);
-
-    carcassOsc.onended = () => {
-      try { panner.disconnect(); } catch (_) {}
-    };
-    carcassOsc.start(now);
-    wishboneOsc.start(now);
-    carcassOsc.stop(now + 0.042);
-    wishboneOsc.stop(now + 0.026);
-  }
-
-  _playMarbleCarbonPing(speedNorm = 0.6, lateralOffset = 0) {
-    if (!this.initialized || this.muted || !this.ctx) return;
-    const now = this.ctx.currentTime;
-    const sideBias = lateralOffset !== 0 ? Math.sign(lateralOffset) * 0.25 : 0;
-    const panVal = Math.max(-0.88, Math.min(0.88, sideBias + (Math.random() * 1.3 - 0.65)));
-    const panner = this._createPanner(panVal);
-    panner.connect(this.sfxBus);
-
-    const pingFreq = 1920 + Math.random() * 2350;
-    const pingOsc = this.ctx.createOscillator();
-    pingOsc.type = 'triangle';
-    this._setVal(pingOsc.frequency, this._clampFreq(pingFreq), now);
-    this._expRamp(pingOsc.frequency, this._clampFreq(pingFreq * 0.56), now + 0.032);
-
-    const tubBp = this.ctx.createBiquadFilter();
-    tubBp.type = 'bandpass';
-    tubBp.frequency.value = this._clampFreq(pingFreq * 0.92);
-    tubBp.Q.value = 6.2;
-
-    const amp = (0.030 + speedNorm * 0.044) * (0.7 + Math.random() * 0.45);
-    const g = this.ctx.createGain();
-    this._setVal(g.gain, amp, now);
-    this._expRamp(g.gain, 0.0005, now + 0.036);
-
-    pingOsc.connect(tubBp);
-    tubBp.connect(g);
-    g.connect(panner);
-
-    pingOsc.onended = () => {
-      try { panner.disconnect(); } catch (_) {}
-    };
-    pingOsc.start(now);
-    pingOsc.stop(now + 0.040);
-  }
+  _playMarbleCarbonPing() {}
 
   // --------------------------------------------------------------------------
-  // NATURAL GRANULAR MOTORSPORT GRANDSTAND CROWD & DOPPLER PASS-BY
+  // CROWD AMBIENCE (CONTINUOUS LOOP SILENCED TO PREVENT BACKGROUND DRONE)
   // --------------------------------------------------------------------------
   updateCrowdAmbience(speedKmh = 0, nearGrandstandFactor = 0, excitement = 0) {
     if (!this.initialized || !this.ctx) return;
-    const nowMs = performance.now();
-    this._lastExplicitCrowdUpdateMs = nowMs;
-    this._applyCrowdAmbienceInternal(
-      speedKmh,
-      nearGrandstandFactor,
-      excitement,
-      this.ctx.currentTime,
-      nowMs
-    );
+    this._nearGrandstandCached = Math.max(0, Math.min(1, this._num(nearGrandstandFactor, 0)));
+    if (this.crowdBedGain) {
+      this._setTarget(this.crowdBedGain.gain, 0.0, this.ctx.currentTime, 0.06);
+    }
   }
 
-  _applyCrowdAmbienceInternal(speedKmh, nearGrandstandFactor, excitement, now, nowMs) {
-    if (!this.crowdBedGain) return;
-    const spd = Math.max(0, this._num(speedKmh, 0));
-    const near = Math.max(0, Math.min(1, this._num(nearGrandstandFactor, 0)));
-    const excite = Math.max(0, Math.min(1, this._num(excitement, 0)));
-    this._nearGrandstandCached = near;
-
-    const dtSec = this._lastCrowdTickMs > 0
-      ? Math.min(0.1, Math.max(0.001, (nowMs - this._lastCrowdTickMs) * 0.001))
-      : 0.016;
-    this._lastCrowdTickMs = nowMs;
-
-    if (near <= 0.015 || this.muted || this.isRetroMode) {
-      this._setTarget(this.crowdBedGain.gain, 0.0, now, 0.09);
-      return;
+  _applyCrowdAmbienceInternal() {
+    if (this.crowdBedGain && this.ctx) {
+      this._setTarget(this.crowdBedGain.gain, 0.0, this.ctx.currentTime, 0.06);
     }
-
-    const passRateHz = (0.16 + (spd / 330) * 1.25) * (0.35 + near * 0.65);
-    this._crowdDopplerPhase = (this._crowdDopplerPhase + dtSec * passRateHz * TWO_PI) % TWO_PI;
-
-    const panSweep = Math.cos(this._crowdDopplerPhase) * (0.26 + near * 0.42);
-    const dopplerVelocity = -Math.sin(this._crowdDopplerPhase) * Math.min(1, spd / 320) * near;
-    const dopplerMul = 1.0 + dopplerVelocity * 0.085;
-
-    if (this.crowdSampleSrc && this.crowdSampleFilter) {
-      this._setTarget(
-        this.crowdSampleSrc.playbackRate,
-        this._clampRate((0.96 + excite * 0.10) * dopplerMul, 0.78, 1.25),
-        now,
-        0.05
-      );
-      this._setTarget(
-        this.crowdSampleFilter.frequency,
-        this._clampFreq((1650 + near * 1450 + excite * 1250) * (this._isCockpitView ? 0.74 : 1.0)),
-        now,
-        0.05
-      );
-      if (this.crowdSamplePanner && this.crowdSamplePanner.pan) {
-        this._setTarget(this.crowdSamplePanner.pan, Math.max(-0.85, Math.min(0.85, panSweep)), now, 0.05);
-      }
-    }
-
-    if (this.crowdBedPanner && this.crowdBedPanner.pan) {
-      this._setTarget(this.crowdBedPanner.pan, Math.max(-0.85, Math.min(0.85, panSweep)), now, 0.05);
-    }
-    if (this.crowdBedFilterL && this.crowdBedFilterR) {
-      const f1 = (510 + near * 190 + excite * 150) * dopplerMul;
-      const f2 = (1240 + near * 410 + excite * 300) * dopplerMul;
-      this._setTarget(this.crowdBedFilterL.frequency, this._clampFreq(f1), now, 0.05);
-      this._setTarget(this.crowdBedFilterR.frequency, this._clampFreq(f2), now, 0.05);
-    }
-
-    const helmetCrowdScale = this._isCockpitView ? 0.68 : 1.0;
-    const baseMax = this.crowdSampleSrc ? 0.26 : 0.20;
-    const targetVol = Math.min(
-      baseMax,
-      (0.015 + Math.pow(near, 1.15) * 0.165) * (0.60 + excite * 0.58) * helmetCrowdScale
-    );
-    this._setTarget(this.crowdBedGain.gain, targetVol, now, 0.06);
   }
 
   // --------------------------------------------------------------------------
-  // SEAMLESS 8-SPEED PNEUMATIC GEARSHIFTS, REV-MATCH BLIPS & DOPPLER PASSES
+  // WARM, LOW-MID PUNCHY GEARSHIFTS, REV-MATCH BLIPS & DOPPLER PASSES
   // --------------------------------------------------------------------------
   playUpshiftCut(newGear = 2) {
     if (!this.initialized || this.muted || !this.ctx) return;
@@ -2260,85 +1307,57 @@ export class ProceduralAudioEngine {
     const gIdx = Math.max(1, Math.min(8, Math.round(this._num(newGear, 2))));
 
     if (this.isRetroMode) {
-      // Crisp 1982 Namco LOW -> HIGH gear register step click
       const osc = this.ctx.createOscillator();
-      osc.type = 'square';
-      this._setVal(osc.frequency, 280, now);
-      this._expRamp(osc.frequency, 140, now + 0.042);
+      osc.type = 'triangle';
+      this._setVal(osc.frequency, 210, now);
+      this._expRamp(osc.frequency, 115, now + 0.040);
       const g = this.ctx.createGain();
-      this._setVal(g.gain, 0.14, now);
-      this._expRamp(g.gain, 0.001, now + 0.046);
+      this._setVal(g.gain, 0.09, now);
+      this._expRamp(g.gain, 0.001, now + 0.044);
       osc.connect(g);
       g.connect(this.engineBus);
       osc.onended = () => { try { g.disconnect(); } catch (_) {} };
       osc.start(now);
-      osc.stop(now + 0.050);
+      osc.stop(now + 0.048);
       return;
     }
 
-    // 1. Crisp ~44ms FIA seamless-shift ignition torque cut + re-engagement snap!
+    // 1. Smooth 42ms seamless-shift torque dip
     if (this.shiftCutGain) {
       try {
         this.shiftCutGain.gain.cancelScheduledValues(now);
       } catch (_) {}
-      const curVal = Math.max(0.1, Math.min(1.1, this._num(this.shiftCutGain.gain.value, 1.0)));
+      const curVal = Math.max(0.2, Math.min(1.05, this._num(this.shiftCutGain.gain.value, 1.0)));
       this._setVal(this.shiftCutGain.gain, curVal, now);
-      this._linRamp(this.shiftCutGain.gain, 0.08, now + 0.007);
-      this._setVal(this.shiftCutGain.gain, 0.08, now + 0.042);
-      this._linRamp(this.shiftCutGain.gain, 1.08, now + 0.054);
-      this._linRamp(this.shiftCutGain.gain, 1.0, now + 0.080);
+      this._linRamp(this.shiftCutGain.gain, 0.28, now + 0.008);
+      this._setVal(this.shiftCutGain.gain, 0.28, now + 0.036);
+      this._linRamp(this.shiftCutGain.gain, 1.03, now + 0.052);
+      this._linRamp(this.shiftCutGain.gain, 1.0, now + 0.078);
     }
 
-    // 2. Pneumatic actuator & dog-ring mechanical thump -> engineBus + reverbSendEngine
+    // 2. Pleasant, warm low-mid pneumatic exhaust thump (130 Hz -> 46 Hz, low-passed at 280 Hz)
     const thump = this.ctx.createOscillator();
     thump.type = 'triangle';
-    this._setVal(thump.frequency, this._clampFreq(172 + gIdx * 8), now + 0.005);
-    this._expRamp(thump.frequency, 44, now + 0.072);
+    this._setVal(thump.frequency, this._clampFreq(124 + gIdx * 5), now + 0.004);
+    this._expRamp(thump.frequency, 46, now + 0.068);
+
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 280;
+    lp.Q.value = 0.707;
 
     const tg = this.ctx.createGain();
-    this._setVal(tg.gain, 0.28, now + 0.005);
-    this._expRamp(tg.gain, 0.001, now + 0.080);
+    this._setVal(tg.gain, 0.16, now + 0.004);
+    this._expRamp(tg.gain, 0.001, now + 0.074);
 
-    thump.connect(tg);
+    thump.connect(lp);
+    lp.connect(tg);
     tg.connect(this.engineBus);
-    if (this.reverbSendEngine) tg.connect(this.reverbSendEngine);
     thump.onended = () => {
       try { tg.disconnect(); } catch (_) {}
     };
-    thump.start(now + 0.005);
-    thump.stop(now + 0.086);
-
-    // 3. Unburnt-fuel collector ignition-cut bark
-    const snap = this.ctx.createBufferSource();
-    snap.buffer = this.sampleBuffers.engineOverrun || this._noiseWhiteBuf;
-    if (this.sampleBuffers.engineOverrun && snap.playbackRate) {
-      this._setVal(snap.playbackRate, 1.05 + gIdx * 0.04, now + 0.008);
-    }
-
-    const flt = this.ctx.createBiquadFilter();
-    flt.type = 'bandpass';
-    flt.frequency.value = this._clampFreq(560 + gIdx * 28);
-    flt.Q.value = 1.45;
-
-    const shaper = this.ctx.createWaveShaper();
-    shaper.curve = this._shaperCurveTransient;
-
-    const ng = this.ctx.createGain();
-    this._setVal(ng.gain, 0.22, now + 0.008);
-    this._expRamp(ng.gain, 0.001, now + 0.074);
-
-    snap.connect(flt);
-    flt.connect(shaper);
-    shaper.connect(ng);
-    ng.connect(this.engineBus);
-    if (this.reverbSendEngine) ng.connect(this.reverbSendEngine);
-
-    snap.onended = () => {
-      try { ng.disconnect(); } catch (_) {}
-    };
-    const off = this.sampleBuffers.engineOverrun ? (gIdx * 0.27) % 1.8 : 0;
-    snap.start(now + 0.008, off);
-    snap.stop(now + 0.080);
+    thump.start(now + 0.004);
+    thump.stop(now + 0.080);
   }
 
   playDownshiftBlip(newGear = 2) {
@@ -2349,308 +1368,167 @@ export class ProceduralAudioEngine {
 
     if (this.isRetroMode) {
       const osc = this.ctx.createOscillator();
-      if (this._namcoWsgEngineWaveA) osc.setPeriodicWave(this._namcoWsgEngineWaveA);
-      else osc.type = 'square';
-      this._setVal(osc.frequency, 155, now);
-      this._linRamp(osc.frequency, 235, now + 0.035);
+      osc.type = 'triangle';
+      this._setVal(osc.frequency, 130, now);
+      this._linRamp(osc.frequency, 185, now + 0.032);
       const g = this.ctx.createGain();
-      this._setVal(g.gain, 0.14, now);
-      this._expRamp(g.gain, 0.001, now + 0.065);
+      this._setVal(g.gain, 0.09, now);
+      this._expRamp(g.gain, 0.001, now + 0.060);
       osc.connect(g);
       g.connect(this.engineBus);
       osc.onended = () => { try { g.disconnect(); } catch (_) {} };
       osc.start(now);
-      osc.stop(now + 0.070);
+      osc.stop(now + 0.065);
       return;
     }
 
-    // 1. Studio Drive-by-Wire ECU Throttle Rev-Match Bark (Real Sample Grain + Physical Harmonic!)
-    if (this.sampleBuffers.engineMid) {
-      const blipSrc = this.ctx.createBufferSource();
-      blipSrc.buffer = this.sampleBuffers.engineMid;
-      blipSrc.loop = true;
-      const baseRate = 0.88 + (8 - gIdx) * 0.085;
-      this._setVal(blipSrc.playbackRate, this._clampRate(baseRate, 0.6, 2.0), now);
-      this._linRamp(blipSrc.playbackRate, this._clampRate(baseRate * 1.28, 0.6, 2.2), now + 0.034);
-      this._expRamp(blipSrc.playbackRate, this._clampRate(baseRate * 0.98, 0.6, 2.0), now + 0.105);
+    // Warm, musical low-mid throttle rev-match purr (115 Hz -> 175 Hz through 440 Hz low-pass)
+    const fStart = 112 + (8 - gIdx) * 10;
+    const blipFund = this.ctx.createOscillator();
+    if (this._ottoPulseWave) blipFund.setPeriodicWave(this._ottoPulseWave);
+    else blipFund.type = 'triangle';
+    this._setVal(blipFund.frequency, this._clampFreq(fStart), now);
+    this._linRamp(blipFund.frequency, this._clampFreq(fStart * 1.32), now + 0.032);
+    this._expRamp(blipFund.frequency, this._clampFreq(fStart * 0.96), now + 0.088);
 
-      const bp = this.ctx.createBiquadFilter();
-      bp.type = 'peaking';
-      bp.frequency.value = 1280;
-      bp.Q.value = 1.6;
-      bp.gain.value = 4.2;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 440;
+    lp.Q.value = 0.707;
 
-      const bg = this.ctx.createGain();
-      this._setVal(bg.gain, 0.002, now);
-      this._linRamp(bg.gain, 0.28, now + 0.014);
-      this._expRamp(bg.gain, 0.001, now + 0.112);
+    const g = this.ctx.createGain();
+    this._setVal(g.gain, 0.002, now);
+    this._linRamp(g.gain, 0.14, now + 0.012);
+    this._expRamp(g.gain, 0.001, now + 0.092);
 
-      blipSrc.connect(bp);
-      bp.connect(bg);
-      bg.connect(this.engineBus);
-      if (this.reverbSendEngine) bg.connect(this.reverbSendEngine);
-      blipSrc.onended = () => {
-        try { bg.disconnect(); } catch (_) {}
-      };
-      blipSrc.start(now, (gIdx * 0.31) % 1.9);
-      blipSrc.stop(now + 0.118);
-    } else {
-      const fStart = 188 + (8 - gIdx) * 20;
-      const blipFund = this.ctx.createOscillator();
-      if (this._ottoPulseWave) blipFund.setPeriodicWave(this._ottoPulseWave);
-      else blipFund.type = 'sawtooth';
-      this._setVal(blipFund.frequency, this._clampFreq(fStart), now);
-      this._linRamp(blipFund.frequency, this._clampFreq(fStart * 1.44), now + 0.034);
-      this._expRamp(blipFund.frequency, this._clampFreq(fStart * 0.94), now + 0.098);
-
-      const g = this.ctx.createGain();
-      this._setVal(g.gain, 0.002, now);
-      this._linRamp(g.gain, 0.22, now + 0.012);
-      this._expRamp(g.gain, 0.001, now + 0.102);
-
-      blipFund.connect(g);
-      g.connect(this.engineBus);
-      blipFund.onended = () => {
-        try { g.disconnect(); } catch (_) {}
-      };
-      blipFund.start(now);
-      blipFund.stop(now + 0.108);
-    }
-
-    // 2. Pneumatic lower-gear dog engagement snick
-    const click = this.ctx.createOscillator();
-    click.type = 'triangle';
-    this._setVal(click.frequency, 155, now);
-    this._expRamp(click.frequency, 52, now + 0.048);
-    const cg = this.ctx.createGain();
-    this._setVal(cg.gain, 0.18, now);
-    this._expRamp(cg.gain, 0.001, now + 0.052);
-    click.connect(cg);
-    cg.connect(this.engineBus);
-    click.onended = () => {
-      try { cg.disconnect(); } catch (_) {}
+    blipFund.connect(lp);
+    lp.connect(g);
+    g.connect(this.engineBus);
+    blipFund.onended = () => {
+      try { g.disconnect(); } catch (_) {}
     };
-    click.start(now);
-    click.stop(now + 0.056);
-
-    // 3. Off-throttle overrun crackle under corner braking
-    this.playOverrunCrackles(gIdx <= 4 ? 2 : 1);
+    blipFund.start(now);
+    blipFund.stop(now + 0.098);
   }
 
-  playWastegateFlutter(intensity = 0.85) {
+  playWastegateFlutter(intensity = 0.6) {
     if (!this.initialized || this.muted || !this.ctx || this.isRetroMode) return;
     this._ensureRunning();
     const now = this.ctx.currentTime;
-    const lvl = Math.max(0.25, Math.min(1.0, this._num(intensity, 0.85)));
+    const lvl = Math.max(0.2, Math.min(1.0, this._num(intensity, 0.6)));
 
-    for (let p = 0; p < 4; p++) {
-      const t0 = now + p * 0.044;
-      const decay = Math.pow(0.76, p);
-
-      const chirp = this.ctx.createOscillator();
-      chirp.type = 'sine';
-      const fBase = 2850 - p * 240;
-      this._setVal(chirp.frequency, this._clampFreq(fBase), t0);
-      this._expRamp(chirp.frequency, this._clampFreq(fBase * 0.72), t0 + 0.040);
-
-      const cg = this.ctx.createGain();
-      this._setVal(cg.gain, 0.001, t0);
-      this._linRamp(cg.gain, 0.052 * lvl * decay, t0 + 0.008);
-      this._expRamp(cg.gain, 0.0008, t0 + 0.042);
-
-      chirp.connect(cg);
-      cg.connect(this.engineBus);
-      chirp.onended = () => {
-        try { cg.disconnect(); } catch (_) {}
-      };
-      chirp.start(t0);
-      chirp.stop(t0 + 0.046);
-    }
-
-    const sighSrc = this.ctx.createBufferSource();
-    sighSrc.buffer = this._noiseWhiteBuf;
-    const bp = this.ctx.createBiquadFilter();
-    bp.type = 'bandpass';
-    bp.Q.value = 2.2;
-    this._setVal(bp.frequency, 2550, now);
-    this._expRamp(bp.frequency, 920, now + 0.21);
-    const sg = this.ctx.createGain();
-    this._setVal(sg.gain, 0.001, now);
-    this._linRamp(sg.gain, 0.082 * lvl, now + 0.02);
-    this._expRamp(sg.gain, 0.0008, now + 0.22);
-    sighSrc.connect(bp);
-    bp.connect(sg);
-    sg.connect(this.engineBus);
-    sighSrc.onended = () => {
-      try { sg.disconnect(); } catch (_) {}
-    };
-    sighSrc.start(now);
-    sighSrc.stop(now + 0.23);
+    // Soft, warm low-mid pressure relief sigh (no high-frequency chirp)
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sine';
+    this._setVal(osc.frequency, 220, now);
+    this._expRamp(osc.frequency, 95, now + 0.09);
+    const g = this.ctx.createGain();
+    this._setVal(g.gain, 0.001, now);
+    this._linRamp(g.gain, 0.045 * lvl, now + 0.012);
+    this._expRamp(g.gain, 0.0008, now + 0.095);
+    osc.connect(g);
+    g.connect(this.engineBus);
+    osc.onended = () => { try { g.disconnect(); } catch (_) {} };
+    osc.start(now);
+    osc.stop(now + 0.10);
   }
 
-  playOverrunCrackles(count = 2) {
+  playOverrunCrackles(count = 1) {
     if (!this.initialized || this.muted || !this.ctx || this.isRetroMode) return;
     this._ensureRunning();
     const now = this.ctx.currentTime;
-    const safeCount = Math.max(1, Math.min(5, Math.round(this._num(count, 2))));
+    const safeCount = Math.max(1, Math.min(2, Math.round(this._num(count, 1))));
 
     for (let i = 0; i < safeCount; i++) {
-      const t0 = now + 0.018 + i * (0.045 + Math.random() * 0.045);
-
+      const t0 = now + 0.012 + i * 0.055;
       const popOsc = this.ctx.createOscillator();
       popOsc.type = 'triangle';
-      const popStart = 185 + Math.random() * 95;
+      const popStart = 135 + Math.random() * 35;
       this._setVal(popOsc.frequency, popStart, t0);
-      this._expRamp(popOsc.frequency, 42, t0 + 0.056);
+      this._expRamp(popOsc.frequency, 44, t0 + 0.052);
+
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 260;
+      lp.Q.value = 0.707;
+
       const popGain = this.ctx.createGain();
-      this._setVal(popGain.gain, 0.16, t0);
-      this._expRamp(popGain.gain, 0.001, t0 + 0.060);
+      this._setVal(popGain.gain, 0.085, t0);
+      this._expRamp(popGain.gain, 0.001, t0 + 0.058);
 
-      const src = this.ctx.createBufferSource();
-      src.buffer = this._noiseWhiteBuf;
-      const flt = this.ctx.createBiquadFilter();
-      flt.type = 'bandpass';
-      flt.frequency.value = this._clampFreq(390 + Math.random() * 390);
-      flt.Q.value = 1.85;
-
-      const shaper = this.ctx.createWaveShaper();
-      shaper.curve = this._shaperCurveTransient;
-
-      const g = this.ctx.createGain();
-      this._setVal(g.gain, 0.17, t0);
-      this._expRamp(g.gain, 0.001, t0 + 0.068);
-
-      const pan = this._createPanner((Math.random() - 0.5) * 0.44);
-
-      popOsc.connect(popGain);
-      popGain.connect(pan);
-      src.connect(flt);
-      flt.connect(shaper);
-      shaper.connect(g);
-      g.connect(pan);
-      pan.connect(this.engineBus);
-      if (this.reverbSendEngine) pan.connect(this.reverbSendEngine);
-
-      src.onended = () => {
-        try { pan.disconnect(); } catch (_) {}
+      popOsc.connect(lp);
+      lp.connect(popGain);
+      popGain.connect(this.engineBus);
+      popOsc.onended = () => {
+        try { popGain.disconnect(); } catch (_) {}
       };
       popOsc.start(t0);
-      src.start(t0);
-      popOsc.stop(t0 + 0.064);
-      src.stop(t0 + 0.072);
+      popOsc.stop(t0 + 0.062);
     }
   }
 
   playOvertakeWhoosh(relSpeedKmh = 45, pan = null) {
     if (!this.initialized || this.muted || !this.ctx) return;
     const nowMs = performance.now();
-    if (nowMs - this._lastOvertakeMs < 240) return;
+    if (nowMs - this._lastOvertakeMs < 380) return;
     this._lastOvertakeMs = nowMs;
 
     this._ensureRunning();
     const now = this.ctx.currentTime;
     const rel = Math.max(12, Math.min(180, this._num(relSpeedKmh, 45)));
-    const intensity = Math.min(1.0, Math.max(0.32, rel / 75));
+    const intensity = Math.min(1.0, Math.max(0.28, rel / 85));
 
     let startPan;
     if (pan !== null && pan !== undefined && Number.isFinite(Number(pan))) {
-      startPan = Math.max(-0.95, Math.min(0.95, Number(pan)));
-      if (Math.abs(startPan) < 0.15) startPan = (startPan >= 0 ? 1 : -1) * 0.55;
+      startPan = Math.max(-0.90, Math.min(0.90, Number(pan)));
+      if (Math.abs(startPan) < 0.15) startPan = (startPan >= 0 ? 1 : -1) * 0.50;
     } else {
-      startPan = this._overtakePanFlip * 0.72;
+      startPan = this._overtakePanFlip * 0.65;
       this._overtakePanFlip = -this._overtakePanFlip;
     }
 
     const panner = this._createPanner(startPan);
     if (panner.pan) {
       this._setVal(panner.pan, startPan, now);
-      this._linRamp(panner.pan, -startPan * 0.65, now + 0.38);
+      this._linRamp(panner.pan, -startPan * 0.60, now + 0.34);
     }
 
-    if (this.isRetroMode) {
-      // Authentic 1982 Namco rival pass Doppler WSG tone!
-      const rivalOsc = this.ctx.createOscillator();
-      if (this._namcoWsgEngineWaveB) rivalOsc.setPeriodicWave(this._namcoWsgEngineWaveB);
-      else rivalOsc.type = 'square';
-      this._setVal(rivalOsc.frequency, this._clampFreq(245 + rel * 1.4), now);
-      this._expRamp(rivalOsc.frequency, this._clampFreq(105 + rel * 0.35), now + 0.34);
-      const rg = this.ctx.createGain();
-      this._setVal(rg.gain, 0.002, now);
-      this._linRamp(rg.gain, 0.16 * intensity, now + 0.08);
-      this._expRamp(rg.gain, 0.001, now + 0.36);
-      rivalOsc.connect(rg);
-      rg.connect(panner);
-      panner.connect(this.sfxBus);
-      rivalOsc.onended = () => { try { panner.disconnect(); } catch (_) {} };
-      rivalOsc.start(now);
-      rivalOsc.stop(now + 0.38);
-      return;
-    }
+    // Warm low-mid rival engine Doppler sweep (240 Hz -> 115 Hz through 520 Hz low-pass)
+    const dopplerOsc = this.ctx.createOscillator();
+    if (this._ottoPulseWave) dopplerOsc.setPeriodicWave(this._ottoPulseWave);
+    else dopplerOsc.type = 'triangle';
+    this._setVal(dopplerOsc.frequency, this._clampFreq(210 + rel * 0.85), now);
+    this._expRamp(dopplerOsc.frequency, this._clampFreq(105 + rel * 0.25), now + 0.34);
 
-    // 1. Aerodynamic sidepod air-shear wake
-    const aeroBuf = this.sampleBuffers.aeroWind || this._noisePinkBuf;
-    const src = this.ctx.createBufferSource();
-    src.buffer = aeroBuf;
-    const flt = this.ctx.createBiquadFilter();
-    flt.type = 'bandpass';
-    flt.Q.value = 1.75;
-    this._setVal(flt.frequency, this._clampFreq(1040 + rel * 4.6), now);
-    this._expRamp(flt.frequency, 155, now + 0.38);
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 520;
+    lp.Q.value = 0.707;
 
     const g = this.ctx.createGain();
     this._setVal(g.gain, 0.002, now);
-    this._linRamp(g.gain, 0.25 * intensity, now + 0.09);
-    this._expRamp(g.gain, 0.001, now + 0.40);
+    this._linRamp(g.gain, 0.11 * intensity, now + 0.08);
+    this._expRamp(g.gain, 0.001, now + 0.36);
 
-    // 2. Rival High-RPM Engine Sample Snarl with Doppler Pitch Drop!
-    if (this.sampleBuffers.engineHigh) {
-      const rivalSrc = this.ctx.createBufferSource();
-      rivalSrc.buffer = this.sampleBuffers.engineHigh;
-      rivalSrc.loop = true;
-      const rStart = this._clampRate(0.96 + (rel / 220) * 0.28, 0.65, 1.45);
-      const rEnd = this._clampRate(0.66 + (rel / 400) * 0.12, 0.45, 1.15);
-      this._setVal(rivalSrc.playbackRate, rStart, now);
-      this._expRamp(rivalSrc.playbackRate, rEnd, now + 0.38);
-      const rg = this.ctx.createGain();
-      rg.gain.value = 0.48;
-      rivalSrc.connect(rg);
-      rg.connect(flt);
-      rivalSrc.start(now, Math.random() * 1.4);
-      rivalSrc.stop(now + 0.42);
-    } else {
-      const dopplerOsc = this.ctx.createOscillator();
-      if (this._ottoV10Wave) dopplerOsc.setPeriodicWave(this._ottoV10Wave);
-      else dopplerOsc.type = 'sawtooth';
-      this._setVal(dopplerOsc.frequency, this._clampFreq(460 + rel * 1.6), now);
-      this._expRamp(dopplerOsc.frequency, this._clampFreq(205 + rel * 0.4), now + 0.38);
-      const dg = this.ctx.createGain();
-      dg.gain.value = 0.32;
-      dopplerOsc.connect(dg);
-      dg.connect(flt);
-      dopplerOsc.start(now);
-      dopplerOsc.stop(now + 0.42);
-    }
-
-    src.connect(flt);
-    flt.connect(g);
+    dopplerOsc.connect(lp);
+    lp.connect(g);
     g.connect(panner);
     panner.connect(this.sfxBus);
-    if (this.reverbSendSfx) panner.connect(this.reverbSendSfx);
 
-    src.onended = () => {
+    dopplerOsc.onended = () => {
       try { panner.disconnect(); } catch (_) {}
     };
-    src.start(now);
-    src.stop(now + 0.42);
+    dopplerOsc.start(now);
+    dopplerOsc.stop(now + 0.38);
   }
 
   // --------------------------------------------------------------------------
-  // FOM WORLD-FEED TV BROADCAST TRACKSIDE DOPPLER FLY-BY + VALLEY REVERB
+  // WARM TV BROADCAST TRACKSIDE DOPPLER FLY-BY
   // --------------------------------------------------------------------------
   playReplayFlyby(speedKmh = 290) {
     if (!this.initialized || this.muted || !this.ctx) return;
     const nowMs = performance.now();
-    if (nowMs - this._lastFlybyMs < 180) return;
+    if (nowMs - this._lastFlybyMs < 240) return;
     this._lastFlybyMs = nowMs;
 
     this._ensureRunning();
@@ -2659,186 +1537,90 @@ export class ProceduralAudioEngine {
     const vMps = vKmh / 3.6;
     const cSound = 343.0;
 
-    // Exact physical acoustic Doppler ratios: approach compression -> camera apex -> receding expansion
-    const approachRatio = cSound / Math.max(195, cSound - vMps * 0.82);
-    const recedeRatio = cSound / (cSound + vMps * 0.82);
-    const tPass = now + 0.42;
-    const tEnd = now + 1.12;
+    const approachRatio = cSound / Math.max(210, cSound - vMps * 0.72);
+    const recedeRatio = cSound / (cSound + vMps * 0.72);
+    const tPass = now + 0.38;
+    const tEnd = now + 0.96;
 
     const side = this._flybyPanFlip;
     this._flybyPanFlip = -this._flybyPanFlip;
-    const panner = this._createPanner(-0.88 * side);
+    const panner = this._createPanner(-0.85 * side);
     if (panner.pan) {
-      this._setVal(panner.pan, -0.90 * side, now);
+      this._setVal(panner.pan, -0.85 * side, now);
       this._linRamp(panner.pan, 0.0, tPass);
-      this._linRamp(panner.pan, 0.90 * side, tEnd);
+      this._linRamp(panner.pan, 0.85 * side, tEnd);
     }
 
-    // Distance atmospheric air-absorption filter opens wide right at camera pass
     const distLp = this.ctx.createBiquadFilter();
     distLp.type = 'lowpass';
-    distLp.Q.value = 1.05;
-    this._setVal(distLp.frequency, 980, now);
-    this._expRamp(distLp.frequency, 6800, tPass);
-    this._expRamp(distLp.frequency, 820, tEnd);
+    distLp.Q.value = 0.707;
+    this._setVal(distLp.frequency, 320, now);
+    this._expRamp(distLp.frequency, 920, tPass);
+    this._expRamp(distLp.frequency, 280, tEnd);
 
     const flybyGain = this.ctx.createGain();
     this._setVal(flybyGain.gain, 0.002, now);
-    this._expRamp(flybyGain.gain, 0.34, tPass - 0.015);
+    this._expRamp(flybyGain.gain, 0.18, tPass - 0.015);
     this._expRamp(flybyGain.gain, 0.001, tEnd);
 
-    // 1. Screaming High-RPM `.wav` Engine Sample (or Physical Otto fallback) Doppler Sweep!
-    let cleanupRef = null;
-    if (this.sampleBuffers.engineHigh) {
-      const engSrc = this.ctx.createBufferSource();
-      engSrc.buffer = this.sampleBuffers.engineHigh;
-      engSrc.loop = true;
-      const baseRate = 0.82 + (vKmh / 335) * 0.24;
-      this._setVal(engSrc.playbackRate, this._clampRate(baseRate * approachRatio * 0.96, 0.4, 2.4), now);
-      this._linRamp(engSrc.playbackRate, this._clampRate(baseRate * approachRatio, 0.4, 2.4), tPass - 0.05);
-      this._expRamp(engSrc.playbackRate, this._clampRate(baseRate * recedeRatio, 0.35, 2.2), tPass + 0.085);
-      this._expRamp(engSrc.playbackRate, this._clampRate(baseRate * recedeRatio * 0.93, 0.35, 2.2), tEnd);
-      engSrc.connect(distLp);
-      engSrc.start(now, Math.random() * 1.6);
-      engSrc.stop(tEnd + 0.03);
-      cleanupRef = engSrc;
-    } else {
-      const fBase = 320 + (vKmh / 330) * 105;
-      const osc1 = this.ctx.createOscillator();
-      if (this._ottoV10Wave) osc1.setPeriodicWave(this._ottoV10Wave);
-      else osc1.type = 'sawtooth';
-      this._setVal(osc1.frequency, this._clampFreq(fBase * approachRatio), now);
-      this._expRamp(osc1.frequency, this._clampFreq(fBase * recedeRatio), tPass + 0.085);
-      osc1.connect(distLp);
-      osc1.start(now);
-      osc1.stop(tEnd + 0.03);
-      cleanupRef = osc1;
-    }
+    const fBase = 195 + (vKmh / 330) * 85;
+    const osc1 = this.ctx.createOscillator();
+    if (this._ottoPulseWave) osc1.setPeriodicWave(this._ottoPulseWave);
+    else osc1.type = 'triangle';
+    this._setVal(osc1.frequency, this._clampFreq(fBase * approachRatio), now);
+    this._expRamp(osc1.frequency, this._clampFreq(fBase * recedeRatio), tPass + 0.08);
 
+    const subOsc = this.ctx.createOscillator();
+    subOsc.type = 'sine';
+    this._setVal(subOsc.frequency, this._clampFreq(fBase * 0.5 * approachRatio), now);
+    this._expRamp(subOsc.frequency, this._clampFreq(fBase * 0.5 * recedeRatio), tPass + 0.08);
+    const subG = this.ctx.createGain();
+    subG.gain.value = 0.65;
+
+    osc1.connect(distLp);
+    subOsc.connect(subG);
+    subG.connect(distLp);
     distLp.connect(flybyGain);
     flybyGain.connect(panner);
-
-    // 2. Sub-Bass Aerodynamic Wake Shockwave & Air Tear right at lens pass
-    const subShock = this.ctx.createOscillator();
-    subShock.type = 'triangle';
-    this._setVal(subShock.frequency, 124, tPass - 0.08);
-    this._expRamp(subShock.frequency, 34, tPass + 0.19);
-    const subGain = this.ctx.createGain();
-    this._setVal(subGain.gain, 0.002, tPass - 0.08);
-    this._linRamp(subGain.gain, 0.30, tPass);
-    this._expRamp(subGain.gain, 0.001, tPass + 0.23);
-    subShock.connect(subGain);
-    subGain.connect(panner);
-
-    const wakeSrc = this.ctx.createBufferSource();
-    wakeSrc.buffer = this.sampleBuffers.aeroWind || this._noisePinkBuf;
-    const wakeBp = this.ctx.createBiquadFilter();
-    wakeBp.type = 'bandpass';
-    wakeBp.Q.value = 1.5;
-    this._setVal(wakeBp.frequency, 1280, tPass - 0.10);
-    this._expRamp(wakeBp.frequency, 165, tPass + 0.30);
-    const wakeGain = this.ctx.createGain();
-    this._setVal(wakeGain.gain, 0.002, tPass - 0.10);
-    this._linRamp(wakeGain.gain, 0.25, tPass + 0.01);
-    this._expRamp(wakeGain.gain, 0.001, tPass + 0.32);
-    wakeSrc.connect(wakeBp);
-    wakeBp.connect(wakeGain);
-    wakeGain.connect(panner);
-
     panner.connect(this.sfxBus);
-    // Send TV fly-by into Grand Prix Valley IR so the pass echoes naturally across the valley!
-    if (this.valleyConvolver && this.valleyConvolver.buffer) {
-      const tvEchoSend = this.ctx.createGain();
-      tvEchoSend.gain.value = 0.38;
-      panner.connect(tvEchoSend);
-      tvEchoSend.connect(this.valleyConvolver);
-      cleanupRef.onended = () => {
-        try { panner.disconnect(); } catch (_) {}
-        try { tvEchoSend.disconnect(); } catch (_) {}
-      };
-    } else if (cleanupRef) {
-      cleanupRef.onended = () => {
-        try { panner.disconnect(); } catch (_) {}
-      };
-    }
 
-    subShock.start(tPass - 0.08);
-    subShock.stop(tPass + 0.25);
-    wakeSrc.start(tPass - 0.10);
-    wakeSrc.stop(tPass + 0.34);
+    osc1.onended = () => {
+      try { panner.disconnect(); } catch (_) {}
+    };
+    osc1.start(now);
+    subOsc.start(now);
+    osc1.stop(tEnd + 0.03);
+    subOsc.stop(tEnd + 0.03);
   }
 
   // --------------------------------------------------------------------------
-  // NATURAL NON-CHEESY STADIUM CROWD CHEERS (GRANULAR VOCAL ROAR + APPLAUSE)
+  // WARM, SUBTLE STADIUM CROWD CHEERS (LOW-PASSED FORMANT SWELL)
   // --------------------------------------------------------------------------
-  playCrowdCheer(intensity = 0.8) {
+  playCrowdCheer(intensity = 0.7) {
     if (!this.initialized || this.muted || !this.ctx || this.isRetroMode) return;
     const nowMs = performance.now();
-    if (nowMs - this._lastCrowdMs < 420) return;
+    if (nowMs - this._lastCrowdMs < 550) return;
     this._lastCrowdMs = nowMs;
 
     this._ensureRunning();
     const now = this.ctx.currentTime;
-    const lvl = Math.max(0.15, Math.min(1.0, this._num(intensity, 0.8)));
-    const helmetAtten = this._isCockpitView ? 0.74 : 1.0;
-    const amp = lvl * helmetAtten;
-    const dur = 2.05;
+    const lvl = Math.max(0.15, Math.min(1.0, this._num(intensity, 0.7)));
+    const amp = lvl * (this._isCockpitView ? 0.65 : 0.85);
+    const dur = 1.65;
 
-    if (this.sampleBuffers.crowdRoar) {
-      // Wide-stereo decorrelated granular stadium crowd swell (zero synth buzzer horns!)
-      [-0.62, 0.62].forEach((panSide, idx) => {
-        const src = this.ctx.createBufferSource();
-        src.buffer = this.sampleBuffers.crowdRoar;
-        src.loop = true;
-        const baseRate = idx === 0 ? 1.02 : 0.97;
-        this._setVal(src.playbackRate, baseRate, now);
-        this._linRamp(src.playbackRate, baseRate * 1.06, now + 0.38);
-        this._linRamp(src.playbackRate, baseRate * 0.98, now + dur);
-
-        const swellEq = this.ctx.createBiquadFilter();
-        swellEq.type = 'peaking';
-        swellEq.frequency.value = 1350 + idx * 180;
-        swellEq.Q.value = 1.25;
-        this._setVal(swellEq.gain, 1.0, now);
-        this._linRamp(swellEq.gain, 5.5, now + 0.35);
-        this._linRamp(swellEq.gain, 0.5, now + dur);
-
-        const g = this.ctx.createGain();
-        this._setVal(g.gain, 0.002, now);
-        this._linRamp(g.gain, 0.22 * amp, now + 0.28);
-        this._linRamp(g.gain, 0.16 * amp, now + 0.82);
-        this._expRamp(g.gain, 0.001, now + dur);
-
-        const panner = this._createPanner(panSide);
-        src.connect(swellEq);
-        swellEq.connect(g);
-        g.connect(panner);
-        panner.connect(this.sfxBus);
-        if (this.reverbSendSfx) panner.connect(this.reverbSendSfx);
-
-        src.onended = () => {
-          try { panner.disconnect(); } catch (_) {}
-        };
-        src.start(now, (idx * 1.15) % Math.max(0.5, this.sampleBuffers.crowdRoar.duration));
-        src.stop(now + dur + 0.04);
-      });
-      return;
-    }
-
-    // Fallback formant swell if triggered in <80ms before buffer decode
-    [-0.60, 0.60].forEach((panPos, idx) => {
+    [-0.50, 0.50].forEach((panPos, idx) => {
       const src = this.ctx.createBufferSource();
       src.buffer = this._noisePinkBuf;
       src.loop = true;
       const f1 = this.ctx.createBiquadFilter();
-      f1.type = 'bandpass';
-      f1.Q.value = 1.5;
-      this._setVal(f1.frequency, 560 + idx * 35, now);
-      this._linRamp(f1.frequency, 760, now + 0.42);
-      this._expRamp(f1.frequency, 510, now + dur);
+      f1.type = 'lowpass';
+      f1.Q.value = 0.707;
+      this._setVal(f1.frequency, 380 + idx * 25, now);
+      this._linRamp(f1.frequency, 540, now + 0.35);
+      this._expRamp(f1.frequency, 320, now + dur);
       const g = this.ctx.createGain();
       this._setVal(g.gain, 0.002, now);
-      this._linRamp(g.gain, 0.15 * amp, now + 0.28);
+      this._linRamp(g.gain, 0.055 * amp, now + 0.25);
       this._expRamp(g.gain, 0.001, now + dur);
       const panner = this._createPanner(panPos);
       src.connect(f1);
@@ -2846,90 +1628,13 @@ export class ProceduralAudioEngine {
       g.connect(panner);
       panner.connect(this.sfxBus);
       src.onended = () => { try { panner.disconnect(); } catch (_) {} };
-      src.start(now, idx * 0.8);
+      src.start(now, idx * 0.6);
       src.stop(now + dur + 0.03);
     });
   }
 
-  playCrowdCheerSurge(intensity = 1.0) {
-    if (!this.initialized || this.muted || !this.ctx || this.isRetroMode) return;
-    const nowMs = performance.now();
-    if (nowMs - this._lastCrowdSurgeMs < 360) return;
-    this._lastCrowdSurgeMs = nowMs;
-
-    this._ensureRunning();
-    const now = this.ctx.currentTime;
-    const lvl = Math.max(0.20, Math.min(1.15, this._num(intensity, 1.0)));
-    const helmetAtten = this._isCockpitView ? 0.76 : 1.0;
-    const amp = lvl * helmetAtten;
-    const dur = 2.45;
-
-    if (this.sampleBuffers.crowdRoar) {
-      // Natural packed grandstand roar surge + organic open-air applause shimmer (zero cartoon horns!)
-      [-0.74, 0.74].forEach((panSide, idx) => {
-        const src = this.ctx.createBufferSource();
-        src.buffer = this.sampleBuffers.crowdRoar;
-        src.loop = true;
-        const baseRate = idx === 0 ? 1.04 : 0.99;
-        this._setVal(src.playbackRate, baseRate * 0.96, now);
-        this._linRamp(src.playbackRate, baseRate * 1.10, now + 0.34);
-        this._linRamp(src.playbackRate, baseRate * 0.97, now + dur);
-
-        const crestEq = this.ctx.createBiquadFilter();
-        crestEq.type = 'peaking';
-        crestEq.frequency.value = 1520 + idx * 190;
-        crestEq.Q.value = 1.2;
-        this._setVal(crestEq.gain, 1.5, now);
-        this._linRamp(crestEq.gain, 6.8, now + 0.32);
-        this._linRamp(crestEq.gain, 0.8, now + dur);
-
-        const g = this.ctx.createGain();
-        this._setVal(g.gain, 0.002, now);
-        this._linRamp(g.gain, 0.25 * amp, now + 0.24);
-        this._linRamp(g.gain, 0.19 * amp, now + 0.92);
-        this._expRamp(g.gain, 0.001, now + dur);
-
-        const panner = this._createPanner(panSide);
-        if (panner.pan) {
-          this._setVal(panner.pan, panSide, now);
-          this._linRamp(panner.pan, panSide * -0.35, now + dur);
-        }
-
-        src.connect(crestEq);
-        crestEq.connect(g);
-        g.connect(panner);
-        panner.connect(this.sfxBus);
-        if (this.reverbSendSfx) panner.connect(this.reverbSendSfx);
-
-        src.onended = () => {
-          try { panner.disconnect(); } catch (_) {}
-        };
-        src.start(now, (0.35 + idx * 1.25) % Math.max(0.5, this.sampleBuffers.crowdRoar.duration));
-        src.stop(now + dur + 0.04);
-      });
-
-      // Soft natural stadium applause air shimmer
-      const clapSrc = this.ctx.createBufferSource();
-      clapSrc.buffer = this._noisePinkBuf;
-      clapSrc.loop = true;
-      const clapBp = this.ctx.createBiquadFilter();
-      clapBp.type = 'bandpass';
-      clapBp.frequency.value = 2650;
-      clapBp.Q.value = 1.4;
-      const clapGain = this.ctx.createGain();
-      this._setVal(clapGain.gain, 0.001, now);
-      this._linRamp(clapGain.gain, 0.042 * amp, now + 0.22);
-      this._expRamp(clapGain.gain, 0.0008, now + dur * 0.90);
-      clapSrc.connect(clapBp);
-      clapBp.connect(clapGain);
-      clapGain.connect(this.sfxBus);
-      clapSrc.onended = () => { try { clapGain.disconnect(); } catch (_) {} };
-      clapSrc.start(now);
-      clapSrc.stop(now + dur);
-      return;
-    }
-
-    this.playCrowdCheer(lvl);
+  playCrowdCheerSurge(intensity = 0.85) {
+    this.playCrowdCheer(Math.min(1.0, this._num(intensity, 0.85)));
   }
 
   // --------------------------------------------------------------------------

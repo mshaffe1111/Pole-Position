@@ -1,33 +1,38 @@
 // ============================================================================
 // RACE PHANATIC F1 — POLE POSITION 2026: RETRO GRAND PRIX
-// Sim-Grade 1:1 Motion-Matched Mobile Multi-Touch, Tilt Gyro, Keyboard & Gamepad:
-// - Pure 1:1 Linear Rack Mapping (λ = 0 default, ±180° F1 12:1 Wheel, ±26° Tilt)
-// - Casiez 1€ Adaptive Low-Pass Filters (Wheel/Slider 18Hz & Tilt Gyro 4.5Hz)
+// Smooth, Forgiving, User-Friendly Mobile Multi-Touch, Tilt Gyro, Keyboard & Gamepad:
+// - Progressive User-Friendly Steering Curve (λ = 0.35 default, ±180° F1 Wheel, ±28° Tilt)
+// - Steering Assist / Traction Control ('FULL' | 'SPORT' | 'OFF', default 'FULL')
+//   with Gentle Road-Tangent Centering & Anti-Twitch Smoothing
+// - Casiez 1€ Adaptive Low-Pass Filters (Wheel/Slider 6.5Hz & Tilt Gyro 3.2Hz)
 // - Zero Closed-Loop SAT Input Fighting (SAT + Flat-Spot -> FFB Arc & Haptics)
 // - C1-Continuous Key/Arrow Rate Envelopes & Progressive 0->100% Analog Pedals
 // - Unified Brake Assist ('OFF' | 'MIN' | 'FULL') Delegated to 240Hz Physics
 // ============================================================================
 
-const WHEEL_MICRO_DEADZONE_PX = 2.0;
-const WHEEL_DEADZONE_KNEE_PX = 2.0;
+const DEFAULT_STEERING_LINEARITY = 0.35;
+const DEFAULT_SENSITIVITY = 0.90;
+
+const WHEEL_MICRO_DEADZONE_PX = 3.0;
+const WHEEL_DEADZONE_KNEE_PX = 3.5;
 const WHEEL_MAX_LOCK_DEG = 180.0;
 
-const TILT_DEADZONE_DEG = 0.5;
-const TILT_DEADZONE_KNEE_DEG = 0.5;
-const TILT_BASE_MAX_DEG = 26.0;
+const TILT_DEADZONE_DEG = 0.8;
+const TILT_DEADZONE_KNEE_DEG = 0.8;
+const TILT_BASE_MAX_DEG = 28.0;
 
 const GAMEPAD_AXIS_DEADZONE = 0.22;
-const GAMEPAD_AXIS_KNEE = 0.04;
+const GAMEPAD_AXIS_KNEE = 0.05;
 const GAMEPAD_TRIGGER_DEADZONE = 0.08;
 
 // Position-mapped inputs NEVER add SAT into steer angle (prevents closed-loop oscillation!)
 const SAT_ACTIVE_ASSIST_BLEND = 0.0;
-const SAT_RELEASE_RETURN_GAIN = 0.35;
+const SAT_RELEASE_RETURN_GAIN = 0.32;
 
-const WHEEL_ONE_EURO_FC_MIN = 18.0;
-const WHEEL_ONE_EURO_BETA = 0.85;
-const TILT_ONE_EURO_FC_MIN = 4.5;
-const TILT_ONE_EURO_BETA = 0.45;
+const WHEEL_ONE_EURO_FC_MIN = 6.5;
+const WHEEL_ONE_EURO_BETA = 0.32;
+const TILT_ONE_EURO_FC_MIN = 3.2;
+const TILT_ONE_EURO_BETA = 0.25;
 
 const TIRE_OUTER_RADIUS_M = 0.36;
 const VISOR_WIPE_DURATION_SEC = 0.38;
@@ -65,19 +70,20 @@ function mapSmoothDeadzoneNormalized(val, deadzone, kneeWidth, maxVal) {
 
 /**
  * C-infinity analytical steering linearity curve:
- * f(x, λ) = (1 - λ)x + λx³, default λ = 0.0 (100% 1:1 proportional mapping!)
+ * f(x, λ) = (1 - λ)x + λx³, default λ = 0.35 (gentle, forgiving center precision + full lock authority)
  */
-export function applySteeringLinearity(x, linearity = 0.0) {
+export function applySteeringLinearity(x, linearity = DEFAULT_STEERING_LINEARITY) {
   const cx = clamp(Number(x) || 0.0, -1.0, 1.0);
-  const lam = clamp(Number(linearity) || 0.0, 0.0, 1.0);
+  const rawLam = (linearity === undefined || linearity === null) ? DEFAULT_STEERING_LINEARITY : Number(linearity);
+  const lam = clamp(Number.isFinite(rawLam) ? rawLam : DEFAULT_STEERING_LINEARITY, 0.0, 1.0);
   if (lam <= 1e-5) return cx;
   return (1.0 - lam) * cx + lam * (cx * cx * cx);
 }
 
 function normalizeLinearitySetting(val) {
-  if (val === null || val === undefined || val === '') return 0.0;
+  if (val === null || val === undefined || val === '') return DEFAULT_STEERING_LINEARITY;
   let num = Number(val);
-  if (!Number.isFinite(num)) return 0.0;
+  if (!Number.isFinite(num)) return DEFAULT_STEERING_LINEARITY;
   if (num > 1.0001) num *= 0.01; // Accept 0..100% slider integers seamlessly
   return clamp(num, 0.0, 1.0);
 }
@@ -100,12 +106,29 @@ export function normalizeBrakingAssist(val) {
 }
 
 /**
+ * Normalize Steering Assist / Traction Control setting to 'FULL' | 'SPORT' | 'OFF' (defaulting to 'FULL'):
+ * - 'FULL' | 'ON' | 'HIGH' | 'MAX' | true -> 'FULL'
+ * - 'SPORT' | 'MED' | 'MEDIUM' | 'LOW' | 'MIN' -> 'SPORT'
+ * - 'OFF' | 'NONE' | '0' | false -> 'OFF'
+ */
+export function normalizeTractionControl(val) {
+  if (val === false) return 'OFF';
+  if (val === true) return 'FULL';
+  if (val === null || val === undefined || val === '') return 'FULL';
+  const upper = String(val).toUpperCase().trim();
+  if (upper === 'OFF' || upper === 'NONE' || upper === '0' || upper === 'FALSE') return 'OFF';
+  if (upper === 'SPORT' || upper === 'MED' || upper === 'MEDIUM' || upper === 'LOW' || upper === 'MIN') return 'SPORT';
+  if (upper === 'FULL' || upper === 'HIGH' || upper === 'MAX' || upper === 'ON' || upper === 'TRUE') return 'FULL';
+  return 'FULL';
+}
+
+/**
  * 1€ Adaptive Low-Pass Filter (Casiez, Roussel & Vogel, CHI 2012):
  * Ultra-steady jitter suppression when holding straight or steady corner arcs,
- * with sub-frame zero-lag tracking on fast hairpin flicks & counter-steer catches.
+ * with smooth adaptive tracking on deliberate corner turn-ins & counter-steer catches.
  */
 export class OneEuroFilter {
-  constructor(fcMin = 18.0, beta = 0.85, dCutoff = 1.5) {
+  constructor(fcMin = WHEEL_ONE_EURO_FC_MIN, beta = WHEEL_ONE_EURO_BETA, dCutoff = 1.5) {
     this.fcMin = fcMin;
     this.beta = beta;
     this.dCutoff = dCutoff;
@@ -168,7 +191,7 @@ export class ErgonomicControls {
     this.steeringStyle = 'WHEEL';     // 'WHEEL' | 'BUTTONS' | 'TILT' | 'SLIDER'
 
     // Active normalized outputs sent to vehicle physics
-    this.steer = 0.0;    // [-1..1] pure 1:1 normalized rack target
+    this.steer = 0.0;    // [-1..1] normalized rack target
     this.throttle = 0.0; // [0..1]
     this.brake = 0.0;    // [0..1] pure manual brake (authoritative assist runs in physics.js)
     this.manualThrottle = 0.0;
@@ -177,23 +200,29 @@ export class ErgonomicControls {
 
     // Customizable Ergonomics & Driving Assists (mirrored at top-level for physics/HUD convenience)
     this.controlSettings = {
-      sensitivity: 1.0,        // [0.6..1.5]
-      steeringLinearity: 0.0,  // [0.0..1.0] 0.0 = 100% 1:1 linear motion mapping
-      linearity: 0.0,          // alias for steeringLinearity
-      controlScale: 1.0,       // [0.65..1.35]
-      controlOpacity: 0.92,    // [0.25..1.0]
-      brakingAssist: 'MIN',    // 'OFF' | 'MIN' | 'FULL' (defaults to 'MIN')
-      autoThrottle: false,     // boolean
-      haptics: true,           // boolean
+      sensitivity: DEFAULT_SENSITIVITY,              // [0.6..1.5] default 0.90 for calm, user-friendly control
+      steeringLinearity: DEFAULT_STEERING_LINEARITY, // [0.0..1.0] default 0.35 forgiving progressive center
+      linearity: DEFAULT_STEERING_LINEARITY,         // alias for steeringLinearity
+      controlScale: 1.0,                             // [0.65..1.35]
+      controlOpacity: 0.92,                          // [0.25..1.0]
+      brakingAssist: 'MIN',                          // 'OFF' | 'MIN' | 'FULL' (defaults to 'MIN')
+      tractionControl: 'FULL',                       // 'FULL' | 'SPORT' | 'OFF' (defaults to 'FULL')
+      autoThrottle: false,                           // boolean
+      haptics: true,                                 // boolean
     };
-    this.sensitivity = 1.0;
-    this.steeringLinearity = 0.0;
-    this.linearity = 0.0;
+    this.sensitivity = DEFAULT_SENSITIVITY;
+    this.steeringLinearity = DEFAULT_STEERING_LINEARITY;
+    this.linearity = DEFAULT_STEERING_LINEARITY;
     this.controlScale = 1.0;
     this.controlOpacity = 0.92;
     this.brakingAssist = 'MIN';
+    this.tractionControl = 'FULL';
     this.autoThrottle = false;
     this.haptics = true;
+
+    // Anti-twitch & road-tangent steering assist state
+    this._assistSmoothedSteer = 0.0;
+    this.roadTangentSteerAssist = 0.0;
 
     // Strict >= 0.22 deadzone prevents phantom pull from virtual HID controllers
     this.gamepadDeadzone = GAMEPAD_AXIS_DEADZONE;
@@ -223,10 +252,10 @@ export class ErgonomicControls {
     this.sliderTouchSteer = 0.0;
     this._sliderZoneBound = false;
 
-    // 1€ Adaptive Low-Pass Filters (Wheel/Slider: 18.0Hz, β=0.85 | Tilt Gyro: 4.5Hz, β=0.45)
-    this._wheelOneEuro = new OneEuroFilter(WHEEL_ONE_EURO_FC_MIN, WHEEL_ONE_EURO_BETA, 1.8);
-    this._sliderOneEuro = new OneEuroFilter(WHEEL_ONE_EURO_FC_MIN, WHEEL_ONE_EURO_BETA, 1.8);
-    this._tiltOneEuro = new OneEuroFilter(TILT_ONE_EURO_FC_MIN, TILT_ONE_EURO_BETA, 1.4);
+    // 1€ Adaptive Low-Pass Filters (Wheel/Slider: 6.5Hz, β=0.32 | Tilt Gyro: 3.2Hz, β=0.25)
+    this._wheelOneEuro = new OneEuroFilter(WHEEL_ONE_EURO_FC_MIN, WHEEL_ONE_EURO_BETA, 1.5);
+    this._sliderOneEuro = new OneEuroFilter(WHEEL_ONE_EURO_FC_MIN, WHEEL_ONE_EURO_BETA, 1.5);
+    this._tiltOneEuro = new OneEuroFilter(TILT_ONE_EURO_FC_MIN, TILT_ONE_EURO_BETA, 1.2);
 
     // Dual Arrow Buttons pointer state (seamless thumb-slide between ◀ and ▶)
     this.arrowPointerId = null;
@@ -1142,12 +1171,12 @@ export class ErgonomicControls {
   }
 
   _recomputeTiltRawSteer() {
-    const sens = clamp(this.controlSettings.sensitivity || 1.0, 0.6, 1.5);
+    const sens = clamp(this.controlSettings.sensitivity || DEFAULT_SENSITIVITY, 0.6, 1.5);
     const lam = this.controlSettings.steeringLinearity;
     const deltaDeg = clamp(this._lastRawTiltDeg - this.tiltCenterDeg, -55.0, 55.0);
     const maxTiltDeg = Math.max(8.0, TILT_BASE_MAX_DEG / sens);
 
-    // 0.5° smooth C1 micro-deadzone + 1:1 proportional mapping across ±26°
+    // 0.8° smooth C1 micro-deadzone + progressive user-friendly curve across ±28°
     const lin = mapSmoothDeadzoneNormalized(deltaDeg, TILT_DEADZONE_DEG, TILT_DEADZONE_KNEE_DEG, maxTiltDeg);
     this.tiltRawSteer = applySteeringLinearity(lin, lam);
   }
@@ -1248,6 +1277,20 @@ export class ErgonomicControls {
     if (opts.brakingAssist !== undefined) {
       this.controlSettings.brakingAssist = normalizeBrakingAssist(opts.brakingAssist);
     }
+    if (
+      opts.tractionControl !== undefined ||
+      opts.steerAssist !== undefined ||
+      opts.steeringAssist !== undefined ||
+      opts.stabilityAssist !== undefined
+    ) {
+      const rawTc =
+        opts.tractionControl !== undefined
+          ? opts.tractionControl
+          : (opts.steerAssist !== undefined
+              ? opts.steerAssist
+              : (opts.steeringAssist !== undefined ? opts.steeringAssist : opts.stabilityAssist));
+      this.controlSettings.tractionControl = normalizeTractionControl(rawTc);
+    }
     if (opts.autoThrottle !== undefined) {
       this.controlSettings.autoThrottle = !!opts.autoThrottle;
     }
@@ -1261,6 +1304,7 @@ export class ErgonomicControls {
     this.controlScale = this.controlSettings.controlScale;
     this.controlOpacity = this.controlSettings.controlOpacity;
     this.brakingAssist = this.controlSettings.brakingAssist;
+    this.tractionControl = this.controlSettings.tractionControl;
     this.autoThrottle = this.controlSettings.autoThrottle;
     this.haptics = this.controlSettings.haptics;
 
@@ -1344,12 +1388,12 @@ export class ErgonomicControls {
     const rect = this.wheelZoneEl.getBoundingClientRect();
     const rawDx = e.clientX - this.wheelAnchorX;
 
-    const sens = clamp(this.controlSettings.sensitivity || 1.0, 0.6, 1.5);
+    const sens = clamp(this.controlSettings.sensitivity || DEFAULT_SENSITIVITY, 0.6, 1.5);
     const lam = this.controlSettings.steeringLinearity;
-    const baseDragPx = clamp((rect.width || 168.0) * 0.42, 64.0, 104.0);
+    const baseDragPx = clamp((rect.width || 168.0) * 0.46, 74.0, 116.0);
     const maxDragPx = baseDragPx / sens;
 
-    // 2.0px C1 micro-deadzone + 100% 1:1 linear motion mapping (default λ = 0.0)
+    // 3.0px C1 micro-deadzone + progressive user-friendly curve (default λ = 0.35)
     const lin = mapSmoothDeadzoneNormalized(rawDx, WHEEL_MICRO_DEADZONE_PX, WHEEL_DEADZONE_KNEE_PX, maxDragPx);
     this.wheelTouchSteer = applySteeringLinearity(lin, lam);
   }
@@ -1359,9 +1403,9 @@ export class ErgonomicControls {
     const rect = this.sliderZoneEl.getBoundingClientRect();
     const rawDx = e.clientX - this.sliderAnchorX;
 
-    const sens = clamp(this.controlSettings.sensitivity || 1.0, 0.6, 1.5);
+    const sens = clamp(this.controlSettings.sensitivity || DEFAULT_SENSITIVITY, 0.6, 1.5);
     const lam = this.controlSettings.steeringLinearity;
-    const baseDragPx = clamp((rect.width || 176.0) * 0.44, 64.0, 112.0);
+    const baseDragPx = clamp((rect.width || 176.0) * 0.48, 76.0, 122.0);
     const maxDragPx = baseDragPx / sens;
 
     const lin = mapSmoothDeadzoneNormalized(rawDx, WHEEL_MICRO_DEADZONE_PX, WHEEL_DEADZONE_KNEE_PX, maxDragPx);
@@ -1835,7 +1879,7 @@ export class ErgonomicControls {
       const counterBlend = 1.0 - smoothstep(-0.22, 0.04, aligned);
       const lockBlend = smoothstep(0.14, 0.72, Math.max(0.0, aligned));
       const progressiveTurnRate = fastRate - (fastRate - lockRate) * lockBlend;
-      const highSpeedCalm = 1.0 - 0.18 * smoothstep(155.0, 315.0, speedKmh);
+      const highSpeedCalm = 1.0 - 0.24 * smoothstep(140.0, 310.0, speedKmh);
       const effRate = (progressiveTurnRate * highSpeedCalm) * (1.0 - counterBlend) + counterRate * counterBlend;
 
       const next = currentSteer + (target - currentSteer) * expSmoothing(effRate, dt);
@@ -1846,13 +1890,46 @@ export class ErgonomicControls {
 
     // Smooth C1 self-centering release envelope (guided gently by pneumatic-trail / oversteer SAT)
     const satGuide = Math.abs(this.selfAligningTorque) > 0.04 && speedKmh > 22.0
-      ? clamp(this.selfAligningTorque * SAT_RELEASE_RETURN_GAIN, -0.35, 0.35)
+      ? clamp(this.selfAligningTorque * SAT_RELEASE_RETURN_GAIN, -0.32, 0.32)
       : 0.0;
     const absCur = Math.abs(currentSteer);
-    const returnRate = 13.5 + 5.0 * smoothstep(0.06, 0.55, absCur);
+    const returnRate = 14.0 + 5.0 * smoothstep(0.06, 0.55, absCur);
     const next = currentSteer + (satGuide - currentSteer) * expSmoothing(returnRate, dt);
     if (satGuide === 0.0 && Math.abs(next) < 0.0015) return 0.0;
     return clamp(next, -1.0, 1.0);
+  }
+
+  /**
+   * Gentle Road-Tangent Alignment & Curvature Steering Assist ('FULL' | 'SPORT' | 'OFF'):
+   * Helps keep the car aligned with the road tangent and gently tracks upcoming road curves
+   * when near center or releasing controls, without ever fighting deliberate cornering lock.
+   */
+  _computeRoadTangentSteerAssist(playerCar, rawSteerTarget, tcAssistWeight, speedKmhNow, kRealAhead) {
+    if (tcAssistWeight <= 0.0 || !playerCar || playerCar.exploded || playerCar.inPitLane || speedKmhNow < 12.0) {
+      this.roadTangentSteerAssist = 0.0;
+      return 0.0;
+    }
+
+    const relYaw = clamp(Number(playerCar.relYaw) || 0.0, -0.85, 0.85);
+    const latOffset = clamp(Number(playerCar.t) || 0.0, -1.2, 1.2);
+    const yawRate = clamp(Number(playerCar.yawRate) || 0.0, -3.5, 3.5);
+    const speedGate = smoothstep(12.0, 48.0, speedKmhNow);
+
+    // Road-tangent heading restoration + gentle curvature lead + yaw-oscillation damping
+    const headingCorrection = -relYaw * 0.58 - yawRate * 0.055;
+    const laneCenterGentle = Math.abs(latOffset) > 0.35 ? -latOffset * 0.06 : 0.0;
+    const curveFollow = clamp((Number(kRealAhead) || 0.0) * 14.0, -0.26, 0.26);
+
+    // Active near center (|rawSteerTarget| < 0.30) so straights & gentle bends are effortless,
+    // fading smoothly to 0.0 when the player holds a deliberate cornering angle (>= 0.30)!
+    const centerWindow = 1.0 - smoothstep(0.04, 0.30, Math.abs(rawSteerTarget));
+    const assist = clamp(
+      (headingCorrection + laneCenterGentle + curveFollow) * speedGate * tcAssistWeight * centerWindow,
+      -0.32,
+      0.32
+    );
+    this.roadTangentSteerAssist = assist;
+    return assist;
   }
 
   triggerVisorTearOff() {
@@ -1887,28 +1964,38 @@ export class ErgonomicControls {
 
   update(dt, playerCar) {
     const safeDt = Number.isFinite(dt) ? clamp(dt, 0.0005, 0.1) : (1.0 / 60.0);
-    const sens = clamp(this.controlSettings.sensitivity || 1.0, 0.6, 1.5);
+
+    // Sync top-level tractionControl if mutated directly by external UI/main.js
+    if (this.tractionControl !== this.controlSettings.tractionControl) {
+      const normTc = normalizeTractionControl(this.tractionControl);
+      this.tractionControl = normTc;
+      this.controlSettings.tractionControl = normTc;
+    }
+    const tcMode = this.controlSettings.tractionControl || 'FULL';
+    const tcAssistWeight = tcMode === 'FULL' ? 1.0 : (tcMode === 'SPORT' ? 0.55 : 0.0);
+
+    const sens = clamp(this.controlSettings.sensitivity || DEFAULT_SENSITIVITY, 0.6, 1.5);
     const speedKmhNow = Math.max(0.0, Number(playerCar?.speedKmh) || 0.0);
-    const discreteRateSens = 0.78 + 0.22 * sens;
+    const discreteRateSens = 0.76 + 0.24 * sens;
 
     // 0. Update physics-driven SAT & tire flat-spot feedback (guarded to run at most once per frame!)
     this.applyPhysicsFeedback(playerCar, safeDt, true);
 
-    // 1. HTML5 Gamepad polling (strict >= 0.22 C1 deadzone + 1:1 linear stick mapping)
+    // 1. HTML5 Gamepad polling (strict >= 0.22 C1 deadzone + progressive user-friendly stick mapping)
     const { gpSteer, gpGas, gpBrake, gpDpadDir } = this._pollGamepad();
 
-    // 2. Smooth C1-continuous Keyboard & Gamepad D-Pad steering envelope (zero 0.30 step kink!)
+    // 2. Smooth C1-continuous Keyboard & Gamepad D-Pad steering envelope (calm, user-friendly rates, zero step kink!)
     const leftDown = this.keys.has('KeyA') || this.keys.has('ArrowLeft') || gpDpadDir < 0;
     const rightDown = this.keys.has('KeyD') || this.keys.has('ArrowRight') || gpDpadDir > 0;
     const kbDir = (rightDown ? 1 : 0) - (leftDown ? 1 : 0);
     this.kbSteer = this._stepSmoothDiscreteSteer(
       this.kbSteer,
       kbDir,
-      clamp(sens, 0.75, 1.0),
+      clamp(sens, 0.72, 1.0),
       speedKmhNow,
-      14.5 * discreteRateSens,
-      8.6 * discreteRateSens,
-      22.0 * discreteRateSens,
+      10.5 * discreteRateSens,
+      6.5 * discreteRateSens,
+      18.0 * discreteRateSens,
       safeDt
     );
 
@@ -1918,13 +2005,13 @@ export class ErgonomicControls {
       this.arrowDir,
       clamp(sens, 0.72, 1.0),
       speedKmhNow,
-      16.5 * discreteRateSens,
-      9.4 * discreteRateSens,
-      24.0 * discreteRateSens,
+      11.5 * discreteRateSens,
+      7.0 * discreteRateSens,
+      19.5 * discreteRateSens,
       safeDt
     );
 
-    // 4. 1€ Adaptive Low-Pass Filter on Tilt Gyro (fcMin = 4.5Hz, beta = 0.45, 0.5° C1 deadzone)
+    // 4. 1€ Adaptive Low-Pass Filter on Tilt Gyro (fcMin = 3.2Hz, beta = 0.25, 0.8° C1 deadzone)
     if (this.steeringStyle === 'TILT' && this.tiltSensorAvailable) {
       this.tiltFilteredSteer = this._tiltOneEuro.filter(this.tiltRawSteer, safeDt);
     } else if (this.tiltFilteredSteer !== 0.0) {
@@ -1944,54 +2031,87 @@ export class ErgonomicControls {
       wheelActive &&
       (this.steeringStyle !== 'TILT' || !this.tiltSensorAvailable || this._wheelMaxMovePx > 10.0);
 
+    let rawSteerTarget = this.steer;
+    let positionMappedActive = false;
+
     if (sliderActive) {
-      this.steer = clamp(this._sliderOneEuro.filter(this.sliderTouchSteer, safeDt), -1.0, 1.0);
+      rawSteerTarget = clamp(this._sliderOneEuro.filter(this.sliderTouchSteer, safeDt), -1.0, 1.0);
+      positionMappedActive = true;
     } else if (wheelDraggingActively) {
-      // 1€ Adaptive Low-Pass Filter on Touch Wheel (fcMin = 18.0Hz, beta = 0.85) -> pure 1:1 tracking!
-      this.steer = clamp(this._wheelOneEuro.filter(this.wheelTouchSteer, safeDt), -1.0, 1.0);
+      rawSteerTarget = clamp(this._wheelOneEuro.filter(this.wheelTouchSteer, safeDt), -1.0, 1.0);
+      positionMappedActive = true;
     } else if (Math.abs(gpSteer) > 0.001 && Math.abs(gpSteer) >= Math.abs(this.kbSteer)) {
-      this.steer = clamp(gpSteer, -1.0, 1.0);
+      rawSteerTarget = clamp(gpSteer, -1.0, 1.0);
+      positionMappedActive = true;
     } else if (arrowActive || Math.abs(this.arrowRampSteer) > 0.001) {
-      this.steer = clamp(this.arrowRampSteer + SAT_ACTIVE_ASSIST_BLEND * this.selfAligningTorque, -1.0, 1.0);
+      rawSteerTarget = clamp(this.arrowRampSteer + SAT_ACTIVE_ASSIST_BLEND * this.selfAligningTorque, -1.0, 1.0);
     } else if (kbDir !== 0 || Math.abs(this.kbSteer) > 0.001) {
-      this.steer = clamp(this.kbSteer + SAT_ACTIVE_ASSIST_BLEND * this.selfAligningTorque, -1.0, 1.0);
+      rawSteerTarget = clamp(this.kbSteer + SAT_ACTIVE_ASSIST_BLEND * this.selfAligningTorque, -1.0, 1.0);
     } else if (this.steeringStyle === 'TILT' && this.tiltSensorAvailable) {
-      this.steer = clamp(this.tiltFilteredSteer, -1.0, 1.0);
+      rawSteerTarget = clamp(this.tiltFilteredSteer, -1.0, 1.0);
+      positionMappedActive = true;
     } else {
       // Released wheel / idle rack: smooth self-centering guided gently by pneumatic-trail SAT
       const satReturnTarget = Math.abs(this.selfAligningTorque) > 0.04 && speedKmhNow > 22.0
-        ? clamp(this.selfAligningTorque * SAT_RELEASE_RETURN_GAIN, -0.35, 0.35)
+        ? clamp(this.selfAligningTorque * SAT_RELEASE_RETURN_GAIN, -0.32, 0.32)
         : 0.0;
-      if (this.steer !== 0.0 || satReturnTarget !== 0.0) {
-        const returnRate = 14.0 + 4.5 * smoothstep(0.05, 0.50, Math.abs(this.steer));
-        this.steer += (satReturnTarget - this.steer) * expSmoothing(returnRate, safeDt);
-        if (satReturnTarget === 0.0 && Math.abs(this.steer) < 0.0015) this.steer = 0.0;
-      }
+      const returnRate = 14.0 + 4.5 * smoothstep(0.05, 0.50, Math.abs(this.steer));
+      rawSteerTarget = this.steer + (satReturnTarget - this.steer) * expSmoothing(returnRate, safeDt);
+      if (satReturnTarget === 0.0 && Math.abs(rawSteerTarget) < 0.0015) rawSteerTarget = 0.0;
     }
 
-    this.steer = clamp(this.steer, -1.0, 1.0);
-
-    // 5b. Smooth Cockpit Look-to-Apex signal (using true unscaled curvature 1/m!) & Visor Tear-Off
+    // 5a. Read true road curvature ahead (1/m) for Road-Tangent Steering Assist & Look-to-Apex
+    let kRealAhead = 0.0;
     let apexCurveHint = 0.0;
-    if (playerCar && speedKmhNow > 18.0) {
+    if (playerCar && speedKmhNow > 12.0) {
       const track = (typeof window !== 'undefined' && window.__RACE_PHANATIC_GAME__?.track) || null;
       if (track) {
         const mPerG =
           track.metersPerGameUnit ||
           track.realMetersPerGameMeter ||
           (track.realLengthM && track.totalLength ? track.realLengthM / track.totalLength : 4.36);
-        const sAhead = (playerCar.s + 24.0 / Math.max(0.5, mPerG)) % 1000;
-        let kReal = 0.0;
+        const sAhead = (playerCar.s + 22.0 / Math.max(0.5, mPerG)) % (track.totalLength || 1000);
         if (typeof track.getRealCurvature === 'function') {
-          kReal = Number(track.getRealCurvature(sAhead)) || 0.0;
+          kRealAhead = Number(track.getRealCurvature(sAhead)) || 0.0;
         } else if (typeof track.getTrueCurvaturePerMeter === 'function') {
-          kReal = Number(track.getTrueCurvaturePerMeter(sAhead)) || 0.0;
+          kRealAhead = Number(track.getTrueCurvaturePerMeter(sAhead)) || 0.0;
         } else if (typeof track.getPhysicsCurvature === 'function') {
-          kReal = (Number(track.getPhysicsCurvature(sAhead)) || 0.0) / 82.0;
+          kRealAhead = (Number(track.getPhysicsCurvature(sAhead)) || 0.0) / 82.0;
         }
-        apexCurveHint = Math.tanh(kReal * 28.0);
+        apexCurveHint = Math.tanh(kRealAhead * 28.0);
+      } else if (Number.isFinite(playerCar.realCurvature)) {
+        kRealAhead = Number(playerCar.realCurvature);
+        apexCurveHint = Math.tanh(kRealAhead * 28.0);
       }
     }
+
+    // 5b. Apply Traction Control / Steering Assist road-tangent centering & anti-twitch smoothing
+    const roadAssist = this._computeRoadTangentSteerAssist(
+      playerCar,
+      rawSteerTarget,
+      tcAssistWeight,
+      speedKmhNow,
+      kRealAhead
+    );
+    const assistedTarget = clamp(rawSteerTarget + roadAssist, -1.0, 1.0);
+
+    if (tcAssistWeight > 0.0 && positionMappedActive) {
+      // Smooth anti-twitch filter on position-mapped inputs (absorbs sudden thumb/wrist twitches while converging cleanly)
+      const isCounter = assistedTarget * this._assistSmoothedSteer < -0.005;
+      const baseCutRate = isCounter
+        ? 26.0
+        : (18.5 + (1.0 - tcAssistWeight) * 10.0) * (1.0 - 0.18 * tcAssistWeight * smoothstep(110.0, 290.0, speedKmhNow));
+      this._assistSmoothedSteer += (assistedTarget - this._assistSmoothedSteer) * expSmoothing(baseCutRate, safeDt);
+      if (Math.abs(assistedTarget - this._assistSmoothedSteer) < 0.0005) {
+        this._assistSmoothedSteer = assistedTarget;
+      }
+      this.steer = clamp(this._assistSmoothedSteer, -1.0, 1.0);
+    } else {
+      this._assistSmoothedSteer = assistedTarget;
+      this.steer = assistedTarget;
+    }
+
+    // 5c. Smooth Cockpit Look-to-Apex signal & Visor Tear-Off
     const targetLookApex = clamp(this.steer * 0.72 + apexCurveHint * 0.28, -1.0, 1.0);
     this.lookApexNormalized += (targetLookApex - this.lookApexNormalized) * expSmoothing(9.5, safeDt);
     if (Math.abs(targetLookApex) < 0.003 && Math.abs(this.lookApexNormalized) < 0.002) {
@@ -2003,6 +2123,7 @@ export class ErgonomicControls {
     }
 
     if (playerCar) {
+      playerCar.tractionControl = this.tractionControl;
       playerCar.lookApexNormalized = this.lookApexNormalized;
       playerCar.visorTearOffProgress = this.visorTearOffProgress;
     }

@@ -35,6 +35,12 @@ enum BrakingAssist {
 	FULL = 2,
 }
 
+enum TractionControl {
+	OFF = 0,
+	SPORT = 1,
+	FULL = 2,
+}
+
 enum CameraMode {
 	CHASE = 0,
 	TCAM_OVERHEAD = 1,
@@ -43,25 +49,28 @@ enum CameraMode {
 	HOOD_NOSE = 4,
 }
 
-const WHEEL_MICRO_DEADZONE_PX: float = 2.0
-const WHEEL_DEADZONE_KNEE_PX: float = 2.0
+const DEFAULT_STEERING_LINEARITY: float = 0.35
+const DEFAULT_SENSITIVITY: float = 0.90
+
+const WHEEL_MICRO_DEADZONE_PX: float = 3.0
+const WHEEL_DEADZONE_KNEE_PX: float = 3.5
 const WHEEL_MAX_LOCK_DEG: float = 180.0
 
-const TILT_DEADZONE_DEG: float = 0.5
-const TILT_DEADZONE_KNEE_DEG: float = 0.5
-const TILT_BASE_MAX_DEG: float = 26.0
+const TILT_DEADZONE_DEG: float = 0.8
+const TILT_DEADZONE_KNEE_DEG: float = 0.8
+const TILT_BASE_MAX_DEG: float = 28.0
 
 const GAMEPAD_AXIS_DEADZONE: float = 0.22
-const GAMEPAD_AXIS_KNEE: float = 0.04
+const GAMEPAD_AXIS_KNEE: float = 0.05
 const GAMEPAD_TRIGGER_DEADZONE: float = 0.08
 
 const SAT_ACTIVE_ASSIST_BLEND: float = 0.0
-const SAT_RELEASE_RETURN_GAIN: float = 0.35
+const SAT_RELEASE_RETURN_GAIN: float = 0.32
 
-const WHEEL_ONE_EURO_FC_MIN: float = 18.0
-const WHEEL_ONE_EURO_BETA: float = 0.85
-const TILT_ONE_EURO_FC_MIN: float = 4.5
-const TILT_ONE_EURO_BETA: float = 0.45
+const WHEEL_ONE_EURO_FC_MIN: float = 6.5
+const WHEEL_ONE_EURO_BETA: float = 0.32
+const TILT_ONE_EURO_FC_MIN: float = 3.2
+const TILT_ONE_EURO_BETA: float = 0.25
 
 const TIRE_OUTER_RADIUS_M: float = 0.36
 const FORGIVING_HALO_PAD_PX: float = 38.0
@@ -91,8 +100,9 @@ const VISOR_CLEAN_HOLD_SEC: float = 2.20
 @export var steering_style: SteeringStyle = SteeringStyle.WHEEL
 @export var handedness: Handedness = Handedness.RIGHT_HANDED
 @export var braking_assist: BrakingAssist = BrakingAssist.MIN
-@export_range(0.6, 1.5, 0.05) var sensitivity: float = 1.0
-@export_range(0.0, 1.0, 0.01) var steering_linearity: float = 0.0
+@export var traction_control: TractionControl = TractionControl.FULL
+@export_range(0.6, 1.5, 0.05) var sensitivity: float = 0.90
+@export_range(0.0, 1.0, 0.01) var steering_linearity: float = 0.35
 @export_range(0.65, 1.35, 0.05) var control_scale: float = 1.0
 @export_range(0.25, 1.0, 0.05) var control_opacity: float = 0.92
 @export var auto_throttle: bool = false
@@ -102,7 +112,7 @@ const VISOR_CLEAN_HOLD_SEC: float = 2.20
 @export var sat_pneumatic_trail_gain: float = 1.85
 @export var sat_oversteer_catch_gain: float = 2.40
 @export var sat_active_thumb_blend: float = 0.0
-@export var sat_release_return_gain: float = 0.35
+@export var sat_release_return_gain: float = 0.32
 @export var high_speed_steer_clamp_min: float = 1.0
 
 @export_group("Camera Rig Tuning")
@@ -118,6 +128,8 @@ var brake_output: float = 0.0
 var manual_throttle_output: float = 0.0
 var manual_brake_output: float = 0.0
 var assist_brake_applied: float = 0.0
+var road_tangent_steer_assist: float = 0.0
+var _assist_smoothed_steer: float = 0.0
 var self_aligning_torque: float = 0.0
 var ffb_torque_normalized: float = 0.0
 var tire_flat_spot_vibration: float = 0.0
@@ -249,7 +261,50 @@ func get_braking_assist_string() -> String:
 			return "MIN"
 
 
-static func apply_steering_linearity_curve(x: float, lam: float = 0.0) -> float:
+static func normalize_traction_control_mode(val: Variant) -> String:
+	if typeof(val) == TYPE_BOOL:
+		return "FULL" if bool(val) else "OFF"
+	if typeof(val) == TYPE_INT:
+		var iv: int = int(val)
+		if iv <= 0:
+			return "OFF"
+		elif iv == 1:
+			return "SPORT"
+		return "FULL"
+	var s: String = String(val).strip_edges().to_upper()
+	if s == "" or s == "NULL":
+		return "FULL"
+	if s == "OFF" or s == "NONE" or s == "0" or s == "FALSE":
+		return "OFF"
+	if s == "SPORT" or s == "MED" or s == "MEDIUM" or s == "LOW" or s == "MIN":
+		return "SPORT"
+	if s == "FULL" or s == "HIGH" or s == "MAX" or s == "ON" or s == "TRUE":
+		return "FULL"
+	return "FULL"
+
+
+func set_traction_control_from_string(mode_str: Variant) -> String:
+	var norm: String = normalize_traction_control_mode(mode_str)
+	if norm == "OFF":
+		traction_control = TractionControl.OFF
+	elif norm == "SPORT":
+		traction_control = TractionControl.SPORT
+	else:
+		traction_control = TractionControl.FULL
+	return norm
+
+
+func get_traction_control_string() -> String:
+	match traction_control:
+		TractionControl.OFF:
+			return "OFF"
+		TractionControl.SPORT:
+			return "SPORT"
+		_:
+			return "FULL"
+
+
+static func apply_steering_linearity_curve(x: float, lam: float = DEFAULT_STEERING_LINEARITY) -> float:
 	var cx: float = clampf(x, -1.0, 1.0)
 	var clean_lam: float = clampf(lam * 0.01 if lam > 1.0001 else lam, 0.0, 1.0)
 	if clean_lam <= 0.00001:
@@ -534,10 +589,10 @@ func _update_wheel_from_screen_pos(pt: Vector2) -> void:
 	var zone_w: float = 168.0
 	if wheel_zone_control != null and wheel_zone_control.size.x > 10.0:
 		zone_w = wheel_zone_control.size.x
-	var base_drag_px: float = clampf(zone_w * 0.42, 64.0, 104.0)
+	var base_drag_px: float = clampf(zone_w * 0.46, 74.0, 116.0)
 	var max_drag_px: float = base_drag_px / clampf(sensitivity, 0.6, 1.5)
 
-	# 2.0px C1 micro-deadzone + pure 1:1 linear motion mapping (default λ = 0.0)
+	# 3.0px C1 micro-deadzone + progressive user-friendly steering curve (default λ = 0.35)
 	var lin: float = map_smooth_c1_deadzone(raw_dx, WHEEL_MICRO_DEADZONE_PX, WHEEL_DEADZONE_KNEE_PX, max_drag_px)
 	_wheel_raw_steer = apply_steering_linearity_curve(lin, steering_linearity)
 
@@ -547,7 +602,7 @@ func _update_slider_from_screen_pos(pt: Vector2) -> void:
 	var zone_w: float = 176.0
 	if slider_zone_control != null and slider_zone_control.size.x > 10.0:
 		zone_w = slider_zone_control.size.x
-	var base_drag_px: float = clampf(zone_w * 0.44, 64.0, 112.0)
+	var base_drag_px: float = clampf(zone_w * 0.48, 76.0, 122.0)
 	var max_drag_px: float = base_drag_px / clampf(sensitivity, 0.6, 1.5)
 
 	var lin: float = map_smooth_c1_deadzone(raw_dx, WHEEL_MICRO_DEADZONE_PX, WHEEL_DEADZONE_KNEE_PX, max_drag_px)
@@ -775,7 +830,7 @@ func _step_smooth_discrete_steer(
 		var counter_blend: float = 1.0 - smoothstep(-0.22, 0.04, aligned)
 		var lock_blend: float = smoothstep(0.14, 0.72, maxf(0.0, aligned))
 		var prog_rate: float = fast_rate - (fast_rate - lock_rate) * lock_blend
-		var hs_calm: float = 1.0 - 0.18 * smoothstep(155.0, 315.0, speed_kmh)
+		var hs_calm: float = 1.0 - 0.24 * smoothstep(140.0, 310.0, speed_kmh)
 		var eff_rate: float = (prog_rate * hs_calm) * (1.0 - counter_blend) + counter_rate * counter_blend
 		return clampf(lerpf(current_steer, target, 1.0 - exp(-eff_rate * dt)), -1.0, 1.0)
 
@@ -784,12 +839,39 @@ func _step_smooth_discrete_steer(
 
 	var sat_guide: float = 0.0
 	if absf(self_aligning_torque) > 0.04 and speed_kmh > 22.0:
-		sat_guide = clampf(self_aligning_torque * sat_release_return_gain, -0.35, 0.35)
-	var return_rate: float = 13.5 + 5.0 * smoothstep(0.06, 0.55, absf(current_steer))
+		sat_guide = clampf(self_aligning_torque * sat_release_return_gain, -0.32, 0.32)
+	var return_rate: float = 14.0 + 5.0 * smoothstep(0.06, 0.55, absf(current_steer))
 	var next_s: float = lerpf(current_steer, sat_guide, 1.0 - exp(-return_rate * dt))
 	if sat_guide == 0.0 and absf(next_s) < 0.0015:
 		return 0.0
 	return clampf(next_s, -1.0, 1.0)
+
+
+func _compute_road_tangent_steer_assist(
+	raw_steer_target: float,
+	tc_assist_weight: float,
+	speed_kmh: float,
+	k_real_est: float
+) -> float:
+	if tc_assist_weight <= 0.0 or vehicle_node == null or speed_kmh < 12.0:
+		road_tangent_steer_assist = 0.0
+		return 0.0
+	var rel_yaw: float = clampf(_get_vehicle_float(&"rel_yaw", &"relYaw", 0.0), -0.85, 0.85)
+	var lat_offset: float = clampf(_get_vehicle_float(&"lateral_offset_norm", &"t", 0.0), -1.2, 1.2)
+	var yaw_rate: float = clampf(_get_vehicle_float(&"yaw_rate", &"yawRate", 0.0), -3.5, 3.5)
+	var speed_gate: float = smoothstep(12.0, 48.0, speed_kmh)
+
+	var heading_corr: float = -rel_yaw * 0.58 - yaw_rate * 0.055
+	var lane_center: float = -lat_offset * 0.06 if absf(lat_offset) > 0.35 else 0.0
+	var curve_follow: float = clampf(k_real_est * 14.0, -0.26, 0.26)
+	var center_window: float = 1.0 - smoothstep(0.04, 0.30, absf(raw_steer_target))
+	var assist: float = clampf(
+		(heading_corr + lane_center + curve_follow) * speed_gate * tc_assist_weight * center_window,
+		-0.32,
+		0.32
+	)
+	road_tangent_steer_assist = assist
+	return assist
 
 
 func _physics_process(delta: float) -> void:
@@ -808,9 +890,10 @@ func _physics_process(delta: float) -> void:
 
 	# 0. Guarded physics FFB update (executes strictly once per physics frame; zero SAT input fighting!)
 	apply_physics_feedback(vehicle_node, dt)
-	var discrete_rate_sens: float = 0.78 + 0.22 * clampf(sensitivity, 0.6, 1.5)
+	var discrete_rate_sens: float = 0.76 + 0.24 * clampf(sensitivity, 0.6, 1.5)
+	var tc_assist_weight: float = 1.0 if traction_control == TractionControl.FULL else (0.55 if traction_control == TractionControl.SPORT else 0.0)
 
-	# 1. Gamepad Polling (strict >= 0.22 C1 deadzone + pure 1:1 linear stick mapping)
+	# 1. Gamepad Polling (strict >= 0.22 C1 deadzone + progressive user-friendly stick mapping)
 	var gp_steer: float = 0.0
 	var gp_gas: float = 0.0
 	var gp_brake: float = 0.0
@@ -831,18 +914,18 @@ func _physics_process(delta: float) -> void:
 		var d_right: int = 1 if Input.is_joy_button_pressed(0, JOY_BUTTON_DPAD_RIGHT) else 0
 		gp_dpad_dir = d_right - d_left
 
-	# 2. Smooth C1-continuous Keyboard / D-Pad & Touch-Arrow steering envelopes (zero 0.30/0.32 step kink!)
+	# 2. Smooth C1-continuous Keyboard / D-Pad & Touch-Arrow steering envelopes (calm, user-friendly rates, zero step kink!)
 	var kb_left: int = 1 if (Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT) or gp_dpad_dir < 0) else 0
 	var kb_right: int = 1 if (Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT) or gp_dpad_dir > 0) else 0
 	var kb_dir: int = kb_right - kb_left
 	_kb_steer = _step_smooth_discrete_steer(
 		_kb_steer,
 		kb_dir,
-		clampf(sensitivity, 0.75, 1.0),
+		clampf(sensitivity, 0.72, 1.0),
 		speed_kmh,
-		14.5 * discrete_rate_sens,
-		8.6 * discrete_rate_sens,
-		22.0 * discrete_rate_sens,
+		10.5 * discrete_rate_sens,
+		6.5 * discrete_rate_sens,
+		18.0 * discrete_rate_sens,
 		dt
 	)
 
@@ -851,39 +934,57 @@ func _physics_process(delta: float) -> void:
 		_arrow_dir,
 		clampf(sensitivity, 0.72, 1.0),
 		speed_kmh,
-		16.5 * discrete_rate_sens,
-		9.4 * discrete_rate_sens,
-		24.0 * discrete_rate_sens,
+		11.5 * discrete_rate_sens,
+		7.0 * discrete_rate_sens,
+		19.5 * discrete_rate_sens,
 		dt
 	)
 
 	# 3. Combine active steering source (SAT_ACTIVE_ASSIST_BLEND == 0.0 on all position-mapped inputs!)
+	var raw_steer_target: float = steer_output
+	var position_mapped_active: bool = false
 	if _slider_touch_idx != -1:
-		steer_output = clampf(_filter_slider_one_euro(_slider_raw_steer, dt), -1.0, 1.0)
+		raw_steer_target = clampf(_filter_slider_one_euro(_slider_raw_steer, dt), -1.0, 1.0)
+		position_mapped_active = true
 	elif _wheel_touch_idx != -1 and (steering_style != SteeringStyle.TILT or _wheel_max_move_px > 10.0):
-		steer_output = clampf(_filter_wheel_one_euro(_wheel_raw_steer, dt), -1.0, 1.0)
+		raw_steer_target = clampf(_filter_wheel_one_euro(_wheel_raw_steer, dt), -1.0, 1.0)
+		position_mapped_active = true
 	elif absf(gp_steer) > 0.001 and absf(gp_steer) >= absf(_kb_steer):
-		steer_output = clampf(gp_steer, -1.0, 1.0)
+		raw_steer_target = clampf(gp_steer, -1.0, 1.0)
+		position_mapped_active = true
 	elif _arrow_touch_idx != -1 or absf(_arrow_ramp_steer) > 0.001:
-		steer_output = clampf(_arrow_ramp_steer + SAT_ACTIVE_ASSIST_BLEND * self_aligning_torque, -1.0, 1.0)
+		raw_steer_target = clampf(_arrow_ramp_steer + SAT_ACTIVE_ASSIST_BLEND * self_aligning_torque, -1.0, 1.0)
 	elif kb_dir != 0 or absf(_kb_steer) > 0.001:
-		steer_output = clampf(_kb_steer + SAT_ACTIVE_ASSIST_BLEND * self_aligning_torque, -1.0, 1.0)
+		raw_steer_target = clampf(_kb_steer + SAT_ACTIVE_ASSIST_BLEND * self_aligning_torque, -1.0, 1.0)
 	elif steering_style == SteeringStyle.TILT:
-		steer_output = clampf(_compute_tilt_steer(dt), -1.0, 1.0)
+		raw_steer_target = clampf(_compute_tilt_steer(dt), -1.0, 1.0)
+		position_mapped_active = true
 	else:
 		# Released wheel: smooth self-centering guided gently by pneumatic-trail SAT
 		var sat_return: float = 0.0
 		if absf(self_aligning_torque) > 0.04 and speed_kmh > 22.0:
-			sat_return = clampf(self_aligning_torque * sat_release_return_gain, -0.35, 0.35)
+			sat_return = clampf(self_aligning_torque * sat_release_return_gain, -0.32, 0.32)
 		var ret_rate: float = 14.0 + 4.5 * smoothstep(0.05, 0.50, absf(steer_output))
-		steer_output = lerpf(steer_output, sat_return, 1.0 - exp(-ret_rate * dt))
-		if absf(steer_output) < 0.0015 and sat_return == 0.0:
-			steer_output = 0.0
+		raw_steer_target = lerpf(steer_output, sat_return, 1.0 - exp(-ret_rate * dt))
+		if absf(raw_steer_target) < 0.0015 and sat_return == 0.0:
+			raw_steer_target = 0.0
 
-	steer_output = clampf(steer_output, -1.0, 1.0)
+	var k_real_est: float = upcoming_curv / 82.0 if absf(upcoming_curv) > 0.09 else upcoming_curv
+	var road_assist: float = _compute_road_tangent_steer_assist(raw_steer_target, tc_assist_weight, speed_kmh, k_real_est)
+	var assisted_target: float = clampf(raw_steer_target + road_assist, -1.0, 1.0)
+
+	if tc_assist_weight > 0.0 and position_mapped_active:
+		var is_counter: bool = (assisted_target * _assist_smoothed_steer) < -0.005
+		var base_cut_rate: float = 26.0 if is_counter else ((18.5 + (1.0 - tc_assist_weight) * 10.0) * (1.0 - 0.18 * tc_assist_weight * smoothstep(110.0, 290.0, speed_kmh)))
+		_assist_smoothed_steer = lerpf(_assist_smoothed_steer, assisted_target, 1.0 - exp(-base_cut_rate * dt))
+		if absf(assisted_target - _assist_smoothed_steer) < 0.0005:
+			_assist_smoothed_steer = assisted_target
+		steer_output = clampf(_assist_smoothed_steer, -1.0, 1.0)
+	else:
+		_assist_smoothed_steer = assisted_target
+		steer_output = assisted_target
 
 	# 4. Smooth Cockpit Look-to-Apex Normalized Signal & Visor Tear-Off Sweep
-	var k_real_est: float = upcoming_curv / 82.0 if absf(upcoming_curv) > 0.09 else upcoming_curv
 	var curve_norm: float = tanh(k_real_est * 28.0)
 	var target_look_apex: float = clampf(steer_output * 0.72 + curve_norm * 0.28, -1.0, 1.0)
 	look_apex_normalized = lerpf(look_apex_normalized, target_look_apex, 1.0 - exp(-9.5 * dt))
@@ -915,10 +1016,12 @@ func _physics_process(delta: float) -> void:
 
 	ffb_torque_updated.emit(ffb_torque_normalized, tire_flat_spot_vibration, assist_brake_applied)
 
-	# Push normalized inputs + unified brake assist mode ('OFF' | 'MIN' | 'FULL') onto F1VehiclePhysics3D
+	# Push normalized inputs + unified brake assist ('OFF'|'MIN'|'FULL') + traction control ('FULL'|'SPORT'|'OFF') onto F1VehiclePhysics3D
 	if vehicle_node != null:
 		if &"braking_assist_mode" in vehicle_node:
 			vehicle_node.set(&"braking_assist_mode", get_braking_assist_string())
+		if &"traction_control_mode" in vehicle_node:
+			vehicle_node.set(&"traction_control_mode", get_traction_control_string())
 		if &"steer_input" in vehicle_node:
 			vehicle_node.set(&"steer_input", steer_output)
 		if &"throttle_input" in vehicle_node:

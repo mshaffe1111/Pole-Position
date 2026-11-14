@@ -477,8 +477,8 @@ export class SpatialAIController {
     );
 
     let desiredLat = qState.pos;
-    let desiredLatVel = qState.vel;
-    let desiredLatAcc = qState.acc;
+    let desiredLatVel = clamp(qState.vel, -6.2, 6.2);
+    let desiredLatAcc = clamp(qState.acc, -11.5, 11.5);
 
     // Smooth C^2 quintic peel-off toward right-hand Pit Entry split (s in [856..932]) when boxing
     if (!isClassic && !isShowroomDemo && car.aiWantsToPit && !car.inPitLane) {
@@ -604,8 +604,8 @@ export class SpatialAIController {
       const vRefSq = Math.max(11.0, speedMps) * Math.max(11.0, speedMps);
       const pathCurvReal = (blendKReal / frenetJ) + (desiredLatAcc / vRefSq);
 
-      // Dynamic Bicycle Ackermann + Aerodynamic Yaw-Damping + Front-Wing Damage Understeer Compensation
-      // (Exact steady-state inversion of physics.js 240Hz Newton-Euler + Frenet solver!)
+      // Unified Curvature Feedforward + Critically-Damped Lateral/Velocity PD Controller:
+      // Works seamlessly with BOTH planted velocity-damped steering (fe9d70c / TCS) AND 2-DOF bicycle physics!
       const wheelbaseM = 3.60;
       const ackermannRad = Math.atan(wheelbaseM * pathCurvReal);
       const fwDmg = clamp(finiteOr(car.damage?.frontWing, 0.0), 0.0, 1.0);
@@ -613,8 +613,7 @@ export class SpatialAIController {
       const effGripEst = clamp(finiteOr(car._aiCachedEffGrip, 1.0), 0.35, 1.20);
       const latAccelMps2 = pathCurvReal * speedMps * speedMps;
 
-      // In physics.js, cYawDamp = (1080 + 3.4 * v^2) resists steady-state yaw rate r* = k_path * v,
-      // requiring extra front lateral force Delta_Fyf = (cYawDamp * v * k_path) / L
+      // 1) Dynamic-bicycle feedforward (Ackermann + yaw-damping + understeer slip compensation)
       const cYawDamp = 1080.0 + 3.4 * speedMps * speedMps;
       const dfEstN = Math.max(2600.0, (3740.0 + 1.67 * speedMps * speedMps) * 1.48 * effGripEst * (1.0 - 0.45 * fwDmg));
       const cAlphaFront = 14.6 * dfEstN;
@@ -622,32 +621,43 @@ export class SpatialAIController {
       const understeerCompRad =
         yawDampCompRad +
         clamp(latAccelMps2 / Math.max(5.5, 9.81 * effGripEst), -1.15, 1.15) * (0.042 + 0.052 * fwDmg * fastFactor);
-      const deltaFfRad = ackermannRad + understeerCompRad;
-
-      // Critically-damped Frenet Stanley lookahead + lateral-velocity damping (never starved by 1/v^2 clamp!)
-      const latErr = desiredLat - curLat;
-      const latVelLive = Number.isFinite(car.lateralVel) ? car.lateralVel : finiteOr(car._aiMeasuredLatVel, 0.0);
-      const latVelErr = desiredLatVel - latVelLive;
-      const archGain = arch.id === 'APEX_TACTICIAN' ? 1.05 : (arch.id === 'TIRE_WHISPERER' ? 0.94 : 1.0);
-      const lookDistM = clamp(5.5 + speedMps * 0.24, 6.0, 24.0);
-      const crossTrackRad = Math.atan2(latErr * archGain, lookDistM);
-      const dampVelRad = clamp(latVelErr / Math.max(10.0, speedMps * 0.85), -0.24, 0.24);
-      const deltaFbRad = 1.15 * crossTrackRad + 0.88 * dampVelRad;
-
-      // Match physics.js exact steering rack scale: 0.285 * modAgility * highSpeedTaper * lowSpeedAckermann
       const modAgility = clamp(finiteOr(car.perfMods?.agilityMult, 1.0), 0.85, 1.20);
       const highSpeedTaper = 1.0 - 0.14 * smoothstep(235.0, 335.0, speedKmh);
       const lowSpeedAckermann = 1.0 + 0.18 * (1.0 - smoothstep(35.0, 125.0, speedKmh));
       const maxSteerRad = 0.285 * modAgility * highSpeedTaper * lowSpeedAckermann;
-      const aquaplaneBoost = car.aquaplaneTimer > 0 ? 1.45 : 1.0;
-      const totalSteerRad = (deltaFfRad + deltaFbRad) * aquaplaneBoost;
+      const bicycleFfSteer = (ackermannRad + understeerCompRad) / Math.max(0.20, maxSteerRad);
 
-      // TIRE_WHISPERER smoothly caps peak slip-angle scrub (-18% thermal wear!)
+      // 2) Planted velocity-damped inverse centrifugal feedforward (cancels -curK * v^2 * 0.00315)
+      const curKScaled = blendKReal * 82.0;
+      const kvFactor = 1.0 + 0.00015 * speedMps * speedMps;
+      const frontAeroEff = isClassic ? 1.0 : (1.0 - fwDmg * 0.40 * fastFactor);
+      const steerAuth = (car.aquaplaneTimer > 0 ? 0.35 : 1.0) * Math.max(0.45, frontAeroEff);
+      const rateDenom = Math.max(8.0, steerAuth * Math.min(28.5, Math.max(13.5, speedMps * 0.60)));
+      const neededNonLin = clamp((curKScaled * speedMps * speedMps * 0.00315 * kvFactor) / rateDenom, -0.92, 0.92);
+      const plantedFfSteer = neededNonLin === 0.0
+        ? 0.0
+        : Math.sign(neededNonLin) * Math.pow(Math.abs(neededNonLin), 1.0 / 1.32);
+
+      // Auto-blend feedforward: if physics integrates bicycle yawRate, favor bicycleFf; if planted velocity model, favor plantedFf
+      const hasActiveYawRate = Math.abs(finiteOr(car.yawRate, 0.0)) > 0.015;
+      const ffSteer = hasActiveYawRate
+        ? (0.78 * bicycleFfSteer + 0.22 * plantedFfSteer)
+        : (0.45 * bicycleFfSteer + 0.55 * plantedFfSteer);
+
+      // 3) Overdamped cross-track + lateral-velocity PD feedback (zero pendulum oscillation / zero fishtailing!)
+      const latErr = desiredLat - curLat;
+      const latVelLive = Number.isFinite(car.lateralVel) ? car.lateralVel : finiteOr(car._aiMeasuredLatVel, 0.0);
+      const kpBase = arch.id === 'APEX_TACTICIAN' ? 0.36 : (arch.id === 'TIRE_WHISPERER' ? 0.30 : 0.33);
+      const kp = kpBase * (1.0 - 0.22 * smoothstep(180.0, 325.0, speedKmh));
+      const kd = (arch.id === 'TIRE_WHISPERER' ? 0.072 : 0.064) * (1.0 + 0.15 * smoothstep(180.0, 325.0, speedKmh));
+      const fbSteer = clamp(latErr * kp + clamp(desiredLatVel * 0.42 - latVelLive, -14.0, 14.0) * kd, -0.82, 0.82);
+
+      const aquaplaneBoost = car.aquaplaneTimer > 0 ? 1.35 : 1.0;
       const steerCeiling = personality.slipAngleCap < 0.98 && absCurKReal > 0.008 ? 0.94 : 1.0;
-      rawSteer = clamp(totalSteerRad / Math.max(0.20, maxSteerRad), -steerCeiling, steerCeiling);
+      rawSteer = clamp((ffSteer + fbSteer) * aquaplaneBoost, -steerCeiling, steerCeiling);
 
       // Clean straightaway micro-deadzone when tracking centered with zero curvature
-      if (Math.abs(pathCurvReal) < 0.00025 && Math.abs(latErr) < 0.015 && Math.abs(latVelErr) < 0.04) {
+      if (Math.abs(pathCurvReal) < 0.00025 && Math.abs(latErr) < 0.015 && Math.abs(latVelLive) < 0.04) {
         rawSteer = 0.0;
       }
     }
@@ -811,36 +821,45 @@ export class SpatialAIController {
 
     // ------------------------------------------------------------------------
     // 6. 8-SPEED AUTO / MANUAL / CLASSIC 2-SPEED TRANSMISSION COMPATIBILITY
+    //    (Guarantees immediate multi-gear downshifts whenever slowing down!)
     // ------------------------------------------------------------------------
-    if (car.gearboxMode === 'AUTO_8SPD') {
-      // Handled natively at 240Hz inside stepVehiclePhysics240Hz with sawtooth RPM & shift callbacks!
+    if (car.gearboxMode === 'AUTO_8SPD' && !isClassic) {
+      // Primary AUTO_8SPD shifting runs at 240Hz in stepVehiclePhysics240Hz;
+      // backup safety net ensures AI never bogs in a high gear if speed drops rapidly!
+      if (car.shiftCooldown <= 0 && car.gear > 1 && speedKmh < MANUAL_8_DOWNSHIFT[car.gear - 2] - 4.0) {
+        shiftGear(car, -1, callbacks);
+        car.shiftCooldown = 0.05;
+      }
     } else if (car.gearboxMode === 'MANUAL_8SPD' && !isClassic) {
       if (car.shiftCooldown <= 0) {
         if (car.inPitLane && speedKmh <= 84.0 && car.gear > 2) {
           shiftGear(car, -1, callbacks);
-        } else if (car.gear < 8 && car.throttleInput > 0.16 && speedKmh >= MANUAL_8_UPSHIFT[car.gear - 1]) {
-          shiftGear(car, +1, callbacks);
+          car.shiftCooldown = 0.06;
         } else if (car.gear > 1 && speedKmh <= MANUAL_8_DOWNSHIFT[car.gear - 2]) {
           shiftGear(car, -1, callbacks);
+          car.shiftCooldown = 0.06;
+        } else if (car.gear < 8 && car.throttleInput > 0.16 && speedKmh >= MANUAL_8_UPSHIFT[car.gear - 1]) {
+          shiftGear(car, +1, callbacks);
         }
       }
     } else if (car.gearboxMode === 'PRO_6SPD' && !isClassic) {
       if (car.shiftCooldown <= 0) {
-        if (car.gear < 6 && car.throttleInput > 0.16 && speedKmh >= MANUAL_6_UPSHIFT[car.gear - 1]) {
-          shiftGear(car, +1, callbacks);
-        } else if (car.gear > 1 && speedKmh <= MANUAL_6_DOWNSHIFT[car.gear - 2]) {
+        if (car.gear > 1 && speedKmh <= MANUAL_6_DOWNSHIFT[car.gear - 2]) {
           shiftGear(car, -1, callbacks);
+          car.shiftCooldown = 0.06;
+        } else if (car.gear < 6 && car.throttleInput > 0.16 && speedKmh >= MANUAL_6_UPSHIFT[car.gear - 1]) {
+          shiftGear(car, +1, callbacks);
         }
       }
     } else {
       // CLASSIC_2SPD (1982 LOW / HIGH)
       if (car.shiftCooldown <= 0) {
-        if (car.gear === 1 && speedKmh > 168.5) {
-          shiftGear(car, +1, callbacks);
-          car.shiftCooldown = 0.18;
-        } else if (car.gear === 2 && speedKmh < 142.0) {
+        if (car.gear === 2 && speedKmh < 145.0) {
           shiftGear(car, -1, callbacks);
-          car.shiftCooldown = 0.18;
+          car.shiftCooldown = 0.10;
+        } else if (car.gear === 1 && speedKmh > 168.5) {
+          shiftGear(car, +1, callbacks);
+          car.shiftCooldown = 0.16;
         }
       }
     }

@@ -67,8 +67,8 @@ signal wheel_rub_contact(impact_kmh: float, world_pos: Vector3)
 @export var front_arb_stiffness_nm: float = 52000.0
 @export var rear_arb_stiffness_nm: float = 44000.0
 
-@export_group("Drivetrain, 8-Speed Gearbox, E-Diff & Brake Assist")
-@export_enum("AUTO_8SPD", "MANUAL_8SPD", "CLASSIC_2SPD") var gearbox_mode: String = "AUTO_8SPD"
+@export_group("Drivetrain, 8-Speed Gearbox, E-Diff, Traction Control & Brake Assist")
+@export_enum("AUTO_8SPD", "MANUAL_8SPD", "CLASSIC_2SPD", "AUTO_2SPD") var gearbox_mode: String = "AUTO_8SPD"
 @export var peak_engine_power_kw: float = 746.0 # ~1,000 BHP V6 Hybrid + MGU-K / 1982 Twin-Turbo
 @export var final_drive_ratio: float = 3.550
 @export var diff_preload_nm: float = 140.0
@@ -77,13 +77,14 @@ signal wheel_rub_contact(impact_kmh: float, world_pos: Vector3)
 @export var max_brake_torque_nm: float = 15800.0
 @export var brake_bias_front: float = 0.57
 @export_enum("OFF", "MIN", "FULL", "LOW", "MEDIUM", "HIGH") var braking_assist_mode: String = "OFF"
+@export_enum("FULL", "SPORT", "OFF") var traction_control_mode: String = "FULL"
 
 # ----------------------------------------------------------------------------
 # 2. CONSTANTS: 8-SPEED F1 RATIOS, SURFACE FRICTION GROUPS & TIRE COMPOUNDS
 # ----------------------------------------------------------------------------
 const EIGHT_SPEED_TOPS_KMH: Array[float] = [108.0, 148.0, 184.0, 216.0, 245.0, 272.0, 296.0, 316.0]
 const EIGHT_SPEED_UPSHIFT_KMH: Array[float] = [106.8, 146.5, 182.2, 214.0, 242.8, 269.6, 293.6]
-const EIGHT_SPEED_DOWNSHIFT_KMH: Array[float] = [84.0, 120.0, 154.0, 185.0, 214.0, 241.0, 266.0]
+const EIGHT_SPEED_DOWNSHIFT_KMH: Array[float] = [96.0, 134.0, 169.0, 200.0, 229.0, 256.0, 280.0]
 const EIGHT_SPEED_ENTRY_RPM: Array[float] = [3800.0, 8880.0, 9150.0, 9380.0, 9560.0, 9720.0, 9860.0, 9980.0]
 const EIGHT_SPEED_GEAR_RATIOS: Array[float] = [3.185, 2.324, 1.869, 1.592, 1.404, 1.265, 1.162, 1.087]
 
@@ -426,6 +427,15 @@ static func normalize_braking_assist_mode(raw_mode: String) -> String:
 	if m == "FULL" or m == "MED" or m == "MEDIUM" or m == "HIGH":
 		return "FULL"
 	return "OFF"
+
+
+static func normalize_traction_control_mode(raw_mode: String) -> String:
+	var m: String = raw_mode.strip_edges().to_upper()
+	if m == "OFF" or m == "NONE" or m == "DISABLED":
+		return "OFF"
+	if m == "SPORT" or m == "MIN" or m == "LOW" or m == "MED" or m == "MEDIUM":
+		return "SPORT"
+	return "FULL"
 
 
 func set_driver_inputs(
@@ -1193,40 +1203,59 @@ func _solve_drivetrain_and_ediff(dt: float) -> Dictionary:
 	var max_gear: int = 8 if is_8spd else 2
 	gear = clampi(gear, 1, max_gear)
 
-	# Automatic 8-Speed Seamless Shifting with Corner Hysteresis & Downshift Blips
+	# Automatic 8-Speed Seamless Shifting (Unconditional Downshift-First When Slowing)
 	if gearbox_mode == "AUTO_8SPD" and shift_cooldown <= 0.0:
 		if in_pit_lane:
 			if gear > 2 and speed_kmh <= maxf(96.0, EIGHT_SPEED_DOWNSHIFT_KMH[gear - 2]):
 				gear -= 1
-				shift_cooldown = 0.11
+				shift_cooldown = 0.055
 				rev_blip_timer = 0.11
 				gear_shifted.emit(gear, "DOWN", rpm)
 			elif gear == 2 and speed_kmh <= 50.0:
 				gear = 1
-				shift_cooldown = 0.14
+				shift_cooldown = 0.08
 				gear_shifted.emit(1, "DOWN", rpm)
 			elif gear == 1 and effective_throttle > 0.18 and speed_kmh >= 72.0:
 				gear = 2
-				shift_cooldown = 0.18
+				shift_cooldown = 0.14
 				gear_shifted.emit(2, "UP", rpm)
 		else:
-			var corner_hold: float = 3.5 if (absf(steer_input) > 0.55 and effective_throttle < 0.65) else 0.0
-			var brake_downshift_bias: float = effective_brake * 6.5 if effective_brake > 0.25 else 0.0
-			var up_spd: float = EIGHT_SPEED_UPSHIFT_KMH[gear - 1] + corner_hold if gear < 8 else INF
-			var dn_spd: float = EIGHT_SPEED_DOWNSHIFT_KMH[gear - 2] + brake_downshift_bias if gear > 1 else -1.0
+			var brake_downshift_bias: float = effective_brake * 8.0 if effective_brake > 0.10 else 0.0
+			var base_dn_thresh: float = (
+				(EIGHT_SPEED_DOWNSHIFT_KMH[0] if (effective_throttle > 0.55 and effective_brake < 0.10) else 66.0)
+				if gear == 2
+				else (EIGHT_SPEED_DOWNSHIFT_KMH[gear - 2] if gear > 2 else -1.0)
+			)
+			var dn_spd: float = base_dn_thresh + (brake_downshift_bias if gear > 2 else 0.0) if gear > 1 else -1.0
+			var rpm_bogging: bool = gear > 2 and rpm < 8500.0 and speed_kmh <= EIGHT_SPEED_UPSHIFT_KMH[gear - 2] - 5.0
 
-			if gear < 8 and effective_throttle > 0.16 and effective_brake < 0.20 and speed_kmh >= up_spd:
-				gear += 1
-				shift_cooldown = 0.15
-				gear_shifted.emit(gear, "UP", rpm)
-			elif gear > 1 and speed_kmh <= dn_spd:
+			if gear > 1 and (speed_kmh <= dn_spd or rpm_bogging):
 				gear -= 1
-				shift_cooldown = 0.11
-				rev_blip_timer = 0.125
+				if gear > 2 and speed_kmh <= EIGHT_SPEED_DOWNSHIFT_KMH[gear - 2] - 8.0:
+					gear -= 1
+				shift_cooldown = 0.052
+				rev_blip_timer = 0.115
 				corner_exit_torque_timer = 0.28
 				gear_shifted.emit(gear, "DOWN", rpm)
-				if speed_kmh > 115.0 and effective_brake > 0.25:
+				if speed_kmh > 110.0 and effective_brake > 0.20:
 					exhaust_backfire.emit(clampf(speed_kmh / 290.0, 0.45, 1.0))
+			else:
+				var corner_hold: float = 3.5 if (absf(steer_input) > 0.55 and effective_throttle < 0.65) else 0.0
+				var up_spd: float = EIGHT_SPEED_UPSHIFT_KMH[gear - 1] + corner_hold if gear < 8 else INF
+				if gear < 8 and effective_throttle > 0.12 and effective_brake < 0.25 and speed_kmh >= up_spd:
+					gear += 1
+					shift_cooldown = 0.13
+					gear_shifted.emit(gear, "UP", rpm)
+	elif (gearbox_mode == "AUTO_2SPD" or gearbox_mode == "CLASSIC_2SPD") and shift_cooldown <= 0.0:
+		if gear == 2 and speed_kmh <= 142.0:
+			gear = 1
+			shift_cooldown = 0.10
+			rev_blip_timer = 0.11
+			gear_shifted.emit(1, "DOWN", rpm)
+		elif gear == 1 and effective_throttle > 0.15 and effective_brake < 0.20 and speed_kmh >= 168.0:
+			gear = 2
+			shift_cooldown = 0.14
+			gear_shifted.emit(2, "UP", rpm)
 
 	# Mechanical Gear-Ratio Sawtooth RPM Synthesis (3,800 -> 13,800 RPM)
 	var target_rpm: float = F1_IDLE_RPM
@@ -1672,11 +1701,18 @@ func _solve_four_corner_tires(
 	self_aligning_torque = self_aligning_torque_norm
 	skid_intensity = max_corner_skid
 
-	# Straightaway neutral yaw/lateral stabilization when undamaged & unsteered
-	var fw_asym_abs: float = absf(float(damage_state.get("front_wing_right", 0.0)) - float(damage_state.get("front_wing_left", 0.0)))
-	if steer_input == 0.0 and susp_dmg < 0.03 and fw_asym_abs < 0.05 and absf(lateral_speed_mps) < 0.8 and absf(angular_velocity.y) < 0.15:
-		apply_central_force(-right_dir * lateral_speed_mps * total_mass_kg * 18.0)
-		apply_torque(-up_dir * angular_velocity.y * total_mass_kg * 6.5)
+	# Active Traction/Stability Control (FULL | SPORT | OFF) & <0.15s Zero-Overshoot Centering Stabilization
+	var norm_tcs: String = normalize_traction_control_mode(traction_control_mode)
+	var tcs_damp_gain: float = 28.0 if norm_tcs == "FULL" else (18.0 if norm_tcs == "SPORT" else 8.0)
+	if absf(steer_input) < 0.02:
+		apply_central_force(-right_dir * lateral_speed_mps * total_mass_kg * tcs_damp_gain)
+		apply_torque(-up_dir * angular_velocity.y * total_mass_kg * (tcs_damp_gain * 0.42))
+	elif norm_tcs != "OFF":
+		var k_here: float = float(_upcoming_corner.get("k_here_inv_m", 0.0))
+		var curv_assist: float = 0.52 if norm_tcs == "FULL" else 0.28
+		if absf(k_here) > 0.0005 and forward_speed_mps > 4.0:
+			var centripetal_assist_n: float = signf(k_here) * absf(k_here) * forward_speed_mps * forward_speed_mps * total_mass_kg * curv_assist
+			apply_central_force(right_dir * centripetal_assist_n)
 
 
 # ----------------------------------------------------------------------------

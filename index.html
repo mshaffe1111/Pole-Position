@@ -8,8 +8,9 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#080c14" />
   <title>Pole Position 2026 — Grand Prix Motorsport Sim</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e10600'/%3E%3Ctext x='16' y='22' font-family='sans-serif' font-weight='900' font-size='16' fill='%23ffffff' text-anchor='middle'%3EF1%3C/text%3E%3C/svg%3E" />
   <link rel="manifest" href="./manifest.webmanifest" />
-  <link rel="stylesheet" href="./styles.css?v=20261114sim" />
+  <link rel="stylesheet" href="./styles.css?v=20261114fix" />
   <script type="importmap">
     {
       "imports": {
@@ -208,9 +209,19 @@
         </button>
       </div>
 
-      <!-- Unified Session, Inline Brake Assist & Launch Bar -->
+      <!-- Unified Session, Inline Assists & Launch Bar -->
       <div class="showroom-launch-pod">
         <div class="dock-session-controls">
+          <!-- Inline Traction & Steer Assist Selector (OFF | SPORT | FULL) -->
+          <div class="dock-assist-cluster" role="group" aria-label="Traction and Steering Assist Mode" title="FULL = Active Road-Curvature Steering Assist, Anti-Spin ESC &amp; Corner-Exit Traction Control">
+            <span class="dock-cluster-lbl">TRACTION &amp; STEER ASSIST</span>
+            <div class="dock-seg-group">
+              <button class="dock-seg-btn cfg-btn" data-cfg-tc="OFF" type="button">OFF</button>
+              <button class="dock-seg-btn cfg-btn" data-cfg-tc="SPORT" type="button">SPORT</button>
+              <button class="dock-seg-btn cfg-btn selected" data-cfg-tc="FULL" type="button">FULL</button>
+            </div>
+          </div>
+
           <!-- Inline Brake Assist Selector (OFF | MIN | FULL) -->
           <div class="dock-assist-cluster" role="group" aria-label="Brake Assist Mode" title="MIN = Safety Net Only on Tight Turns — Never Caps Straight or Sweeper Speed">
             <span class="dock-cluster-lbl">BRAKE ASSIST</span>
@@ -245,6 +256,7 @@
         <button id="btn-launch-race" class="launch-btn" type="button">
           <span class="launch-txt">START RACE</span>
         </button>
+        <button id="btn-start-race" type="button" hidden aria-hidden="true" tabindex="-1">START RACE</button>
       </div>
     </footer>
 
@@ -297,13 +309,13 @@
               <div class="cfg-label">Steering Calibration &amp; Touch Ergonomics</div>
               <label class="slider-row">
                 <span class="slider-lbl">Steering Sensitivity</span>
-                <input id="slider-ctrl-sens" type="range" min="60" max="150" step="5" value="100" />
-                <span class="slider-val" id="slider-ctrl-sens-val">100%</span>
+                <input id="slider-ctrl-sens" type="range" min="60" max="150" step="5" value="90" />
+                <span class="slider-val" id="slider-ctrl-sens-val">90%</span>
               </label>
               <label class="slider-row">
                 <span class="slider-lbl">Steering Linearity</span>
-                <input id="slider-ctrl-lin" type="range" min="0" max="45" step="5" value="0" />
-                <span class="slider-val" id="slider-ctrl-lin-val">1:1 LIN</span>
+                <input id="slider-ctrl-lin" type="range" min="0" max="60" step="5" value="35" />
+                <span class="slider-val" id="slider-ctrl-lin-val">+35% SMOOTH</span>
               </label>
               <label class="slider-row">
                 <span class="slider-lbl">Touch Control Scale</span>
@@ -315,12 +327,24 @@
                 <input id="slider-ctrl-opacity" type="range" min="40" max="100" step="5" value="88" />
                 <span class="slider-val" id="slider-ctrl-opacity-val">88%</span>
               </label>
-              <div class="cfg-note">0% Linearity gives pure 1:1 pro sim wheel response with speed-sensitive front-grip authority.</div>
+              <div class="cfg-note">35% Smooth Progressive Linearity gives rock-steady center precision on straights and smooth authority into hairpins.</div>
             </div>
           </section>
 
           <!-- TAB 2: ASSISTS & REALISM -->
           <section class="settings-panel" data-settings-panel="ASSISTS" hidden>
+            <div class="garage-group">
+              <div class="cfg-label">Traction &amp; Steering Assist (TCS + ESC)</div>
+              <div class="pill-row">
+                <button class="cfg-btn" data-cfg-tc="OFF" type="button">OFF (RAW)</button>
+                <button class="cfg-btn" data-cfg-tc="SPORT" type="button">SPORT (BALANCED)</button>
+                <button class="cfg-btn selected" data-cfg-tc="FULL" type="button">FULL (PLANTED)</button>
+              </div>
+              <div class="cfg-note" id="tc-mode-desc">
+                FULL = Active road-curvature steering assist, anti-spin ESC yaw stabilization, and smooth corner-exit traction control so the car feels planted and predictable.
+              </div>
+            </div>
+
             <div class="garage-group">
               <div class="cfg-label">Kinematic Braking Assist</div>
               <div class="pill-row">
@@ -635,6 +659,8 @@
       <button class="quick-pill secondary-quick" id="btn-live-hand" title="Swap Control Sides" type="button">SWAP</button>
       <button class="quick-pill" id="btn-live-cam" title="Cycle 5 Driving Cameras: Chase / Halo T-Cam / Cockpit / Bonnet / Nose (C)" type="button">CAM</button>
       <button class="quick-pill" id="btn-live-replay" title="Instant Replay &amp; TV Broadcast (R)" type="button">RPL</button>
+      <button id="btn-camera" type="button" hidden aria-hidden="true" tabindex="-1">CAM</button>
+      <button id="btn-replay" type="button" hidden aria-hidden="true" tabindex="-1">RPL</button>
       <button class="quick-pill" id="btn-live-mute" title="Mute / Unmute Audio" type="button">SND</button>
       <button class="quick-pill" id="btn-live-menu" title="Pause &amp; Settings (Esc / P)" type="button">PAUSE</button>
     </div>
@@ -970,6 +996,6 @@
     </div>
   </div>
 
-  <script type="module" src="./src/main.js?v=20261114sim"></script>
+  <script type="module" src="./src/main.js?v=20261114fix"></script>
 </body>
 </html>

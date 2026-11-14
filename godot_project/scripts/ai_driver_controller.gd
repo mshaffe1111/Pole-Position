@@ -808,8 +808,8 @@ func update_ai_physics(
 		_ai_quintic_duration
 	)
 	var desired_lat: float = q_state.x
-	var desired_lat_vel: float = q_state.y
-	var desired_lat_acc: float = q_state.z
+	var desired_lat_vel: float = clampf(q_state.y, -6.2, 6.2)
+	var desired_lat_acc: float = clampf(q_state.z, -11.5, 11.5)
 
 	var road_half: float = MotorsportTelemetryData.ROAD_HALF_WIDTH
 	var car_w: float = MotorsportTelemetryData.CAR_WIDTH
@@ -930,7 +930,29 @@ func update_ai_physics(
 			yaw_damp_comp_rad +
 			clampf(lat_accel_mps2 / maxf(5.5, 9.81 * eff_grip_est), -1.15, 1.15) * (0.042 + 0.052 * fw_dmg * fast_factor)
 		)
-		var delta_ff_rad: float = ackermann_rad + understeer_comp_rad
+		var p_mods: Dictionary = car.get("perf_mods", {}) as Dictionary
+		var agility_mod: float = clampf(float(p_mods.get("agility_mult", 1.0)), 0.85, 1.25)
+		var hairpin_boost: float = 1.0 + 0.18 * (1.0 - _smoothstepf(35.0, 125.0, speed_kmh))
+		var high_speed_calm: float = 1.0 - 0.14 * _smoothstepf(235.0, 335.0, speed_kmh)
+		var max_steer_rad: float = 0.285 * hairpin_boost * high_speed_calm * agility_mod
+		var bicycle_ff_steer: float = (ackermann_rad + understeer_comp_rad) / maxf(0.20, max_steer_rad)
+
+		var cur_k_scaled: float = blend_k_real * 82.0
+		var kv_factor: float = 1.0 + 0.00015 * speed_mps * speed_mps
+		var front_aero_eff: float = 1.0 if is_classic else (1.0 - fw_dmg * 0.40 * fast_factor)
+		var steer_auth: float = (0.35 if float(car.get("aquaplane_timer", 0.0)) > 0.0 else 1.0) * maxf(0.45, front_aero_eff)
+		var rate_denom: float = maxf(8.0, steer_auth * minf(28.5, maxf(13.5, speed_mps * 0.60)))
+		var needed_non_lin: float = clampf((cur_k_scaled * speed_mps * speed_mps * 0.00315 * kv_factor) / rate_denom, -0.92, 0.92)
+		var planted_ff_steer: float = (
+			0.0 if is_zero_approx(needed_non_lin)
+			else signf(needed_non_lin) * pow(absf(needed_non_lin), 1.0 / 1.32)
+		)
+		var has_active_yaw: bool = absf(float(car.get("yaw_rate", 0.0))) > 0.015
+		var ff_steer: float = (
+			(0.78 * bicycle_ff_steer + 0.22 * planted_ff_steer)
+			if has_active_yaw
+			else (0.45 * bicycle_ff_steer + 0.55 * planted_ff_steer)
+		)
 
 		var lat_err: float = desired_lat - cur_lat
 		var live_lat_vel: float = (
@@ -938,26 +960,17 @@ func update_ai_physics(
 			if car.has("lateral_vel")
 			else _ai_measured_lat_vel
 		)
-		var lat_vel_err: float = desired_lat_vel - live_lat_vel
-		var arch_gain: float = 1.05 if archetype_id == "APEX_TACTICIAN" else (0.94 if archetype_id == "TIRE_WHISPERER" else 1.0)
-		var look_dist_m: float = clampf(5.5 + speed_mps * 0.24, 6.0, 24.0)
-		var cross_track_rad: float = atan2(lat_err * arch_gain, look_dist_m)
-		var damp_vel_rad: float = clampf(lat_vel_err / maxf(10.0, speed_mps * 0.85), -0.24, 0.24)
-		var delta_fb_rad: float = 1.15 * cross_track_rad + 0.88 * damp_vel_rad
+		var kp_base: float = 0.36 if archetype_id == "APEX_TACTICIAN" else (0.30 if archetype_id == "TIRE_WHISPERER" else 0.33)
+		var kp: float = kp_base * (1.0 - 0.22 * _smoothstepf(180.0, 325.0, speed_kmh))
+		var kd: float = (0.072 if archetype_id == "TIRE_WHISPERER" else 0.064) * (1.0 + 0.15 * _smoothstepf(180.0, 325.0, speed_kmh))
+		var fb_steer: float = clampf(lat_err * kp + clampf(desired_lat_vel * 0.42 - live_lat_vel, -14.0, 14.0) * kd, -0.82, 0.82)
 
-		var p_mods: Dictionary = car.get("perf_mods", {}) as Dictionary
-		var agility_mod: float = clampf(float(p_mods.get("agility_mult", 1.0)), 0.85, 1.25)
-		var hairpin_boost: float = 1.0 + 0.20 * (1.0 - _smoothstepf(35.0, 138.0, speed_kmh))
-		var high_speed_calm: float = 1.0 - 0.12 * _smoothstepf(245.0, 345.0, speed_kmh)
-		var max_steer_rad: float = deg_to_rad(21.0) * hairpin_boost * high_speed_calm * agility_mod
-		var aquaplane_boost: float = 1.45 if float(car.get("aquaplane_timer", 0.0)) > 0.0 else 1.0
-		var total_steer_rad: float = (delta_ff_rad + delta_fb_rad) * aquaplane_boost
-
+		var aquaplane_boost: float = 1.35 if float(car.get("aquaplane_timer", 0.0)) > 0.0 else 1.0
 		var slip_cap: float = float(ai_personality.get("slip_angle_cap", 1.0))
 		var steer_ceiling: float = 0.94 if (slip_cap < 0.98 and abs_cur_k_real > 0.008) else 1.0
-		raw_steer = clampf(total_steer_rad / maxf(0.22, max_steer_rad), -steer_ceiling, steer_ceiling)
+		raw_steer = clampf((ff_steer + fb_steer) * aquaplane_boost, -steer_ceiling, steer_ceiling)
 
-		if absf(path_curv_real) < 0.00025 and absf(lat_err) < 0.015 and absf(lat_vel_err) < 0.04:
+		if absf(path_curv_real) < 0.00025 and absf(lat_err) < 0.015 and absf(live_lat_vel) < 0.04:
 			raw_steer = 0.0
 
 	var steer_rate: float = 18.5 if archetype_id == "TIRE_WHISPERER" else 23.0

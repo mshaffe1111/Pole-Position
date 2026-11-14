@@ -17,26 +17,26 @@ import {
   AI_DRIVER_ROSTER,
   WEATHER_REGIMES,
   PIT_LANE_CONFIG,
-} from './config.js?v=20261114sim';
-import { FujiTrack } from './track.js?v=20261114sim';
-import * as ModelsModule from './models.js?v=20261114sim';
-import { AssetLibrary, FormulaCarRig, PitCrewDiorama, EffectsManager } from './models.js?v=20261114sim';
-import { WeatherSystem } from './weather.js?v=20261114sim';
-import { createVehicleState, stepVehiclePhysics240Hz, shiftGear } from './physics.js?v=20261114sim';
-import { RaceSystemsController } from './pit_damage_caution.js?v=20261114sim';
-import { SpatialAIController } from './ai.js?v=20261114sim';
-import { ProceduralAudioEngine } from './audio.js?v=20261114sim';
-import { ErgonomicControls } from './controls.js?v=20261114sim';
-import { TelemetryHUD, formatLapTimeArcade, formatLapTimeSim, ordinalSuffix } from './hud.js?v=20261114sim';
-import { Retro1982Renderer } from './retro1982.js?v=20261114sim';
-import { ReplayDirector } from './replay.js?v=20261114sim';
+} from './config.js?v=20261114fix';
+import { FujiTrack } from './track.js?v=20261114fix';
+import * as ModelsModule from './models.js?v=20261114fix';
+import { AssetLibrary, FormulaCarRig, PitCrewDiorama, EffectsManager } from './models.js?v=20261114fix';
+import { WeatherSystem } from './weather.js?v=20261114fix';
+import { createVehicleState, stepVehiclePhysics240Hz, shiftGear } from './physics.js?v=20261114fix';
+import { RaceSystemsController } from './pit_damage_caution.js?v=20261114fix';
+import { SpatialAIController } from './ai.js?v=20261114fix';
+import { ProceduralAudioEngine } from './audio.js?v=20261114fix';
+import { ErgonomicControls } from './controls.js?v=20261114fix';
+import { TelemetryHUD, formatLapTimeArcade, formatLapTimeSim, ordinalSuffix } from './hud.js?v=20261114fix';
+import { Retro1982Renderer } from './retro1982.js?v=20261114fix';
+import { ReplayDirector } from './replay.js?v=20261114fix';
 import {
   CareerManager,
   TEAM_CATALOG,
   CHAMPIONSHIP_CALENDAR,
   CAR_SETUP_OPTIONS,
   formatCredits,
-} from './career.js?v=20261114sim';
+} from './career.js?v=20261114fix';
 
 const LIVE_CAMERA_LABELS = [
   '01 • CHASE CAM',
@@ -49,10 +49,18 @@ const LIVE_CAMERA_LABELS = [
 const PREFS_STORAGE_KEY = 'rp_f1_prefs_v3';
 
 function normalizeAssistMode(mode, fallback = 'MIN') {
-  const m = String(mode || '').toUpperCase();
+  const m = String(mode || '').toUpperCase().trim();
   if (m === 'OFF') return 'OFF';
   if (m === 'MIN' || m === 'LOW') return 'MIN';
   if (m === 'FULL' || m === 'MEDIUM' || m === 'MED' || m === 'HIGH') return 'FULL';
+  return fallback;
+}
+
+function normalizeTractionMode(mode, fallback = 'FULL') {
+  const m = String(mode || '').toUpperCase().trim();
+  if (m === 'OFF' || m === 'NONE' || m === '0') return 'OFF';
+  if (m === 'SPORT' || m === 'MIN' || m === 'LOW' || m === 'MED' || m === 'MEDIUM') return 'SPORT';
+  if (m === 'FULL' || m === 'ON' || m === 'HIGH' || m === 'MAX') return 'FULL';
   return fallback;
 }
 
@@ -163,17 +171,18 @@ class PolePosition2026Game {
     this._pitCrewTeamRig = null;
     this._lastDrsCrowdBlastSec = -10;
 
-    // Persisted player preferences (speed unit, kinematic assists, linearity, mixer)
+    // Persisted player preferences (speed unit, kinematic assists, smooth progressive linearity, mixer)
     this.prefs = {
       speedUnit: 'KMH',
       aiDifficulty: 'PRO',
       assistUserSet: false,
       control: {
-        sensitivity: 1.0,
-        steeringLinearity: 0.0,
+        sensitivity: 0.90,
+        steeringLinearity: 0.35,
         controlScale: 1.0,
         controlOpacity: 0.88,
         brakingAssist: 'MIN',
+        tractionControl: 'FULL',
         autoThrottle: false,
         haptics: true,
       },
@@ -195,7 +204,6 @@ class PolePosition2026Game {
               this.prefs.control.brakingAssist = normalizeAssistMode(saved.control.brakingAssist, 'MIN');
               this.prefs.assistUserSet = !!saved.assistUserSet;
             } else {
-              // Migrate legacy v3 assist modes; default uncustomized legacy 'OFF' to physics 'MIN' safety net
               const rawAssist = String(saved.control.brakingAssist || '').toUpperCase();
               if (rawAssist === 'LOW') {
                 this.prefs.control.brakingAssist = 'MIN';
@@ -206,6 +214,14 @@ class PolePosition2026Game {
               } else {
                 this.prefs.control.brakingAssist = 'MIN';
               }
+            }
+            if (saved.assistMigratedV5) {
+              this.prefs.control.tractionControl = normalizeTractionMode(saved.control.tractionControl, 'FULL');
+            } else {
+              // Migrate v4 -> v5: restore smooth progressive steering (0.35 linearity, 0.90 sensitivity) & FULL Traction/Steer Assist
+              this.prefs.control.steeringLinearity = 0.35;
+              this.prefs.control.sensitivity = 0.90;
+              this.prefs.control.tractionControl = 'FULL';
             }
           }
           if (saved.mixer && typeof saved.mixer === 'object') this.prefs.mixer = saved.mixer;
@@ -231,6 +247,7 @@ class PolePosition2026Game {
         speedUnit: this.prefs.speedUnit,
         aiDifficulty: this.config.aiDifficulty || 'PRO',
         assistMigratedV4: true,
+        assistMigratedV5: true,
         assistUserSet: !!this.prefs.assistUserSet,
         control: this.prefs.control,
         mixer: this.prefs.mixer,
@@ -493,6 +510,12 @@ class PolePosition2026Game {
       FULL: 'FULL: Smooth kinematic corner-entry & trail-braking guidance calculated from real track curvature and grip.',
     };
 
+    const tcDescriptions = {
+      OFF: 'OFF: Raw unassisted rear-wheel traction & direct steering — full oversteer & wheelspin physics.',
+      SPORT: 'SPORT: Balanced corner-exit wheelspin modulation and subtle yaw damping for experienced drivers.',
+      FULL: 'FULL: Active road-curvature steering assist, anti-spin ESC yaw stabilization, and smooth corner-exit traction control.',
+    };
+
     const syncMenuUI = () => {
       const is2026 = this.config.mode === '2026_UPDATED';
       const tDef = TRACK_CATALOG[this.config.trackId] || TRACK_CATALOG.FUJI_1982;
@@ -540,6 +563,7 @@ class PolePosition2026Game {
 
       const ctl = this.prefs.control;
       ctl.brakingAssist = normalizeAssistMode(ctl.brakingAssist, 'MIN');
+      ctl.tractionControl = normalizeTractionMode(ctl.tractionControl, 'FULL');
       document.querySelectorAll('[data-cfg-units]').forEach((b) =>
         b.classList.toggle('selected', b.dataset.cfgUnits === this.prefs.speedUnit)
       );
@@ -549,6 +573,13 @@ class PolePosition2026Game {
       const assistDescEl = document.getElementById('assist-mode-desc');
       if (assistDescEl) {
         assistDescEl.textContent = assistDescriptions[ctl.brakingAssist] || assistDescriptions.MIN;
+      }
+      document.querySelectorAll('[data-cfg-tc]').forEach((b) =>
+        b.classList.toggle('selected', b.dataset.cfgTc === ctl.tractionControl)
+      );
+      const tcDescEl = document.getElementById('tc-mode-desc');
+      if (tcDescEl) {
+        tcDescEl.textContent = tcDescriptions[ctl.tractionControl] || tcDescriptions.FULL;
       }
       document.querySelectorAll('[data-cfg-autothrottle]').forEach((b) =>
         b.classList.toggle('selected', (b.dataset.cfgAutothrottle === 'ON') === !!ctl.autoThrottle)
@@ -687,6 +718,10 @@ class PolePosition2026Game {
     });
     bindGroup('data-cfg-assist', (b) => {
       this.prefs.control.brakingAssist = normalizeAssistMode(b.dataset.cfgAssist, 'MIN');
+      this._applyControlSettings();
+    });
+    bindGroup('data-cfg-tc', (b) => {
+      this.prefs.control.tractionControl = normalizeTractionMode(b.dataset.cfgTc, 'FULL');
       this._applyControlSettings();
     });
     bindGroup('data-cfg-ai-diff', (b) => {
@@ -832,7 +867,7 @@ class PolePosition2026Game {
         this.prefs.control.steeringLinearity = v / 100;
         this._applyControlSettings();
       },
-      (v) => (v <= 0 ? '1:1 LIN' : `+${v}% EXPO`)
+      (v) => (v <= 0 ? '1:1 LIN' : `+${v}% SMOOTH`)
     );
     bindSlider('slider-ctrl-scale', (v) => {
       this.prefs.control.controlScale = v / 100;
@@ -909,6 +944,7 @@ class PolePosition2026Game {
       this.launchFromMenu();
     };
     document.getElementById('btn-launch-race')?.addEventListener('click', triggerLaunch);
+    document.getElementById('btn-start-race')?.addEventListener('click', triggerLaunch);
     document.getElementById('btn-garage-race')?.addEventListener('click', triggerLaunch);
 
     // Legacy 1-Tap Authentic 1982 Namco "Pole Position" Launch Hook
@@ -977,6 +1013,9 @@ class PolePosition2026Game {
     document.getElementById('btn-live-replay')?.addEventListener('click', () => {
       this._enterReplay(false);
     });
+    document.getElementById('btn-replay')?.addEventListener('click', () => {
+      this._enterReplay(false);
+    });
 
     // DNQ Modal
     document.getElementById('btn-dnq-retry')?.addEventListener('click', () => {
@@ -1029,13 +1068,22 @@ class PolePosition2026Game {
 
   _applyControlSettings(save = true) {
     const c = this.prefs.control;
-    c.sensitivity = Math.max(0.6, Math.min(1.5, Number(c.sensitivity) || 1.0));
+    c.sensitivity = Math.max(0.6, Math.min(1.5, Number(c.sensitivity) || 0.90));
     const rawLin = Number(c.steeringLinearity);
-    c.steeringLinearity = Math.max(0.0, Math.min(0.45, Number.isFinite(rawLin) ? rawLin : 0.0));
+    c.steeringLinearity = Math.max(0.0, Math.min(0.65, Number.isFinite(rawLin) ? rawLin : 0.35));
     c.controlScale = Math.max(0.75, Math.min(1.25, Number(c.controlScale) || 1.0));
     const rawOp = Number(c.controlOpacity);
     c.controlOpacity = Math.max(0.40, Math.min(1.0, Number.isFinite(rawOp) ? rawOp : 0.88));
     c.brakingAssist = normalizeAssistMode(c.brakingAssist, 'MIN');
+    c.tractionControl = normalizeTractionMode(c.tractionControl, 'FULL');
+
+    if (this.controls) {
+      this.controls.tractionControl = c.tractionControl;
+      this.controls.brakingAssist = c.brakingAssist;
+    }
+    if (this.playerCar) {
+      this.playerCar.tractionControl = c.tractionControl;
+    }
 
     this.controls?.setControlSettings?.({
       sensitivity: c.sensitivity,
@@ -1044,6 +1092,7 @@ class PolePosition2026Game {
       controlScale: c.controlScale,
       controlOpacity: c.controlOpacity,
       brakingAssist: c.brakingAssist,
+      tractionControl: c.tractionControl,
       autoThrottle: !!c.autoThrottle,
       haptics: !!c.haptics,
     });
@@ -1062,9 +1111,9 @@ class PolePosition2026Game {
       if (el) el.value = String(v);
       if (valEl) valEl.textContent = customLabel !== null ? customLabel : `${v}%`;
     };
-    setSlider('slider-ctrl-sens', this.prefs.control.sensitivity * 100);
-    const linPct = Math.round((this.prefs.control.steeringLinearity || 0) * 100);
-    setSlider('slider-ctrl-lin', linPct, linPct <= 0 ? '1:1 LIN' : `+${linPct}% EXPO`);
+    setSlider('slider-ctrl-sens', (this.prefs.control.sensitivity ?? 0.90) * 100);
+    const linPct = Math.round((this.prefs.control.steeringLinearity ?? 0.35) * 100);
+    setSlider('slider-ctrl-lin', linPct, linPct <= 0 ? '1:1 LIN' : `+${linPct}% SMOOTH`);
     setSlider('slider-ctrl-scale', this.prefs.control.controlScale * 100);
     setSlider('slider-ctrl-opacity', (this.prefs.control.controlOpacity ?? 0.88) * 100);
     const mix = this.audio.getMixerLevels ? (this.audio.getMixerLevels() || {}) : (this.prefs.mixer || {});
@@ -1897,6 +1946,7 @@ class PolePosition2026Game {
       maxFuelLaps: 15.0,
     });
     this.playerCar.liveryHex = '#00ff88';
+    this.playerCar.tractionControl = normalizeTractionMode(this.prefs.control.tractionControl, 'FULL');
     this._snapCarPrevPose(this.playerCar);
 
     // Selected Career Works Team livery on the #1 car + pit crew diorama
@@ -2766,6 +2816,7 @@ class PolePosition2026Game {
           allCars: this.allCars,
           weatherSummary: this.weather.getForecastSummary(),
           brakingAssistMode: this.prefs.control.brakingAssist || 'MIN',
+          tractionControlMode: this.prefs.control.tractionControl || 'FULL',
         });
       }
     }
@@ -2923,6 +2974,13 @@ class PolePosition2026Game {
       this.controls?.brakingAssist || this.prefs.control.brakingAssist,
       'MIN'
     );
+    const activeTractionControl = normalizeTractionMode(
+      this.controls?.tractionControl || this.prefs.control.tractionControl,
+      'FULL'
+    );
+    if (this.playerCar) {
+      this.playerCar.tractionControl = activeTractionControl;
+    }
 
     const physCtx = {
       track: this.track,
@@ -2930,6 +2988,7 @@ class PolePosition2026Game {
       allCars: this.allCars,
       controls: this.controls,
       brakingAssist: activeBrakeAssist,
+      tractionControl: activeTractionControl,
       aiDifficulty: this.aiDifficulty || 'PRO',
       mode: this.config.mode,
       raceLengthId: this.config.raceLengthId,
@@ -3401,7 +3460,8 @@ class PolePosition2026Game {
       return;
     }
 
-    // 0: CHASE CAM — Velocity-vector aligned critically-damped sim chase rig (zero lateral steering twitch!)
+    // 0: CHASE CAM — 100% locked smoothly behind the car along the track tangent
+    //    (like classic Pole Position / OutRun / F1 chase cam — NEVER swings sideways when steering!)
     this.camera.up.set(0, 1, 0);
     const backDist = isUltraNarrow ? 6.95 : (isNarrowPortrait ? 6.35 : 5.75);
     const upHeight = isUltraNarrow ? 2.22 : (isNarrowPortrait ? 2.08 : 1.94);
@@ -3423,18 +3483,15 @@ class PolePosition2026Game {
     }
     if (chaseProjDirty) this.camera.updateProjectionMatrix();
 
-    // Velocity-vector heading: track tangent + interpolated relYaw + 65% body slip angle
+    // Pure track-tangent heading (zero relYaw / slip / steer swing — camera never swings sideways when steering!)
     const tangentYaw = Math.atan2(pFr.tangent.z, pFr.tangent.x);
-    const slipRad = speedKmh > 18 ? (Number(this.playerCar.bodySlipAngleRad) || 0) * 0.65 : 0;
-    const targetVelocityYaw = tangentYaw + pose.relYaw + slipRad;
-
     if (!Number.isFinite(this._camChaseYaw)) {
-      this._camChaseYaw = targetVelocityYaw;
+      this._camChaseYaw = tangentYaw;
     } else {
-      let dy = targetVelocityYaw - this._camChaseYaw;
+      let dy = tangentYaw - this._camChaseYaw;
       while (dy > Math.PI) dy -= Math.PI * 2;
       while (dy < -Math.PI) dy += Math.PI * 2;
-      this._camChaseYaw += dy * expAlpha(11.5);
+      this._camChaseYaw += dy * expAlpha(22.0);
     }
 
     this._camChaseFwd.set(Math.cos(this._camChaseYaw), 0, Math.sin(this._camChaseYaw));
@@ -3447,14 +3504,14 @@ class PolePosition2026Game {
       .addScaledVector(pFr.right, vibLat)
       .addScaledVector(pFr.normal, upHeight + vibY);
 
-    // True metric spline look-ahead at s + 18.0 / mPerG (smoothly tracks real upcoming apexes)
-    const lookFr = this.track.sampleAt(pose.s + lookAheadM / mPerG, pose.lat * 0.72);
+    // True metric spline look-ahead at s + 18.0 / mPerG along the road tangent
+    const lookFr = this.track.sampleAt(pose.s + lookAheadM / mPerG, pose.lat * 0.85);
     this._camDesiredLook
       .copy(lookFr.pos)
       .addScaledVector(lookFr.normal, lookHeight);
 
-    const posBlend = expAlpha(18.0);
-    const lookBlend = expAlpha(20.0);
+    const posBlend = expAlpha(24.0);
+    const lookBlend = expAlpha(26.0);
     if (this.camera.position.distanceToSquared(this._camDesiredPos) > 64.0) {
       this.camera.position.copy(this._camDesiredPos);
       this._camLook.copy(this._camDesiredLook);

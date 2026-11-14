@@ -20,10 +20,10 @@ import {
 // G8 reaches 316 km/h standalone aero equilibrium and 331 km/h in DRS / Slipstream tow!
 export const EIGHT_SPEED_TOPS = [108, 148, 184, 216, 245, 272, 296, 316];
 
-// Upshift & Downshift speed thresholds (km/h) with generous 22-28 km/h hysteresis
-// so the gearbox never hunts or chatters mid-corner.
-const EIGHT_SPEED_UPSHIFT = [106.8, 146.5, 182.2, 214.0, 242.8, 269.6, 293.6];
-const EIGHT_SPEED_DOWNSHIFT = [84.0, 120.0, 154.0, 185.0, 214.0, 241.0, 266.0];
+// Upshift & Downshift speed thresholds (km/h) tuned for crisp F1 seamless-shift response
+// and immediate automatic downshifting whenever slowing down (braking or coasting).
+export const EIGHT_SPEED_UPSHIFT = [106.8, 146.5, 182.2, 214.0, 242.8, 269.6, 293.6];
+export const EIGHT_SPEED_DOWNSHIFT = [96.0, 134.0, 169.0, 200.0, 229.0, 256.0, 280.0];
 
 // Post-upshift engagement RPM per gear (G1..G8) for crisp F1 mechanical sawtooth sweeps
 const EIGHT_SPEED_ENTRY_RPM = [3800, 8880, 9150, 9380, 9560, 9720, 9860, 9980];
@@ -134,6 +134,17 @@ export function normalizeBrakingAssistMode(rawMode) {
   if (m === 'MIN' || m === 'LOW' || m === 'MINIMUM') return 'MIN';
   if (m === 'FULL' || m === 'MED' || m === 'MEDIUM' || m === 'HIGH') return 'FULL';
   return 'OFF';
+}
+
+// Normalize Traction & Stability Control setting ('FULL' | 'SPORT' | 'OFF', default 'FULL')
+export function normalizeTractionControlMode(rawMode) {
+  if (rawMode === undefined || rawMode === null || rawMode === '') return 'FULL';
+  const m = String(rawMode).trim().toUpperCase();
+  if (m === 'OFF' || m === 'NONE' || m === 'DISABLED' || m === 'FALSE') return 'OFF';
+  if (m === 'SPORT' || m === 'MIN' || m === 'LOW' || m === 'MED' || m === 'MEDIUM' || m === 'PARTIAL') {
+    return 'SPORT';
+  }
+  return 'FULL';
 }
 
 // Pacejka Magic Formula y(x) = sin(C * atan(B*x - E*(B*x - atan(B*x))))
@@ -384,8 +395,9 @@ export function createVehicleState(opts = {}) {
   const compDef = TIRE_COMPOUNDS[compound] || TIRE_COMPOUNDS.SOFT;
   const defaultBlanketTemp = Math.round((compDef.optTempMin + compDef.optTempMax) * 0.5);
   const baseTemp = finiteOr(opts.initialTireTemp, defaultBlanketTemp);
-  const validModes = ['AUTO_8SPD', 'MANUAL_8SPD', 'CLASSIC_2SPD', 'PRO_6SPD'];
+  const validModes = ['AUTO_8SPD', 'MANUAL_8SPD', 'CLASSIC_2SPD', 'AUTO_2SPD', 'PRO_6SPD'];
   const gearboxMode = validModes.includes(opts.gearboxMode) ? opts.gearboxMode : 'AUTO_8SPD';
+  const tractionControl = normalizeTractionControlMode(opts.tractionControl || 'FULL');
   const startFuelLaps = finiteOr(opts.fuelLaps, 7.0);
   const maxFuelLaps = Math.max(1.0, finiteOr(opts.maxFuelLaps, 15.0));
   const kgPerLap = clamp(92.0 / maxFuelLaps, 1.8, 9.0);
@@ -447,6 +459,7 @@ export function createVehicleState(opts = {}) {
     brakeAssistActive: 0,    // 0 or 1
     _smoothedAssistBrake: 0.0,
     _minAssistEngaged: false,
+    tractionControl,         // 'FULL' | 'SPORT' | 'OFF' active traction & stability assist
 
     // 3D Suspension Attitude & 4-Corner Physical Deflection Dynamics
     chassisPitchRad: 0.0,
@@ -656,13 +669,6 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
   car.rpm = clamp(finiteOr(car.rpm, 3800), 0, 14500);
   car.slipstreamFactor = clamp(finiteOr(car.slipstreamFactor, 0), 0, 1.25);
 
-  // Absorb any external wheel-to-wheel collision impulse applied to car.lateralVel between ticks
-  const lastLatVel = finiteOr(car._lastComputedLatVel, car.lateralVel);
-  const extLatImpulse = clamp(car.lateralVel - lastLatVel, -12.0, 12.0);
-  if (Math.abs(extLatImpulse) > 0.001) {
-    car.vyBody = clamp(car.vyBody + extLatImpulse * Math.cos(car.relYaw), -18.0, 18.0);
-  }
-
   const throttleIn = clamp(finiteOr(car.throttleInput, 0), 0, 1);
   const brakeIn = clamp(finiteOr(car.brakeInput, 0), 0, 1);
   const rawSteerIn = clamp(finiteOr(car.steerInput, 0), -1, 1);
@@ -841,6 +847,34 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
     : 'OFF';
   const brakingAssistMode = car.isPlayer ? normalizeBrakingAssistMode(rawBrakingAssist) : 'OFF';
 
+  // Read Traction Control & Stability/Steering Assist ('FULL' | 'SPORT' | 'OFF', default 'FULL')
+  const rawTractionControl = car.isPlayer
+    ? (
+        ctx.tractionControl ||
+        ctx.controls?.tractionControl ||
+        ctx.controls?.settings?.tractionControl ||
+        (typeof ctx.controls?.getControlSettings === 'function'
+          ? ctx.controls.getControlSettings()?.tractionControl
+          : null) ||
+        car.tractionControl ||
+        'FULL'
+      )
+    : (car.tractionControl || 'FULL');
+  const tcsMode = normalizeTractionControlMode(rawTractionControl);
+  car.tractionControl = tcsMode;
+  const curvAssistFactor = car.isPlayer
+    ? (tcsMode === 'FULL' ? 0.52 : (tcsMode === 'SPORT' ? 0.28 : 0.0))
+    : 0.0;
+  const pullSuppressMult = car.isPlayer
+    ? (tcsMode === 'FULL' ? 0.0 : (tcsMode === 'SPORT' ? 0.35 : 1.0))
+    : 0.0;
+  const wheelspinMult = car.isPlayer
+    ? (tcsMode === 'FULL' ? 0.14 : (tcsMode === 'SPORT' ? 0.48 : 1.0))
+    : 0.20;
+  const understeerMult = car.isPlayer
+    ? (tcsMode === 'FULL' ? 0.22 : (tcsMode === 'SPORT' ? 0.52 : 0.86))
+    : 0.25;
+
   const frame = track.sampleAt(car.s, car.lateralOffset);
   const mPerGameM = Math.max(
     0.5,
@@ -999,27 +1033,22 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
   const kDownforceTotal = kDownforceFront + kDownforceRear;
 
   // --------------------------------------------------------------------------
-  // 3. STEERING RACK MAPPING (PURE 1:1 LINEAR + HIGH-SPEED TAPER + ACKERMANN)
+  // 3. STEERING RACK MAPPING (SMOOTH PRECISION + HIGH-SPEED TAPER + ACKERMANN)
   // --------------------------------------------------------------------------
   const highSpeedSteerTaper = lerp(1.0, 0.86, smoothstep(235.0, 335.0, car.speedKmh));
-  const lowSpeedAckermann = 1.0 + 0.18 * (1.0 - smoothstep(35.0, 125.0, car.speedKmh));
+  const lowSpeedAckermann = 1.0 + 0.20 * (1.0 - smoothstep(35.0, 130.0, car.speedKmh));
   const hydroSteerMult = car.aquaplaneTimer > 0 ? 0.42 : 1.0;
   const maxRackAngleRad = 0.285 * modAgility;
 
-  // Persistent alignment toe-pull from suspension damage + subtle straight-line tangent tracking when centered
-  const suspToeRad = suspDmg > 0.02 ? suspDmg * 0.017 * suspBias : 0.0;
-  const straightCenterGate =
-    suspDmg < 0.05
-      ? (1.0 - smoothstep(0.0, 0.016, Math.abs(steerIn))) *
-        (1.0 - smoothstep(0.00025, 0.0014, Math.abs(kReal))) *
-        smoothstep(4.0, 18.0, speedMps)
-      : 0.0;
-  const gentleStraightTrim = -clamp(car.relYaw, -0.10, 0.10) * 0.20 * straightCenterGate;
+  // Gentle precision shaping near center so micro-corrections never jerk the car
+  const steerCurveExp = car.isPlayer ? (tcsMode === 'FULL' ? 1.12 : 1.06) : 1.0;
+  const steerFormatted = Math.sign(steerIn) * Math.pow(Math.abs(steerIn), steerCurveExp);
 
+  // Persistent alignment toe-pull from suspension damage (suppressed in FULL Traction/Stability Control)
+  const suspToeRad = suspDmg > 0.02 ? suspDmg * 0.017 * suspBias * pullSuppressMult : 0.0;
   const roadSteerRad =
-    steerIn * maxRackAngleRad * highSpeedSteerTaper * lowSpeedAckermann * hydroSteerMult +
-    suspToeRad +
-    gentleStraightTrim;
+    steerFormatted * maxRackAngleRad * highSpeedSteerTaper * lowSpeedAckermann * hydroSteerMult +
+    suspToeRad;
   car.steerAngleRad = roadSteerRad;
 
   // --------------------------------------------------------------------------
@@ -1226,7 +1255,7 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
   const blisterThresholdC = comp.isWetTire ? (optMax + 10.0) : 112.0;
 
   const lowGearTorqueExcess = (car.gear <= 3 && effThrottleIn > 0.72)
-    ? (effThrottleIn - 0.68) * (4 - car.gear) * (0.050 + localW * 0.095)
+    ? (effThrottleIn - 0.68) * (4 - car.gear) * (0.050 + localW * 0.095) * wheelspinMult
     : 0.0;
 
   const corners = ['FL', 'FR', 'RL', 'RR'];
@@ -1587,8 +1616,8 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
       accelMps2 -= dragRate;
     }
   } else {
-    // Natural F1 engine braking + speed-squared parasitic aero drag (F_drag / m)
-    accelMps2 -= 2.4 + (kDragEff * vSq) / totalMassKg;
+    // Natural F1 engine + MGU-K regeneration braking + speed-squared aero drag (F_drag / m)
+    accelMps2 -= 4.8 + (kDragEff * vSq) / totalMassKg;
   }
 
   // Classic 1982 HIGH -> LOW over-rev engine brake above 172 km/h
@@ -1621,31 +1650,23 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
   }
 
   // --------------------------------------------------------------------------
-  // 8. 240 HZ DYNAMIC BICYCLE + CURVILINEAR FRENET CORNERING SOLVER
+  // 8. PLANTED VELOCITY-DAMPED STEERING + ACTIVE TRACTION/STABILITY CONTROL
+  //    (FULL | SPORT | OFF) + CURVILINEAR FRENET CORNERING SOLVER
   // --------------------------------------------------------------------------
-  // Tire Load Sensitivity on Front & Rear Axles
   const fzFrontRef = F1_QUALIFYING_REF_MASS_KG * F1_GRAVITY * (F1_CG_TO_REAR_M / F1_WHEELBASE_M);
   const fzRearRef = F1_QUALIFYING_REF_MASS_KG * F1_GRAVITY * (F1_CG_TO_FRONT_M / F1_WHEELBASE_M);
   const frontLoadSens = clamp(Math.pow(fzFrontAxleN / fzFrontRef, -0.075), 0.84, 1.06);
   const rearLoadSens = clamp(Math.pow(fzRearAxleN / fzRearRef, -0.075), 0.84, 1.06);
 
-  // Peak Axle Lateral Capacities D_f, D_r (N)
   const Df = muFrontLat * fzFrontAxleN * frontLoadSens;
   const Dr = muRearLat * fzRearAxleN * rearLoadSens;
-
-  // Smooth C^infinity Pacejka Lateral Axle Forces (zero slope kinks!)
-  // Rear 405mm slicks have slightly higher normalized cornering stiffness than 305mm fronts
   const Fyf = Df * pacejkaMagic(frontSlipAngleRad, 10.6, 1.38, -0.35);
   const Fyr = Dr * pacejkaMagic(rearSlipAngleRad, 11.8, 1.38, -0.35);
 
-  // Induced cornering drag from high slip/steering scrub (subtle & physical)
-  const cosDelta = Math.cos(roadSteerRad);
-  const sinDelta = Math.sin(roadSteerRad);
+  // Subtle cornering scrub drag
   if (speedMps > 4.0) {
-    const inducedScrubN =
-      Math.abs(Fyf * sinDelta) * 0.55 +
-      0.22 * (Math.abs(Fyf * Math.sin(frontSlipAngleRad)) + Math.abs(Fyr * Math.sin(rearSlipAngleRad)));
-    accelMps2 -= inducedScrubN / totalMassKg;
+    const scrubRatio = Math.min(1.0, Math.abs(steerFormatted) * 0.55 + Math.abs(kReal * 82.0) * 0.25);
+    accelMps2 -= scrubRatio * scrubRatio * 1.15;
   }
 
   const nextSpeedMps = Math.max(0.0, speedMps + accelMps2 * safeDt);
@@ -1653,80 +1674,81 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
   car.longG = accelMps2 / F1_GRAVITY;
   car._filtLongAccel = filtAx + (accelMps2 - filtAx) * (1.0 - Math.exp(-18.0 * safeDt));
 
-  // Continuous FIA kerb camber banking acceleration (smooth force, never a velocity jump!)
-  const kerbCamberAy = !car.inPitLane
-    ? -Math.sign(car.lateralOffset) * 0.58 * wKerbMax * (1.0 - wGrassMax)
+  const muLatNorm = clamp(muLatAvg / F1_MECH_MU_SCALE, 0.36, 1.28);
+  const downforceFactor =
+    1.0 +
+    0.52 *
+      (nextSpeedMps / 88.0) *
+      (nextSpeedMps / 88.0) *
+      modAeroGrip *
+      (0.5 * (frontAeroEff + rearAeroEff));
+  const speedFactor = clamp(nextSpeedMps / 12.0, 0.0, 1.0);
+
+  // Direct, planted steering lateral velocity command with generous cornering authority
+  const steerAuthority =
+    ((25.2 + 9.4 * muLatNorm * downforceFactor) *
+      modAgility *
+      hydroSteerMult *
+      lowSpeedAckermann) /
+    (1.0 + 0.00010 * nextSpeedMps * nextSpeedMps);
+  const steerLatRate = steerFormatted * steerAuthority * speedFactor;
+
+  // Curvature-Following Assist:
+  // In FULL (52%) and SPORT (28%), the stability system automatically counters a portion
+  // of road centrifugal push so the car tracks naturally around sweeping and tight curves!
+  const centrifugalPush =
+    -rawScaledCurv *
+    (nextSpeedMps * nextSpeedMps) *
+    0.00425 *
+    (1.0 - curvAssistFactor);
+
+  // Smooth understeer drift only when genuinely exceeding tire + aero lateral envelope
+  const maxGripSpeedMps =
+    (68.0 + 18.0 * muLatNorm * downforceFactor) / Math.max(0.32, Math.abs(rawScaledCurv));
+  const overSpeedMps = Math.max(0.0, nextSpeedMps - maxGripSpeedMps);
+  const understeerDrift =
+    -Math.sign(rawScaledCurv) *
+    overSpeedMps *
+    0.42 *
+    (1.20 - clamp(muLatNorm * 0.72, 0.30, 1.05)) *
+    understeerMult;
+
+  // Smooth C1 inside-apex rotation hook when steering into a corner on/near the inside kerb
+  const steeringIntoTurn =
+    Math.abs(rawScaledCurv) > 0.14 &&
+    Math.sign(steerIn) === Math.sign(rawScaledCurv) &&
+    Math.abs(steerIn) > 0.12;
+  const smoothApexHook = steeringIntoTurn
+    ? Math.sign(rawScaledCurv) *
+      (1.35 * wKerbMax * (1.0 - wGrassMax) + (tcsMode === 'FULL' ? 1.15 : (tcsMode === 'SPORT' ? 0.65 : 0.25))) *
+      Math.min(1.0, nextSpeedMps / 28.0)
     : 0.0;
 
-  // Asymmetric front-wing damage generates subtle high-speed aero yaw pull toward higher-drag torn side
-  const fwAsym = fwRight - fwLeft; // +1 = right damaged, -1 = left damaged
-  const asymAeroMomentNm = fwAsym * 0.14 * vSq;
-
-  // Yaw Moment of Inertia Iz(t) & Speed-Squared Aerodynamic Weathercock Yaw Damping
-  const Iz = (1080.0 + 0.45 * car.fuelKg) / modAgility;
-  const cYawDamp = (1080.0 + 3.4 * vSq) * (1.0 - 0.12 * suspDmg);
-
-  // Gentle electronic spin-arrest envelope only past +-26 deg so slides stay thrilling & catchable!
-  const extremeYawOver = Math.abs(car.relYaw) > 0.45
-    ? Math.sign(car.relYaw) * (Math.abs(car.relYaw) - 0.45) * 4200.0
-    : 0.0;
-  // Smooth straight-line yaw-damping assist for AI lane-tracking stability
-  const aiStraightYawAssist = (!car.isPlayer && Math.abs(kReal) < 0.0025 && Math.abs(steerIn) < 0.20)
-    ? car.relYaw * 1650.0
-    : 0.0;
-
-  // Newton-Euler Rotating Body-Frame Equations:
-  //   dv_y/dt = (F_yf * cos(delta) + F_yr) / m - v_x * r + a_y,camber
-  //   dr/dt   = (l_f * F_yf * cos(delta) - l_r * F_yr + M_asym - c_yaw * r) / I_z
-  const vyDot = (Fyf * cosDelta + Fyr) / totalMassKg - nextSpeedMps * car.yawRate + kerbCamberAy;
-  const rDot =
-    (F1_CG_TO_FRONT_M * Fyf * cosDelta -
-      F1_CG_TO_REAR_M * Fyr +
-      asymAeroMomentNm -
-      cYawDamp * car.yawRate -
-      extremeYawOver -
-      aiStraightYawAssist) /
-    Iz;
-
-  // Smooth C1 blend with exact kinematic Ackermann bicycle at 0..27 km/h for unconditional low-speed stability
-  const wDyn = smoothstep(1.8, 7.8, nextSpeedMps);
-  const rKin = (nextSpeedMps / F1_WHEELBASE_M) * Math.tan(roadSteerRad);
-  const vyKin = F1_CG_TO_REAR_M * rKin;
-
-  let nextVy = lerp(vyKin, car.vyBody + vyDot * safeDt, wDyn);
-  let nextR = lerp(rKin, car.yawRate + rDot * safeDt, wDyn);
-  nextVy = clamp(nextVy, -22.0, 22.0);
-  nextR = clamp(nextR, -3.4, 3.4);
-
-  const onStraightNeutral =
-    steerIn === 0.0 &&
-    Math.abs(kReal) < 0.0002 &&
-    suspDmg < 0.02 &&
-    Math.abs(fwAsym) < 0.02;
-
-  if (onStraightNeutral && Math.abs(nextVy) < 0.004 && Math.abs(nextR) < 0.002) {
-    nextVy = 0.0;
-    nextR = 0.0;
+  // Road-Edge Keeper Assist (active in FULL & SPORT when approaching outer asphalt edge):
+  // Attenuates outward centrifugal/understeer drift near road edges without ever pulling inward when centered!
+  const absLat = Math.abs(car.lateralOffset);
+  const edgeStart = ROAD_HALF_WIDTH * 0.65;
+  let edgeOutwardDamp = 1.0;
+  if (car.isPlayer && tcsMode !== 'OFF' && !car.inPitLane && absLat > edgeStart) {
+    const edgeDepth = smoothstep(edgeStart, ROAD_HALF_WIDTH * 1.02, absLat);
+    const maxAtten = tcsMode === 'FULL' ? 0.78 : 0.45;
+    edgeOutwardDamp = 1.0 - maxAtten * edgeDepth;
   }
 
-  car.vyBody = nextVy;
-  car.yawRate = nextR;
-  car.bodySlipAngleRad = nextSpeedMps > 0.5 ? Math.atan2(nextVy, nextSpeedMps) : 0.0;
-
-  // True lateral G felt by chassis & tires: a_y = (F_yf * cos(delta) + F_yr) / (m * g)
-  const trueLatAccelMps2 = wDyn * ((Fyf * cosDelta + Fyr) / totalMassKg) + (1.0 - wDyn) * (nextSpeedMps * rKin);
-  car.latG = onStraightNeutral && nextVy === 0.0 ? 0.0 : trueLatAccelMps2 / F1_GRAVITY;
-
-  // Grip utilization [0..1.2] for progressive tire scrub acoustics & HUD
-  const maxTotalLatForceN = Math.max(1200.0, Df + Dr);
-  const usedLatForceN = Math.abs(Fyf * cosDelta + Fyr);
-  car.gripUtilization = clamp(usedLatForceN / maxTotalLatForceN, 0.0, 1.25);
+  // Asymmetric aero/suspension pull (0% in FULL, 35% in SPORT, 100% in OFF)
+  const fwAsym = fwRight - fwLeft;
+  const asymPullVel =
+    (fwAsym * 0.75 * (nextSpeedMps / 75.0) + suspDmg * 0.85 * suspBias) *
+    speedFactor *
+    pullSuppressMult;
 
   // --------------------------------------------------------------------------
-  // 9. CURVILINEAR FRENET PATH INTEGRATION, RUBBING & BARRIER PROTECTION
+  // 9. CURVILINEAR FRENET PATH INTEGRATION, <0.15s ZERO-OVERSHOOT STABILIZATION,
+  //    WHEEL-TO-WHEEL RUBBING & BARRIER PROTECTION
   // --------------------------------------------------------------------------
   let scrapedWall = false;
   let dsRealM = nextSpeedMps * safeDt;
+  const prevRelYaw = car.relYaw;
 
   if (car.inPitLane) {
     const targetPitLat = finiteOr(frame?.pitOffset, PIT_LANE_CONFIG.lateralOffset);
@@ -1740,25 +1762,53 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
     car.yawAngle = car.relYaw;
     dsRealM = nextSpeedMps * Math.cos(car.relYaw) * safeDt;
   } else {
-    // Exact Frenet Curvilinear Jacobian: J(s, d) = max(0.38, 1 - k_real(s) * d)
-    // Note: in right turn (kReal > 0), right offset (d > 0) is INSIDE apex -> J < 1 -> faster angular progression!
-    const cosPsi = Math.cos(car.relYaw);
-    const sinPsi = Math.sin(car.relYaw);
-    const jacobian = Math.max(0.38, 1.0 - kReal * car.lateralOffset);
-
-    const sDotReal = Math.max(0.0, (nextSpeedMps * cosPsi - car.vyBody * sinPsi) / jacobian);
-    const dDot = nextSpeedMps * sinPsi + car.vyBody * cosPsi;
-    const relYawDot = car.yawRate - kReal * sDotReal;
-
-    dsRealM = sDotReal * safeDt;
-    car.lateralOffset += dDot * safeDt;
-    car.lateralVel = dDot;
-    car.relYaw = clamp(car.relYaw + relYawDot * safeDt, -0.65, 0.65);
-
-    if (onStraightNeutral && Math.abs(car.relYaw) < 0.0008 && Math.abs(car.lateralVel) < 0.008) {
-      car.relYaw = 0.0;
-      car.lateralVel = 0.0;
+    let envDriftVel = centrifugalPush + understeerDrift + asymPullVel;
+    // If road curvature is pushing the car outward toward the track edge, Edge-Keeper damps that outward drift
+    if (car.lateralOffset * envDriftVel > 0.0) {
+      envDriftVel *= edgeOutwardDamp;
     }
+
+    const targetLatVel = steerLatRate + envDriftVel + smoothApexHook;
+
+    // Fast exponential + linear centering stabilization:
+    // When steering is centered (|steerIn| < 0.02), latDampRate = 36.0/s settles lateralVel
+    // and relYaw to 0 within < 0.12s (< 0.15s) with strictly ZERO overshoot or fishtailing!
+    const isCentering = Math.abs(steerIn) < 0.02;
+    const latDampRate = isCentering ? 36.0 : 24.5;
+    car.lateralVel += (targetLatVel - car.lateralVel) * (1.0 - Math.exp(-latDampRate * safeDt));
+
+    if (isCentering && Math.abs(targetLatVel) < 0.12) {
+      const linearSettle = Math.min(Math.abs(car.lateralVel), 6.5 * safeDt);
+      car.lateralVel -= Math.sign(car.lateralVel) * linearSettle;
+      if (Math.abs(car.lateralVel) < 0.035) {
+        car.lateralVel = 0.0;
+      }
+    }
+
+    car.lateralOffset += car.lateralVel * safeDt;
+
+    // Planted kinematic yaw follower (never feeds back into lateralOffset -> zero PIO!)
+    const desiredYaw =
+      isCentering && Math.abs(car.lateralVel) < 0.06 && Math.abs(kReal) < 0.0005
+        ? 0.0
+        : clamp(
+            (car.lateralVel / Math.max(16.0, nextSpeedMps)) * 0.55 + car.steerAngleRad * 0.10,
+            -0.28,
+            0.28
+          );
+    const yawDampRate = isCentering ? 42.0 : 24.0;
+    car.relYaw += (desiredYaw - car.relYaw) * (1.0 - Math.exp(-yawDampRate * safeDt));
+    if (isCentering && Math.abs(desiredYaw) < 0.01) {
+      const yawSettle = Math.min(Math.abs(car.relYaw), 0.12 * safeDt);
+      car.relYaw -= Math.sign(car.relYaw) * yawSettle;
+      if (Math.abs(car.relYaw) < 0.005) {
+        car.relYaw = 0.0;
+      }
+    }
+
+    // Exact Frenet Curvilinear Jacobian: J(s, d) = max(0.38, 1 - k_real(s) * d)
+    const jacobian = Math.max(0.38, 1.0 - kReal * car.lateralOffset);
+    dsRealM = (Math.max(0.0, nextSpeedMps * Math.cos(car.relYaw * 0.45)) / jacobian) * safeDt;
 
     // Non-glitchy wheel-to-wheel sidepod rubbing restitution (preserves >96% forward speed!)
     if (Array.isArray(ctx.allCars)) {
@@ -1778,12 +1828,8 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
           const otherLatV = finiteOr(other.lateralVel, 0.0);
           const relLatV = car.lateralVel - otherLatV;
           if (relLatV * pushSign < 0) {
-            const newLatV = otherLatV - relLatV * 0.16 + pushSign * 1.05;
-            const deltaLatV = newLatV - car.lateralVel;
-            car.lateralVel = newLatV;
-            car.vyBody = clamp(car.vyBody + deltaLatV * cosPsi, -18.0, 18.0);
+            car.lateralVel = otherLatV - relLatV * 0.16 + pushSign * 1.05;
           }
-          car.yawRate *= Math.exp(-8.0 * safeDt);
           car.speedKmh = Math.max(45.0, car.speedKmh - overlap * 8.5 * safeDt);
         }
       }
@@ -1805,10 +1851,7 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
       scrapedWall = true;
       const vOutward = Math.max(0.0, car.lateralVel);
       if (vOutward > 0.0) {
-        const reboundV = -Math.min(2.0, vOutward * 0.18);
-        car.lateralVel = reboundV;
-        car.vyBody = clamp(reboundV - nextSpeedMps * Math.sin(car.relYaw * 0.5), -10.0, 10.0);
-        // Hard right-wall strike damages right front-wing endplate progressively
+        car.lateralVel = -Math.min(2.0, vOutward * 0.18);
         if (!coinOpInfinite && vOutward > 2.6) {
           const endplateHit = Math.min(0.35, (vOutward - 2.6) * 0.06);
           car.damage.frontWingRight = clamp(car.damage.frontWingRight + endplateHit, 0.0, 1.0);
@@ -1821,18 +1864,14 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
           );
         }
       }
-      car.relYaw *= Math.exp(-14.0 * safeDt);
-      car.yawRate *= Math.exp(-12.0 * safeDt);
+      car.relYaw *= Math.exp(-16.0 * safeDt);
       car.speedKmh = Math.max(40.0, car.speedKmh - (36.0 + vOutward * 15.0) * safeDt);
     } else if (car.lateralOffset < minLeftBarrier) {
       car.lateralOffset = minLeftBarrier;
       scrapedWall = true;
       const vOutward = Math.max(0.0, -car.lateralVel);
       if (vOutward > 0.0) {
-        const reboundV = Math.min(2.0, vOutward * 0.18);
-        car.lateralVel = reboundV;
-        car.vyBody = clamp(reboundV - nextSpeedMps * Math.sin(car.relYaw * 0.5), -10.0, 10.0);
-        // Hard left-wall strike damages left front-wing endplate progressively
+        car.lateralVel = Math.min(2.0, vOutward * 0.18);
         if (!coinOpInfinite && vOutward > 2.6) {
           const endplateHit = Math.min(0.35, (vOutward - 2.6) * 0.06);
           car.damage.frontWingLeft = clamp(car.damage.frontWingLeft + endplateHit, 0.0, 1.0);
@@ -1845,55 +1884,115 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
           );
         }
       }
-      car.relYaw *= Math.exp(-14.0 * safeDt);
-      car.yawRate *= Math.exp(-12.0 * safeDt);
+      car.relYaw *= Math.exp(-16.0 * safeDt);
       car.speedKmh = Math.max(40.0, car.speedKmh - (36.0 + vOutward * 15.0) * safeDt);
     }
 
     car.yawAngle = car.relYaw;
   }
 
+  // Synchronize body-frame telemetry (vyBody, yawRate, bodySlipAngleRad, latG, gripUtilization)
+  const onStraightNeutral =
+    steerIn === 0.0 &&
+    Math.abs(kReal) < 0.0002 &&
+    Math.abs(car.lateralVel) < 0.03 &&
+    Math.abs(car.relYaw) < 0.003;
+
+  if (onStraightNeutral) {
+    car.vyBody = 0.0;
+    car.yawRate = 0.0;
+    car.bodySlipAngleRad = 0.0;
+    car.latG = 0.0;
+  } else {
+    car.vyBody = clamp(car.lateralVel * 0.38, -12.0, 12.0);
+    const roadYawRate = kReal * nextSpeedMps;
+    const relYawVel = (car.relYaw - prevRelYaw) / safeDt;
+    car.yawRate = clamp(roadYawRate + relYawVel * 0.45, -2.6, 2.6);
+    car.bodySlipAngleRad = nextSpeedMps > 0.5 ? Math.atan2(car.vyBody, nextSpeedMps) : 0.0;
+    const cornerLatAccel =
+      (rawScaledCurv * 0.0125 * nextSpeedMps * nextSpeedMps) +
+      (steerFormatted * nextSpeedMps * 0.48);
+    car.latG = clamp(cornerLatAccel / F1_GRAVITY, -5.8, 5.8);
+  }
+
+  const maxLatG = Math.max(0.8, 1.95 * muLatNorm * downforceFactor);
+  car.gripUtilization = clamp(Math.abs(car.latG) / maxLatG, 0.0, 1.25);
   car._lastComputedLatVel = car.lateralVel;
 
   // --------------------------------------------------------------------------
-  // 10. AUTOMATIC SEAMLESS GEARBOX, SAWTOOTH RPM & TURBO / ERS HYDRAULICS
+  // 10. AUTOMATIC SEAMLESS GEARBOX (UNCONDITIONAL DOWNSHIFT-FIRST WHEN SLOWING),
+  //     SAWTOOTH RPM & TURBO / ERS HYDRAULICS
   // --------------------------------------------------------------------------
   if (car.gearboxMode === 'AUTO_8SPD' && car.shiftCooldown <= 0) {
     if (car.inPitLane && (car.s >= PIT_LANE_CONFIG.speedLimitLineS || car.s < PIT_LANE_CONFIG.mergeStartS)) {
       if (car.gear > 2 && car.speedKmh <= Math.max(96.0, EIGHT_SPEED_DOWNSHIFT[car.gear - 2])) {
         car.gear -= 1;
-        car.shiftCooldown = 0.11;
+        car.shiftCooldown = 0.055;
         car.revBlipTimer = 0.11;
         if (callbacks.onGearShift) callbacks.onGearShift(car, car.gear, 'DOWN');
       } else if (car.gear === 2 && car.speedKmh <= 50.0) {
         car.gear = 1;
-        car.shiftCooldown = 0.14;
+        car.shiftCooldown = 0.08;
         if (callbacks.onGearShift) callbacks.onGearShift(car, 1, 'DOWN');
       } else if (car.gear === 1 && effThrottleIn > 0.18 && car.speedKmh >= 72.0) {
         car.gear = 2;
-        car.shiftCooldown = 0.18;
+        car.shiftCooldown = 0.14;
         if (callbacks.onGearShift) callbacks.onGearShift(car, 2, 'UP');
       }
     } else {
-      const cornerHoldOffset = (Math.abs(steerIn) > 0.55 && effThrottleIn < 0.65) ? 3.5 : 0.0;
-      const brakeDownshiftBias = effBrakeIn > 0.25 ? effBrakeIn * 6.5 : 0.0;
-      const upshiftSpd = car.gear < 8 ? EIGHT_SPEED_UPSHIFT[car.gear - 1] + cornerHoldOffset : Infinity;
-      const downshiftSpd = car.gear > 1 ? EIGHT_SPEED_DOWNSHIFT[car.gear - 2] + brakeDownshiftBias : -1;
+      // Check DOWNSHIFT FIRST on every substep regardless of whether brake or throttle is pressed!
+      // Gears 8->7..3->2 use EIGHT_SPEED_DOWNSHIFT [134, 169, 200, 229, 256, 280] (+8 km/h brake bias);
+      // Gear 2->1 stays in 2nd down to 66 km/h on coast/brake (or 96 km/h on throttle kickdown) so 70 km/h hairpins hold 2nd gear cleanly!
+      const brakeDownshiftBias = effBrakeIn > 0.10 ? effBrakeIn * 8.0 : 0.0;
+      const baseDownThresh = car.gear === 2
+        ? (effThrottleIn > 0.55 && effBrakeIn < 0.10 ? EIGHT_SPEED_DOWNSHIFT[0] : 66.0)
+        : (car.gear > 2 ? EIGHT_SPEED_DOWNSHIFT[car.gear - 2] : -1.0);
+      const downshiftSpd = car.gear > 1 ? baseDownThresh + (car.gear > 2 ? brakeDownshiftBias : 0.0) : -1.0;
 
-      if (car.gear < 8 && effThrottleIn > 0.16 && effBrakeIn < 0.20 && car.speedKmh >= upshiftSpd) {
-        car.gear += 1;
-        car.shiftCooldown = 0.15;
-        if (callbacks.onGearShift) callbacks.onGearShift(car, car.gear, 'UP');
-      } else if (car.gear > 1 && car.speedKmh <= downshiftSpd) {
+      // Also check if RPM dropped below 8500 RPM powerband floor while below the lower gear's upshift ceiling
+      const rpmBogging =
+        car.gear > 2 &&
+        car.rpm < 8500 &&
+        car.speedKmh <= EIGHT_SPEED_UPSHIFT[car.gear - 2] - 5.0;
+
+      if (car.gear > 1 && (car.speedKmh <= downshiftSpd || rpmBogging)) {
         car.gear -= 1;
-        car.shiftCooldown = 0.11;
-        car.revBlipTimer = 0.125;
+        // If speed dropped across multiple gear bands (e.g., emergency braking or off-track scrub),
+        // catch up an extra gear step so the car NEVER bogs in a high gear!
+        if (car.gear > 2 && car.speedKmh <= EIGHT_SPEED_DOWNSHIFT[car.gear - 2] - 8.0) {
+          car.gear -= 1;
+        }
+        car.shiftCooldown = 0.052;
+        car.revBlipTimer = 0.115;
         car.cornerExitTorqueTimer = 0.28;
         if (callbacks.onGearShift) callbacks.onGearShift(car, car.gear, 'DOWN');
-        if (car.speedKmh > 115 && effBrakeIn > 0.25 && callbacks.onBackfire) {
+        if (car.speedKmh > 110 && effBrakeIn > 0.20 && callbacks.onBackfire) {
           callbacks.onBackfire(car);
         }
+      } else {
+        const cornerHoldOffset = (Math.abs(steerIn) > 0.55 && effThrottleIn < 0.65) ? 3.5 : 0.0;
+        const upshiftSpd = car.gear < 8 ? EIGHT_SPEED_UPSHIFT[car.gear - 1] + cornerHoldOffset : Infinity;
+        if (car.gear < 8 && effThrottleIn > 0.12 && effBrakeIn < 0.25 && car.speedKmh >= upshiftSpd) {
+          car.gear += 1;
+          car.shiftCooldown = 0.13;
+          if (callbacks.onGearShift) callbacks.onGearShift(car, car.gear, 'UP');
+        }
       }
+    }
+  } else if (
+    (car.gearboxMode === 'AUTO_2SPD' || (car.gearboxMode === 'CLASSIC_2SPD' && !ctx.manualClassicGearbox)) &&
+    car.shiftCooldown <= 0
+  ) {
+    // Automatic shifting support for 1982 2-Speed LOW/HIGH mode when slowing down or accelerating
+    if (car.gear === 2 && car.speedKmh <= 142.0) {
+      car.gear = 1;
+      car.shiftCooldown = 0.10;
+      car.revBlipTimer = 0.11;
+      if (callbacks.onGearShift) callbacks.onGearShift(car, 1, 'DOWN');
+    } else if (car.gear === 1 && effThrottleIn > 0.15 && effBrakeIn < 0.20 && car.speedKmh >= 168.0) {
+      car.gear = 2;
+      car.shiftCooldown = 0.14;
+      if (callbacks.onGearShift) callbacks.onGearShift(car, 2, 'UP');
     }
   }
 
@@ -1911,6 +2010,7 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
       mechRpm = Math.max(launchClutchFloor, wheelRpm);
     } else {
       const vEntry = EIGHT_SPEED_UPSHIFT[gIdx - 1];
+      const vDown = EIGHT_SPEED_DOWNSHIFT[gIdx - 1];
       const entryRpm = EIGHT_SPEED_ENTRY_RPM[gIdx];
       const peakRpm = gIdx === 7 ? F1_TOP_GEAR_RPM : F1_SHIFT_PEAK_RPM;
       if (car.speedKmh >= gTop) {
@@ -1918,10 +2018,13 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
       } else if (car.speedKmh >= vEntry) {
         const span = Math.max(8.0, gTop - vEntry);
         mechRpm = entryRpm + ((car.speedKmh - vEntry) / span) * (peakRpm - entryRpm);
+      } else if (car.speedKmh >= vDown) {
+        const downSpan = Math.max(4.0, vEntry - vDown);
+        mechRpm = 8480 + ((car.speedKmh - vDown) / downSpan) * (entryRpm - 8480);
       } else {
         const directWheelRpm = (car.speedKmh / gTop) * peakRpm;
-        const entryMapRpm = 3800 + (car.speedKmh / Math.max(20.0, vEntry)) * (entryRpm - 3800);
-        mechRpm = Math.max(entryMapRpm, directWheelRpm * 0.96);
+        const entryMapRpm = 3800 + (car.speedKmh / Math.max(20.0, vDown)) * (8480 - 3800);
+        mechRpm = Math.max(entryMapRpm, directWheelRpm * 0.94);
       }
     }
 

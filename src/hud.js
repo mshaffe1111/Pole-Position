@@ -3,7 +3,7 @@
 // Sim Telemetry HUD, Live Lap Delta Ring, Pedal/Assist Bars, Car MFD & Vector Map
 // ============================================================================
 
-import { TIRE_COMPOUNDS, FUJI_SECTORS, PIT_LANE_CONFIG } from './config.js?v=20261114sim';
+import { TIRE_COMPOUNDS, FUJI_SECTORS, PIT_LANE_CONFIG } from './config.js?v=20261114fix';
 
 const DELTA_BIN_COUNT = 100;
 const TRACK_SPLINE_LEN = 1000;
@@ -577,6 +577,7 @@ export class TelemetryHUD {
       allCars,
       weatherSummary,
       brakingAssistMode,
+      tractionControlMode,
     } = state;
 
     const isSim2026 = gameMode === '2026_UPDATED';
@@ -769,7 +770,14 @@ export class TelemetryHUD {
 
     // 2026 Sim Car MFD & Pit Overlays
     if (isSim2026) {
-      this._update2026Telemetry(playerCar, weatherSummary, sessionPhase, brakingAssistMode, assistBrake);
+      this._update2026Telemetry(
+        playerCar,
+        weatherSummary,
+        sessionPhase,
+        brakingAssistMode,
+        assistBrake,
+        tractionControlMode
+      );
     } else if (this.pitStopOverlayEl) {
       this.pitStopOverlayEl.style.display = 'none';
     }
@@ -812,7 +820,14 @@ export class TelemetryHUD {
     this.cautionBannerEl.style.display = 'none';
   }
 
-  _update2026Telemetry(playerCar, weatherSummary, sessionPhase, brakingAssistMode = 'MIN', assistBrake = 0) {
+  _update2026Telemetry(
+    playerCar,
+    weatherSummary,
+    sessionPhase,
+    brakingAssistMode = 'MIN',
+    assistBrake = 0,
+    tractionControlMode = 'FULL'
+  ) {
     this.syncBoxButtonState();
 
     const comp = TIRE_COMPOUNDS[playerCar.compound] || TIRE_COMPOUNDS.SOFT;
@@ -824,8 +839,17 @@ export class TelemetryHUD {
 
     if (this.assistBadgeEl) {
       const aMode = brakingAssistMode || 'MIN';
-      const intervening = assistBrake > 0.02;
-      this.assistBadgeEl.textContent = intervening ? `AST ${Math.round(assistBrake * 100)}%` : `AST ${aMode}`;
+      const tMode = tractionControlMode || playerCar.tractionControl || 'FULL';
+      const brkIntervening = assistBrake > 0.02;
+      const tcsIntervening = Boolean(playerCar.tcsActive || playerCar.escActive || (Number(playerCar.tcsIntervention) || 0) > 0.04);
+      const intervening = brkIntervening || tcsIntervening;
+      if (brkIntervening) {
+        this.assistBadgeEl.textContent = `BRK AST ${Math.round(assistBrake * 100)}%`;
+      } else if (tcsIntervening) {
+        this.assistBadgeEl.textContent = `TCS+ESC ACTIVE`;
+      } else {
+        this.assistBadgeEl.textContent = `TC ${tMode} • BRK ${aMode}`;
+      }
       this.assistBadgeEl.classList.toggle('intervening', intervening);
     }
 

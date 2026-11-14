@@ -635,12 +635,19 @@ body.arcade-shader-active #arcade-scanlines {
   border-color: rgba(248, 250, 252, 0.36) !important;
 }
 
-.dock-seg-btn[data-cfg-assist="MIN"].selected {
+.dock-seg-btn[data-cfg-assist="MIN"].selected,
+.dock-seg-btn[data-cfg-tc="FULL"].selected {
   color: var(--sim-teal) !important;
   border-color: rgba(0, 210, 190, 0.55) !important;
 }
 
-.dock-seg-btn[data-cfg-assist="OFF"].selected {
+.dock-seg-btn[data-cfg-tc="SPORT"].selected {
+  color: var(--sim-gold) !important;
+  border-color: rgba(245, 183, 0, 0.55) !important;
+}
+
+.dock-seg-btn[data-cfg-assist="OFF"].selected,
+.dock-seg-btn[data-cfg-tc="OFF"].selected {
   color: #f8fafc !important;
   border-color: rgba(225, 6, 0, 0.65) !important;
 }
