@@ -1,0 +1,6 @@
+*.blend1
+*.blend2
+blender/build.log
+.godot/
+.DS_Store
+Thumbs.db

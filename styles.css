@@ -1,0 +1,1130 @@
+/* ==========================================================================
+   RACE PHANATIC F1 — POLE POSITION 2026: RETRO GRAND PRIX
+   Mobile-First Universal Responsive Stylesheet (Landscape & Portrait)
+   ========================================================================== */
+
+:root {
+  --bg-glass: rgba(8, 13, 24, 0.78);
+  --bg-glass-strong: rgba(7, 11, 20, 0.92);
+  --border-subtle: rgba(140, 185, 255, 0.24);
+  --accent-red: #ff2438;
+  --accent-cyan: #00e5ff;
+  --accent-green: #00e676;
+  --accent-gold: #ffd600;
+  --text-main: #f3f7ff;
+  --text-dim: #92a5c0;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #060911;
+  color: var(--text-main);
+  font-family: 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif;
+  overscroll-behavior: none;
+  touch-action: none;
+}
+
+#webgl-container {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+}
+
+#webgl-container canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* 1982 Crisp Arcade Shader Visual Filter + Subtle Scanlines */
+body.arcade-shader-active #webgl-container canvas {
+  filter: contrast(1.22) saturate(1.38) brightness(1.04);
+  image-rendering: pixelated;
+}
+
+#arcade-scanlines {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.0) 0px,
+    rgba(0, 0, 0, 0.0) 2px,
+    rgba(0, 0, 0, 0.18) 3px,
+    rgba(0, 0, 0, 0.18) 4px
+  );
+}
+
+body.arcade-shader-active #arcade-scanlines {
+  display: block;
+}
+
+/* Boot Loading Screen */
+#boot-loading {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: radial-gradient(circle at center, #111b30 0%, #050810 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.boot-spinner {
+  width: 44px;
+  height: 44px;
+  border: 4px solid rgba(0, 229, 255, 0.2);
+  border-top-color: var(--accent-cyan);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ==========================================================================
+   PRE-RACE CONFIGURATION MENU
+   ========================================================================== */
+#pre-race-menu {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(12px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+  background: linear-gradient(180deg, rgba(4, 8, 16, 0.45) 0%, rgba(4, 8, 18, 0.80) 100%);
+  touch-action: pan-y;
+}
+
+.menu-card {
+  width: min(820px, 100%);
+  max-height: 94vh;
+  overflow-y: auto;
+  touch-action: pan-y;
+  background: var(--bg-glass-strong);
+  border: 1px solid rgba(0, 229, 255, 0.35);
+  border-radius: 18px;
+  padding: 18px 20px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.72), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(14px);
+}
+
+.menu-header {
+  text-align: center;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 12px;
+  margin-bottom: 14px;
+}
+
+.brand-kicker {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.2em;
+  color: var(--accent-cyan);
+  background: rgba(0, 229, 255, 0.12);
+  border: 1px solid rgba(0, 229, 255, 0.35);
+  padding: 3px 10px;
+  border-radius: 99px;
+  margin-bottom: 6px;
+}
+
+.menu-title {
+  font-size: clamp(1.25rem, 3.8vw, 2.05rem);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: linear-gradient(90deg, #ffffff 0%, #ffd600 52%, #ff334b 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.menu-subtitle {
+  font-size: 0.80rem;
+  color: var(--text-dim);
+  margin-top: 3px;
+}
+
+.cfg-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.cfg-block {
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.cfg-label {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--accent-cyan);
+  text-transform: uppercase;
+  margin-bottom: 7px;
+}
+
+.cfg-note {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  margin-top: 6px;
+  line-height: 1.35;
+}
+
+.pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cfg-btn {
+  flex: 1 1 auto;
+  min-height: 36px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(16, 25, 42, 0.85);
+  color: var(--text-main);
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.cfg-btn:hover {
+  border-color: rgba(0, 229, 255, 0.6);
+}
+
+.cfg-btn.selected {
+  background: linear-gradient(135deg, #007cf0 0%, #00dfd8 100%);
+  color: #03101c;
+  border-color: #80f8ff;
+  font-weight: 900;
+  box-shadow: 0 0 14px rgba(0, 229, 255, 0.35);
+}
+
+.launch-btn {
+  width: 100%;
+  margin-top: 12px;
+  padding: 14px 18px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(90deg, #ff1e38 0%, #ff7b00 100%);
+  color: #ffffff;
+  font-size: 1.05rem;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: 0 8px 26px rgba(255, 36, 56, 0.48);
+}
+
+.launch-btn:active {
+  transform: scale(0.985);
+}
+
+/* ==========================================================================
+   TOP TELEMETRY HUD & 2026 WIDGETS
+   ========================================================================== */
+#race-hud {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.top-hud-bar {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 6px;
+  padding: max(6px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) 6px max(10px, env(safe-area-inset-left));
+  background: linear-gradient(180deg, rgba(5, 9, 18, 0.88) 0%, rgba(5, 9, 18, 0.0) 100%);
+}
+
+.hud-stat {
+  background: var(--bg-glass);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 4px 9px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 68px;
+  backdrop-filter: blur(8px);
+}
+
+.hud-stat.center-timer {
+  align-items: center;
+  border-color: rgba(255, 214, 0, 0.45);
+  min-width: 92px;
+}
+
+.stat-lbl {
+  font-size: 0.60rem;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+
+.stat-val {
+  font-size: clamp(0.92rem, 2.5vw, 1.25rem);
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+
+.stat-val.gold { color: var(--accent-gold); }
+.stat-val.cyan { color: var(--accent-cyan); }
+.stat-val.green { color: var(--accent-green); }
+.stat-val.low-time {
+  color: #ff1744;
+  animation: pulseFast 0.45s infinite alternate;
+}
+
+@keyframes pulseFast {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0.55; transform: scale(1.06); }
+}
+
+.stat-sub {
+  font-size: 0.64rem;
+  font-weight: 700;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.rpm-bar-track {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 3px;
+  margin-top: 3px;
+  overflow: hidden;
+}
+
+#hud-rpm-fill {
+  height: 100%;
+  width: 20%;
+  background: var(--accent-green);
+  transition: width 0.04s linear;
+}
+
+.slip-badge {
+  display: none;
+  margin-top: 2px;
+  padding: 1px 5px;
+  font-size: 0.56rem;
+  font-weight: 900;
+  border-radius: 4px;
+  background: var(--accent-cyan);
+  color: #03131f;
+}
+
+/* Quick Live Action Pills (Top-Right Subrow) */
+.hud-quick-actions {
+  pointer-events: auto;
+  position: fixed;
+  top: calc(max(6px, env(safe-area-inset-top)) + 58px);
+  right: max(10px, env(safe-area-inset-right));
+  display: flex;
+  gap: 5px;
+  z-index: 26;
+}
+
+.quick-pill {
+  background: var(--bg-glass);
+  color: var(--text-main);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+/* GPS Minimap (Top-Left below Top Bar) */
+.minimap-card {
+  position: fixed;
+  top: calc(max(6px, env(safe-area-inset-top)) + 58px);
+  left: max(10px, env(safe-area-inset-left));
+  width: clamp(118px, 19vw, 168px);
+  height: clamp(86px, 14vw, 122px);
+  background: rgba(6, 11, 20, 0.72);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 3px;
+  backdrop-filter: blur(6px);
+}
+
+#gps-minimap {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* 2026 Pro Telemetry Widget (Compact Cluster) */
+#telemetry-2026-panel {
+  position: fixed;
+  top: calc(max(6px, env(safe-area-inset-top)) + 92px);
+  right: max(10px, env(safe-area-inset-right));
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: clamp(146px, 23vw, 196px);
+  background: var(--bg-glass);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 7px 8px;
+  backdrop-filter: blur(8px);
+}
+
+.tel-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.64rem;
+  font-weight: 800;
+}
+
+.comp-pill {
+  border: 1px solid #ff2a2a;
+  padding: 1px 6px;
+  border-radius: 99px;
+  font-size: 0.62rem;
+  font-weight: 900;
+}
+
+.tires-4grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.tire-cell {
+  border: 1px solid var(--accent-green);
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 6px;
+  padding: 2px 5px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.60rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.t-corner { color: var(--text-dim); }
+.t-temp { color: #b8c7dc; font-size: 0.56rem; }
+
+.fuel-bar-wrap {
+  width: 100%;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+#tel-fuel-fill {
+  height: 100%;
+  width: 80%;
+  background: var(--accent-cyan);
+}
+
+.weather-mini {
+  font-size: 0.60rem;
+  color: #d6e4f7;
+  line-height: 1.28;
+}
+
+/* 4-Zone Damage Silhouette Bar */
+.dmg-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 3px;
+  font-size: 0.56rem;
+  font-weight: 800;
+  color: var(--text-dim);
+}
+
+.dmg-chip {
+  flex: 1;
+  text-align: center;
+  padding: 2px 0;
+  border-radius: 4px;
+  color: #061018;
+  font-weight: 900;
+  background: var(--accent-green);
+}
+
+/* Caution, Radio & Callout Banners */
+.caution-banner {
+  display: none;
+  position: fixed;
+  top: calc(max(6px, env(safe-area-inset-top)) + 56px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 28;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: clamp(0.68rem, 2vw, 0.84rem);
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-align: center;
+  max-width: 86vw;
+  animation: pulseFast 0.42s infinite alternate;
+}
+
+.caution-banner.yellow, .caution-banner.vsc {
+  background: #ffea00;
+  color: #101216;
+  border: 2px solid #ffffff;
+}
+
+.caution-banner.penalty-warn {
+  background: #ff1744;
+  color: #ffffff;
+  border: 2px solid #ffd600;
+}
+
+#engineer-radio-toast {
+  position: fixed;
+  bottom: 37%;
+  left: 50%;
+  transform: translateX(-50%) translateY(10px);
+  opacity: 0;
+  transition: all 0.22s ease;
+  background: rgba(8, 20, 36, 0.90);
+  border: 1px solid var(--accent-cyan);
+  border-radius: 99px;
+  padding: 6px 14px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #e8f6ff;
+  max-width: 90vw;
+  text-align: center;
+  z-index: 25;
+}
+
+#engineer-radio-toast.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.radio-tag {
+  color: var(--accent-cyan);
+  font-weight: 900;
+  margin-right: 5px;
+}
+
+#center-callout {
+  position: fixed;
+  top: 34%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.92);
+  opacity: 0;
+  transition: all 0.16s ease;
+  font-size: clamp(1.2rem, 4.4vw, 2.25rem);
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-align: center;
+  text-shadow: 0 4px 18px rgba(0, 0, 0, 0.9);
+  z-index: 29;
+  pointer-events: none;
+  width: 90vw;
+}
+
+#center-callout.visible {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+/* Pre-Pit Strategy Pill & Drawer */
+#pit-approach-hint {
+  display: none;
+  position: fixed;
+  top: 24%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 230, 118, 0.92);
+  color: #03150d;
+  font-size: 0.74rem;
+  font-weight: 900;
+  padding: 4px 12px;
+  border-radius: 99px;
+  z-index: 25;
+}
+
+#btn-toggle-pit-strategy {
+  pointer-events: auto;
+  position: fixed;
+  bottom: 36.5%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(10, 22, 40, 0.88);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(0, 229, 255, 0.55);
+  border-radius: 99px;
+  padding: 6px 13px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  cursor: pointer;
+  z-index: 27;
+}
+
+#pit-strategy-drawer {
+  pointer-events: auto;
+  display: none;
+  flex-direction: column;
+  gap: 7px;
+  position: fixed;
+  bottom: 42%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(390px, 92vw);
+  background: var(--bg-glass-strong);
+  border: 1px solid var(--accent-cyan);
+  border-radius: 14px;
+  padding: 10px 12px;
+  z-index: 32;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.75);
+}
+
+#pit-strategy-drawer.open {
+  display: flex;
+}
+
+.pit-drawer-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pit-drawer-lbl {
+  font-size: 0.62rem;
+  font-weight: 800;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+
+.pit-opt-group {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.pit-opt {
+  flex: 1;
+  padding: 5px 6px;
+  font-size: 0.66rem;
+  font-weight: 800;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(20, 30, 48, 0.9);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.pit-opt.active {
+  background: var(--accent-cyan);
+  color: #03121e;
+  border-color: #ffffff;
+}
+
+/* Stationary Pit Stop Crew & Optimal Clutch Mini-Game Overlay */
+#pit-stop-overlay {
+  pointer-events: auto;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  position: fixed;
+  top: 44%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(400px, 90vw);
+  background: rgba(7, 13, 24, 0.92);
+  border: 2px solid var(--accent-green);
+  border-radius: 14px;
+  padding: 12px 16px;
+  z-index: 33;
+  text-align: center;
+}
+
+#pit-service-status {
+  font-size: 0.76rem;
+  font-weight: 900;
+  color: var(--accent-cyan);
+}
+
+#pit-service-timer {
+  font-size: 1.55rem;
+  font-weight: 900;
+  color: var(--accent-gold);
+  font-variant-numeric: tabular-nums;
+}
+
+#clutch-minigame-wrap {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+}
+
+.clutch-bar-outer {
+  position: relative;
+  width: 100%;
+  height: 22px;
+  background: #1b2434;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  overflow: hidden;
+}
+
+.clutch-sweet-zone {
+  position: absolute;
+  left: 38%;
+  width: 26%;
+  top: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, #00c853, #69f0ae, #00c853);
+}
+
+#clutch-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  background: #ffffff;
+  box-shadow: 0 0 8px #ffffff;
+  transform: translateX(-50%);
+}
+
+#btn-clutch-release {
+  width: 100%;
+  padding: 9px 14px;
+  border-radius: 9px;
+  border: none;
+  background: linear-gradient(90deg, #00e676, #00b0ff);
+  color: #031510;
+  font-size: 0.86rem;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+#clutch-result-text {
+  font-size: 0.70rem;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+/* ==========================================================================
+   ERGONOMIC BOTTOM-CORNER MOBILE TOUCH CONTROLS (RIGHT & LEFT HANDED)
+   ========================================================================== */
+#mobile-controls-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 24;
+  pointer-events: none;
+}
+
+/* Steering Wheel Zone: Right-Handed Default X: 6%-28%, Y: 66%-95% */
+#touch-wheel-zone {
+  pointer-events: auto;
+  position: fixed;
+  left: 6%;
+  width: 22%;
+  min-width: 132px;
+  max-width: 240px;
+  top: 66%;
+  height: 29%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+
+#mobile-controls-layer.left-handed #touch-wheel-zone {
+  left: auto;
+  right: 6%;
+}
+
+.wheel-ring-outer {
+  width: min(100%, 168px);
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(16, 26, 44, 0.72) 38%, rgba(8, 12, 22, 0.92) 100%);
+  border: 5px solid rgba(220, 235, 255, 0.55);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.65), inset 0 0 18px rgba(0, 229, 255, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+#virtual-wheel-graphic {
+  width: 88%;
+  height: 88%;
+  border-radius: 50%;
+  border: 9px solid #1d2738;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 0 0 2px rgba(0, 229, 255, 0.45);
+}
+
+/* Top Red Center Marker Stripe on F1 Wheel */
+#virtual-wheel-graphic::before {
+  content: '';
+  position: absolute;
+  top: -9px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 12px;
+  height: 9px;
+  background: var(--accent-red);
+  border-radius: 2px;
+}
+
+.wheel-spoke-h {
+  position: absolute;
+  width: 100%;
+  height: 14px;
+  background: linear-gradient(90deg, #273449, #455a7c, #273449);
+  border-radius: 4px;
+}
+
+.wheel-hub {
+  position: relative;
+  z-index: 2;
+  background: #0c1320;
+  border: 1px solid var(--accent-cyan);
+  border-radius: 6px;
+  padding: 3px 7px;
+  font-size: 0.64rem;
+  font-weight: 900;
+  color: var(--accent-cyan);
+  font-variant-numeric: tabular-nums;
+}
+
+.control-caption {
+  font-size: 0.60rem;
+  font-weight: 800;
+  color: rgba(225, 238, 255, 0.65);
+  margin-top: 4px;
+  letter-spacing: 0.08em;
+}
+
+/* Pedals + Shifter Assembly: Right-Handed Default X: 72%-94%, Y: 62%-95% */
+#touch-pedal-assembly {
+  pointer-events: auto;
+  position: fixed;
+  right: 6%;
+  width: 22%;
+  min-width: 138px;
+  max-width: 250px;
+  top: 62%;
+  height: 33%;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  touch-action: none;
+}
+
+#mobile-controls-layer.left-handed #touch-pedal-assembly {
+  right: auto;
+  left: 6%;
+}
+
+/* Shifter right above Gas Pedal */
+#touch-shifter-btn {
+  align-self: flex-end;
+  width: 62%;
+  min-height: 40px;
+  border-radius: 10px;
+  border: 2px solid rgba(255, 214, 0, 0.65);
+  background: rgba(12, 20, 36, 0.90);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+#mobile-controls-layer.left-handed #touch-shifter-btn {
+  align-self: flex-start;
+}
+
+.shifter-label {
+  font-size: 0.60rem;
+  font-weight: 800;
+  color: var(--text-dim);
+}
+
+.shifter-val {
+  font-size: 0.88rem;
+  font-weight: 900;
+}
+
+.shifter-val.low { color: var(--accent-gold); }
+.shifter-val.high { color: var(--accent-green); }
+
+#seq-shifter-wrap {
+  display: none;
+  width: 100%;
+  gap: 5px;
+  align-items: center;
+}
+
+.seq-btn {
+  flex: 1;
+  min-height: 38px;
+  border-radius: 8px;
+  border: 1px solid var(--accent-cyan);
+  background: rgba(12, 20, 36, 0.9);
+  color: #ffffff;
+  font-weight: 900;
+  font-size: 0.82rem;
+}
+
+#seq-gear-num {
+  font-size: 0.95rem;
+  font-weight: 900;
+  color: var(--accent-gold);
+  min-width: 34px;
+  text-align: center;
+}
+
+/* Dual Vertical Analog Pressure-Slide Pedals */
+#touch-pedal-zone {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  position: relative;
+  touch-action: none;
+}
+
+#mobile-controls-layer.left-handed #touch-pedal-zone {
+  flex-direction: row-reverse;
+}
+
+.analog-pedal {
+  flex: 1;
+  position: relative;
+  background: rgba(10, 16, 28, 0.82);
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  border-radius: 12px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  padding: 7px 4px;
+}
+
+.analog-pedal.brake {
+  border-color: rgba(255, 45, 85, 0.65);
+}
+
+.analog-pedal.gas {
+  border-color: rgba(0, 230, 118, 0.65);
+}
+
+.pedal-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 0%;
+  pointer-events: none;
+  transition: height 0.03s linear;
+}
+
+.analog-pedal.brake .pedal-fill {
+  background: linear-gradient(0deg, rgba(255, 23, 68, 0.45), rgba(255, 23, 68, 0.85));
+}
+
+.analog-pedal.gas .pedal-fill {
+  background: linear-gradient(0deg, rgba(0, 230, 118, 0.40), rgba(0, 230, 118, 0.85));
+}
+
+.pedal-name, .pedal-pct {
+  position: relative;
+  z-index: 2;
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+}
+
+/* ==========================================================================
+   DNQ & POST-RACE PODIUM CEREMONY MODALS
+   ========================================================================== */
+.modal-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(4, 8, 16, 0.82);
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  backdrop-filter: blur(10px);
+  touch-action: pan-y;
+}
+
+.modal-box {
+  width: min(580px, 100%);
+  max-height: 92vh;
+  overflow-y: auto;
+  background: var(--bg-glass-strong);
+  border: 1px solid rgba(255, 214, 0, 0.45);
+  border-radius: 18px;
+  padding: 18px 20px;
+  text-align: center;
+}
+
+.podium-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.podium-step {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 10px 6px;
+}
+
+.pod-rank {
+  font-size: 0.82rem;
+  font-weight: 900;
+  color: var(--accent-gold);
+}
+
+.pod-driver {
+  font-size: 0.76rem;
+  font-weight: 800;
+  margin: 4px 0;
+}
+
+.pod-meta {
+  font-size: 0.64rem;
+  color: var(--text-dim);
+}
+
+.results-table {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  text-align: left;
+  margin-bottom: 12px;
+}
+
+.res-cell {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+
+.res-lbl {
+  font-size: 0.62rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  font-weight: 800;
+}
+
+.res-val {
+  font-size: 0.90rem;
+  font-weight: 900;
+  color: #ffffff;
+}
+
+.stint-box {
+  background: rgba(0, 229, 255, 0.07);
+  border: 1px solid rgba(0, 229, 255, 0.25);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.72rem;
+  color: #d6ecff;
+  margin-bottom: 14px;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 10px;
+}
+
+/* Portrait phone compact refinements */
+@media (max-width: 560px) {
+  .top-hud-bar {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .hud-stat {
+    min-width: 56px;
+    padding: 3px 6px;
+  }
+  .hud-quick-actions {
+    top: calc(max(6px, env(safe-area-inset-top)) + 98px);
+  }
+  .minimap-card {
+    top: calc(max(6px, env(safe-area-inset-top)) + 98px);
+    width: 112px;
+    height: 82px;
+  }
+  #telemetry-2026-panel {
+    top: calc(max(6px, env(safe-area-inset-top)) + 132px);
+    width: 142px;
+    padding: 5px 6px;
+  }
+  #touch-wheel-zone {
+    left: 3%;
+    width: 34%;
+  }
+  #mobile-controls-layer.left-handed #touch-wheel-zone {
+    left: auto;
+    right: 3%;
+  }
+  #touch-pedal-assembly {
+    right: 3%;
+    width: 36%;
+  }
+  #mobile-controls-layer.left-handed #touch-pedal-assembly {
+    right: auto;
+    left: 3%;
+  }
+}

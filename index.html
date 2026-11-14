@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#060911" />
+  <title>Race Phanatic F1 — Pole Position 2026: Retro Grand Prix</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="stylesheet" href="./styles.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three.module.min.js",
+        "three/addons/": "./vendor/addons/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <!-- Boot Loader -->
+  <div id="boot-loading">
+    <div class="boot-spinner"></div>
+    <div>LOADING FUJI SPEEDWAY 3D &amp; BLENDER ASSETS...</div>
+  </div>
+
+  <!-- 3D WebGL Viewport & 1982 CRT Scanline Filter -->
+  <div id="webgl-container"></div>
+  <div id="arcade-scanlines"></div>
+
+  <!-- ====================================================================
+       PRE-RACE CONFIGURATION MENU
+       ==================================================================== -->
+  <section id="pre-race-menu">
+    <div class="menu-card">
+      <div class="menu-header">
+        <div class="brand-kicker">RACE PHANATIC F1 • MOBILE EDITION</div>
+        <h1 class="menu-title">Pole Position 2026: Retro Grand Prix</h1>
+        <p class="menu-subtitle">1982 Fuji Speedway (4,359m) • 240Hz Drivetrain &amp; Tire Physics • Touch Ergonomics</p>
+      </div>
+
+      <div class="cfg-grid">
+        <!-- 1. Game Rules Preset -->
+        <div class="cfg-block">
+          <div class="cfg-label">1. Game Rules Preset</div>
+          <div class="pill-row">
+            <button class="cfg-btn" data-cfg-mode="1982_ORIGINAL">🕹️ 1982 ORIGINAL</button>
+            <button class="cfg-btn selected" data-cfg-mode="2026_UPDATED">🏎️ 2026 PRO SIM</button>
+          </div>
+          <div class="cfg-note">1982: 73s Quali + Extended Play + Instant Wreck. 2026: Tire Cliff, Fuel, Damage, Yellows &amp; Pits.</div>
+        </div>
+
+        <!-- 2. Handedness & Touch Layout -->
+        <div class="cfg-block">
+          <div class="cfg-label">2. Touch Handedness</div>
+          <div class="pill-row">
+            <button class="cfg-btn selected" data-cfg-hand="RIGHT_HANDED">🤚 RIGHT-HANDED</button>
+            <button class="cfg-btn" data-cfg-hand="LEFT_HANDED">✋ LEFT-HANDED</button>
+          </div>
+          <div class="cfg-note">Right-Handed: Wheel Bottom-Left, Analog Gas/Brake + Shifter Bottom-Right (mirrored for Left).</div>
+        </div>
+      </div>
+
+      <!-- 1982 Classic Specific Options -->
+      <div id="cfg-section-1982" style="display:none;">
+        <div class="cfg-grid">
+          <div class="cfg-block">
+            <div class="cfg-label">1982 Grand Prix Laps (After Mandatory 1-Lap Quali)</div>
+            <div class="pill-row">
+              <button class="cfg-btn" data-cfg-classic-laps="3">3 LAPS</button>
+              <button class="cfg-btn selected" data-cfg-classic-laps="4">4 LAPS (ARCADE)</button>
+              <button class="cfg-btn" data-cfg-classic-laps="5">5 LAPS</button>
+            </div>
+            <div class="cfg-note">Rank A Pole &le; 58"50 (4,000 pts) • Cutoff &le; 73"00 • +58s Extended Play per lap.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2026 Updated Specific Options -->
+      <div id="cfg-section-2026">
+        <div class="cfg-grid">
+          <div class="cfg-block">
+            <div class="cfg-label">Race Distance &amp; Pit Window</div>
+            <div class="pill-row">
+              <button class="cfg-btn selected" data-cfg-length="SHORT">SHORT (5L)</button>
+              <button class="cfg-btn" data-cfg-length="MEDIUM">MEDIUM (12L)</button>
+              <button class="cfg-btn" data-cfg-length="LONG">LONG (25L)</button>
+            </div>
+            <div class="cfg-note" id="cfg-length-summary">0–1 Pit Stop | 1.0x Wear/Fuel</div>
+          </div>
+
+          <div class="cfg-block">
+            <div class="cfg-label">Starting Tire Compound</div>
+            <div class="pill-row">
+              <button class="cfg-btn selected" data-cfg-compound="SOFT">🔴 SOFT</button>
+              <button class="cfg-btn" data-cfg-compound="MEDIUM">🟡 MED</button>
+              <button class="cfg-btn" data-cfg-compound="HARD">⚪ HARD</button>
+              <button class="cfg-btn" data-cfg-compound="INTERMEDIATE">🟢 INTER</button>
+              <button class="cfg-btn" data-cfg-compound="FULL_WET">🔵 WET</button>
+            </div>
+          </div>
+
+          <div class="cfg-block">
+            <div class="cfg-label">Weather Evolution</div>
+            <div class="pill-row">
+              <button class="cfg-btn selected" data-cfg-weather="DYNAMIC">🌦️ DYNAMIC</button>
+              <button class="cfg-btn" data-cfg-weather="HOT_SUNNY">☀️ SUNNY</button>
+              <button class="cfg-btn" data-cfg-weather="OVERCAST_COOL">⛅ COOL</button>
+              <button class="cfg-btn" data-cfg-weather="LIGHT_DRIZZLE">🌧️ DRIZZLE</button>
+              <button class="cfg-btn" data-cfg-weather="HEAVY_DOWNPOUR">⛈️ HEAVY</button>
+              <button class="cfg-btn" data-cfg-weather="MONSOON_STORM">⚡ MONSOON</button>
+            </div>
+          </div>
+
+          <div class="cfg-block">
+            <div class="cfg-label">Gearbox, Grid &amp; Shootout</div>
+            <div class="pill-row" style="margin-bottom:6px;">
+              <button class="cfg-btn selected" data-cfg-gearbox="CLASSIC_2SPD">LOW / HIGH</button>
+              <button class="cfg-btn" data-cfg-gearbox="PRO_6SPD">6-SPD PRO</button>
+              <button class="cfg-btn selected" data-cfg-grid="8">8 CARS</button>
+              <button class="cfg-btn" data-cfg-grid="16">16 CARS</button>
+            </div>
+            <div class="pill-row">
+              <button class="cfg-btn selected" data-cfg-quali2026="ON">QUALI: ON</button>
+              <button class="cfg-btn" data-cfg-quali2026="OFF">SKIP QUALI (P5)</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Visual Shader Toggle -->
+      <div class="cfg-block">
+        <div class="cfg-label">3. Live Visual Shader Pipeline</div>
+        <div class="pill-row">
+          <button class="cfg-btn selected" data-cfg-shader="2026_PBR">✨ 2026 PHOTOREAL PBR</button>
+          <button class="cfg-btn" data-cfg-shader="1982_ARCADE">📺 1982 CRISP ARCADE SHADER</button>
+        </div>
+      </div>
+
+      <button id="btn-launch-race" class="launch-btn">🏁 LAUNCH ONTO FUJI SPEEDWAY</button>
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       DUAL-MODE IN-RACE TELEMETRY HUD
+       ==================================================================== -->
+  <div id="race-hud" style="display:none;">
+    <!-- Top HUD Bar -->
+    <header class="top-hud-bar">
+      <div class="hud-stat">
+        <span class="stat-lbl">SCORE</span>
+        <span class="stat-val gold" id="hud-score">000000</span>
+        <span class="stat-sub">TOP <span id="hud-top-score">025000</span></span>
+      </div>
+
+      <div class="hud-stat center-timer">
+        <span class="stat-lbl" id="hud-timer-label">TIME</span>
+        <span class="stat-val cyan" id="hud-timer">90</span>
+        <span class="stat-sub" id="hud-lap">QUALI 1/1</span>
+      </div>
+
+      <div class="hud-stat">
+        <span class="stat-lbl">POS</span>
+        <span class="stat-val green" id="hud-position">1ST<small>/8</small></span>
+        <span class="stat-sub" id="hud-best-lap">BEST --"--</span>
+      </div>
+
+      <div class="hud-stat">
+        <span class="stat-lbl">LAP TIME</span>
+        <span class="stat-val" id="hud-lap-time">00"00</span>
+        <span class="slip-badge" id="hud-slipstream-badge">⚡ TOW +15</span>
+      </div>
+
+      <div class="hud-stat">
+        <span class="stat-lbl">SPEED KM/H</span>
+        <span class="stat-val" id="hud-speed-kmh">000</span>
+        <span class="stat-sub" id="hud-speed-mph">0 MPH</span>
+        <div class="rpm-bar-track"><div id="hud-rpm-fill"></div></div>
+      </div>
+    </header>
+
+    <!-- Quick Live Switches -->
+    <div class="hud-quick-actions">
+      <button class="quick-pill" id="btn-live-shader" title="Switch 2026 PBR / 1982 Shader">✨ PBR</button>
+      <button class="quick-pill" id="btn-live-hand" title="Flip Left/Right Handedness">⇄ HAND</button>
+      <button class="quick-pill" id="btn-live-cam" title="Cycle Camera">🎥 CAM</button>
+      <button class="quick-pill" id="btn-live-mute" title="Mute / Unmute Audio">🔊</button>
+      <button class="quick-pill" id="btn-live-menu" title="Pre-Race Config Menu">☰ MENU</button>
+    </div>
+
+    <!-- Live GPS Track Minimap -->
+    <div class="minimap-card">
+      <canvas id="gps-minimap" width="220" height="160"></canvas>
+    </div>
+
+    <!-- 2026 Pro Telemetry Widget -->
+    <aside id="telemetry-2026-panel">
+      <div class="tel-row-head">
+        <span>TIRES (4-CORNER)</span>
+        <span class="comp-pill" id="tel-compound-badge">SOFT</span>
+      </div>
+      <div class="tires-4grid">
+        <div class="tire-cell" id="tire-box-FL"></div>
+        <div class="tire-cell" id="tire-box-FR"></div>
+        <div class="tire-cell" id="tire-box-RL"></div>
+        <div class="tire-cell" id="tire-box-RR"></div>
+      </div>
+
+      <div class="tel-row-head" style="margin-top:2px;">
+        <span>FUEL</span>
+        <span id="tel-fuel-val">7.0 LAPS</span>
+      </div>
+      <div class="fuel-bar-wrap"><div id="tel-fuel-fill"></div></div>
+
+      <div class="weather-mini">
+        <div><strong id="tel-weather-cur">☀️ HOT SUNNY</strong> <span id="tel-weather-next"></span></div>
+        <div id="tel-moisture-val">W: 0% LINE / 0% OFF</div>
+      </div>
+
+      <div class="dmg-row">
+        <span class="dmg-chip" id="dmg-part-fw">FW</span>
+        <span class="dmg-chip" id="dmg-part-susp">SUSP</span>
+        <span class="dmg-chip" id="dmg-part-rw">RW</span>
+        <span class="dmg-chip" id="dmg-part-punc">TIRE</span>
+      </div>
+    </aside>
+
+    <!-- Caution, Pit Approach, Radio & Callouts -->
+    <div id="caution-banner" class="caution-banner"></div>
+    <div id="pit-approach-hint">➡️ PIT ENTRY SPLIT AHEAD ON RIGHT (80 KM/H LIMIT)</div>
+    <div id="center-callout"></div>
+    <div id="engineer-radio-toast"></div>
+
+    <!-- Pre-Pit Strategy Expandable Button & Drawer -->
+    <button id="btn-toggle-pit-strategy">🔧 PIT PLAN: <b>M</b> • +5L</button>
+
+    <div id="pit-strategy-drawer">
+      <div class="tel-row-head">
+        <span style="color:#00e5ff;">PRE-PIT CREW ORDERS</span>
+        <button id="btn-close-pit-drawer" class="pit-opt" style="flex:0 0 auto; padding:2px 8px;">✕</button>
+      </div>
+
+      <div class="pit-drawer-row">
+        <span class="pit-drawer-lbl">Next Tire Compound</span>
+        <div class="pit-opt-group">
+          <button class="pit-opt" data-pit-compound="SOFT">🔴 S</button>
+          <button class="pit-opt" data-pit-compound="MEDIUM">🟡 M</button>
+          <button class="pit-opt" data-pit-compound="HARD">⚪ H</button>
+          <button class="pit-opt" data-pit-compound="INTERMEDIATE">🟢 INT</button>
+          <button class="pit-opt" data-pit-compound="FULL_WET">🔵 WET</button>
+        </div>
+      </div>
+
+      <div class="pit-drawer-row">
+        <span class="pit-drawer-lbl">Fuel to Add</span>
+        <div class="pit-opt-group">
+          <button class="pit-opt" data-pit-fuel="2">+2 LAPS</button>
+          <button class="pit-opt" data-pit-fuel="5">+5 LAPS</button>
+          <button class="pit-opt" data-pit-fuel="10">+10 LAPS</button>
+          <button class="pit-opt" data-pit-fuel="FILL">FILL END</button>
+        </div>
+      </div>
+
+      <div class="pit-drawer-row">
+        <span class="pit-drawer-lbl">Damage Repair Order</span>
+        <div class="pit-opt-group">
+          <button class="pit-opt" data-pit-repair="NONE">NONE (0s)</button>
+          <button class="pit-opt" data-pit-repair="WINGS">WINGS (+2.5s)</button>
+          <button class="pit-opt" data-pit-repair="FULL">FULL (+5.5s)</button>
+        </div>
+      </div>
+
+      <div class="pit-drawer-row">
+        <span class="pit-drawer-lbl">Pit Crew Push Mode</span>
+        <div class="pit-opt-group">
+          <button class="pit-opt" data-pit-push="SAFE">SAFE 3.3s</button>
+          <button class="pit-opt" data-pit-push="BALANCED">BAL 2.5s</button>
+          <button class="pit-opt" data-pit-push="AGGRESSIVE_UNDERCUT">UNDERCUT 1.9s</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stationary Pit Box Service & Optimal Clutch Release Mini-Bar -->
+    <div id="pit-stop-overlay">
+      <div id="pit-service-status">PIT CREW SERVICING</div>
+      <div id="pit-service-timer">2.50s</div>
+      <div id="clutch-minigame-wrap">
+        <div id="clutch-result-text">HIT GREEN ZONE AS JACKS DROP (-0.35s)!</div>
+        <div class="clutch-bar-outer">
+          <div class="clutch-sweet-zone"></div>
+          <div id="clutch-cursor"></div>
+        </div>
+        <button id="btn-clutch-release">⚡ RELEASE CLUTCH NOW!</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================================================================
+       ERGONOMIC BOTTOM-CORNER MULTI-TOUCH CONTROLS
+       ==================================================================== -->
+  <div id="mobile-controls-layer" class="right-handed" style="display:none;">
+    <!-- Steering Wheel Zone -->
+    <div id="touch-wheel-zone">
+      <div class="wheel-ring-outer">
+        <div id="virtual-wheel-graphic">
+          <div class="wheel-spoke-h"></div>
+          <div class="wheel-hub" id="wheel-angle-readout">0°</div>
+        </div>
+      </div>
+      <div class="control-caption">STEER</div>
+    </div>
+
+    <!-- Analog Gas/Brake Pedals + Shifter Assembly -->
+    <div id="touch-pedal-assembly">
+      <!-- Classic 2-Speed LOW/HIGH Toggle -->
+      <button id="touch-shifter-btn">
+        <span class="shifter-label">GEAR</span>
+        <span class="shifter-val low">LOW</span>
+      </button>
+
+      <!-- 6-Speed Sequential Option -->
+      <div id="seq-shifter-wrap">
+        <button class="seq-btn" id="touch-shift-down-btn">− DOWN</button>
+        <span id="seq-gear-num">G1</span>
+        <button class="seq-btn" id="touch-shift-up-btn">+ UP</button>
+      </div>
+
+      <!-- Dual Vertical Analog Slide Pedals (Roll horizontally for Trail-Braking!) -->
+      <div id="touch-pedal-zone">
+        <div class="analog-pedal brake">
+          <div class="pedal-fill" id="pedal-brake-fill"></div>
+          <span class="pedal-name">BRAKE</span>
+          <span class="pedal-pct" id="pedal-brake-pct">0%</span>
+        </div>
+        <div class="analog-pedal gas">
+          <div class="pedal-fill" id="pedal-gas-fill"></div>
+          <span class="pedal-name">GAS</span>
+          <span class="pedal-pct" id="pedal-gas-pct">0%</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================================================================
+       1982 DID NOT QUALIFY MODAL
+       ==================================================================== -->
+  <div id="dnq-modal" class="modal-backdrop">
+    <div class="modal-box">
+      <div class="brand-kicker">1982 RANK A QUALIFYING</div>
+      <h2 class="menu-title" style="margin:8px 0;">DID NOT QUALIFY</h2>
+      <p id="dnq-detail" style="color:#cbd8ec; font-size:0.86rem; margin-bottom:16px;">
+        Must complete 1 lap under 73"00 to qualify for the Fuji Grand Prix!
+      </p>
+      <div class="modal-actions">
+        <button id="btn-dnq-retry" class="launch-btn" style="margin-top:0;">🔄 RETRY QUALIFYING</button>
+        <button id="btn-dnq-override" class="cfg-btn" style="padding:12px;">START P8 ANYWAY</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================================================================
+       POST-RACE PODIUM CEREMONY & TELEMETRY STINT SUMMARY MODAL
+       ==================================================================== -->
+  <div id="podium-modal" class="modal-backdrop">
+    <div class="modal-box">
+      <div class="brand-kicker">FUJI GRAND PRIX OFFICIAL CLASSIFICATION</div>
+      <h2 id="podium-headline" class="menu-title" style="margin-top:4px;">🏁 FINISHED 1ST PLACE!</h2>
+
+      <div class="podium-row">
+        <div class="podium-step" id="podium-p2"></div>
+        <div class="podium-step" id="podium-p1" style="border-color:#ffd600; transform:translateY(-4px);"></div>
+        <div class="podium-step" id="podium-p3"></div>
+      </div>
+
+      <div class="results-table">
+        <div class="res-cell">
+          <div class="res-lbl">Final Total Score</div>
+          <div class="res-val" id="res-total-score" style="color:#ffd600;">0</div>
+        </div>
+        <div class="res-cell">
+          <div class="res-lbl">Fastest Lap</div>
+          <div class="res-val" id="res-fastest-lap" style="color:#00e5ff;">--"--</div>
+        </div>
+        <div class="res-cell">
+          <div class="res-lbl">Qualifying Grid Bonus</div>
+          <div class="res-val" id="res-quali-bonus">+0</div>
+        </div>
+        <div class="res-cell">
+          <div class="res-lbl">Overtaking Bonus</div>
+          <div class="res-val" id="res-pass-bonus">+0</div>
+        </div>
+        <div class="res-cell">
+          <div class="res-lbl">Finish / Time Bonus</div>
+          <div class="res-val" id="res-time-bonus">+0</div>
+        </div>
+        <div class="res-cell">
+          <div class="res-lbl">Penalties</div>
+          <div class="res-val" id="res-penalties">NONE</div>
+        </div>
+      </div>
+
+      <div class="stint-box">
+        <strong>PIT &amp; TIRE STINT TELEMETRY:</strong>
+        <div id="res-pit-stints" style="margin-top:4px;">—</div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="btn-podium-again" class="launch-btn" style="margin-top:0; flex:2;">🏁 PLAY AGAIN</button>
+        <button id="btn-podium-menu" class="cfg-btn" style="flex:1;">⚙️ SWITCH MODE</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
