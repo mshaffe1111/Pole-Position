@@ -12,7 +12,6 @@ import {
   PIT_LANE_CONFIG,
   PIT_CREW_MODES,
   REPAIR_ORDERS,
-  PRO_2026_LENGTHS,
 } from './config.js';
 
 function signedDeltaS(a, b) {
@@ -30,9 +29,17 @@ export class RaceSystemsController {
     // Player live pre-pit strategy selection
     this.playerPitPlan = {
       nextCompound: 'MEDIUM',
-      fuelToAdd: 5, // 2 | 5 | 10 | 'FILL'
-      repairOrder: 'NONE', // 'NONE' | 'WINGS' | 'FULL'
+      fuelToAdd: 5,           // 2 | 5 | 10 | 'FILL'
+      repairOrder: 'NONE',    // 'NONE' | 'WINGS' | 'FULL'
       crewPushMode: 'BALANCED', // 'SAFE' | 'BALANCED' | 'AGGRESSIVE_UNDERCUT'
+    };
+
+    // Live "BOX THIS LAP" radio confirmation & Career R&D Pit Crew modifiers
+    this.boxThisLapRequested = false;
+    this.pitModifiers = {
+      pitStopDurationMult: 1.0,
+      clutchZoneBonus: 0.0,
+      pitErrorProbMult: 1.0,
     };
 
     // Interactive Clutch Release mini-game state during player pit stop
@@ -43,6 +50,7 @@ export class RaceSystemsController {
       resolved: false,
       resultText: '',
       bonusApplied: false,
+      bonusSec: 0.0,
     };
     this.lastStickyGunTriggered = false;
 
@@ -63,7 +71,7 @@ export class RaceSystemsController {
     this._collisionCooldowns = new Map();
   }
 
-  resetForNewSession(startingCompound = 'SOFT', totalLaps = 5) {
+  resetForNewSession(startingCompound = 'SOFT', totalLaps = 5, careerModifiers = null) {
     this.yellowSectors.clear();
     this.vscActive = false;
     this.vscRemainingSec = 0;
@@ -71,14 +79,51 @@ export class RaceSystemsController {
     this.yellowPassWarning.active = false;
     this._collisionCooldowns.clear();
     this.effects.clearAllDebris();
+    this.boxThisLapRequested = false;
 
-    this.playerPitPlan.nextCompound = startingCompound === 'SOFT' ? 'MEDIUM' : 'SOFT';
+    this.pitModifiers = {
+      pitStopDurationMult: Math.max(0.60, Math.min(1.15, careerModifiers?.pitStopDurationMult ?? 1.0)),
+      clutchZoneBonus: Math.max(0.0, Math.min(0.24, careerModifiers?.clutchZoneBonus ?? 0.0)),
+      pitErrorProbMult: Math.max(0.15, Math.min(1.25, careerModifiers?.pitErrorProbMult ?? 1.0)),
+    };
+
+    const isWetStart = startingCompound === 'INTERMEDIATE' || startingCompound === 'FULL_WET';
+    if (isWetStart) {
+      this.playerPitPlan.nextCompound = startingCompound;
+    } else if (
+      careerModifiers?.nextCompound &&
+      careerModifiers.nextCompound !== 'INTERMEDIATE' &&
+      careerModifiers.nextCompound !== 'FULL_WET'
+    ) {
+      this.playerPitPlan.nextCompound = careerModifiers.nextCompound;
+    } else {
+      this.playerPitPlan.nextCompound = startingCompound === 'SOFT' ? 'MEDIUM' : 'SOFT';
+    }
     this.playerPitPlan.fuelToAdd = totalLaps >= 12 ? 10 : 5;
     this.playerPitPlan.repairOrder = 'NONE';
-    this.playerPitPlan.crewPushMode = 'BALANCED';
+    this.playerPitPlan.crewPushMode = careerModifiers?.recommendedCrewPushMode || 'BALANCED';
+
     this.clutchGame.active = false;
     this.clutchGame.resolved = false;
     this.clutchGame.resultText = '';
+    this.clutchGame.bonusApplied = false;
+    this.clutchGame.bonusSec = 0.0;
+    this.lastStickyGunTriggered = false;
+  }
+
+  toggleBoxThisLap() {
+    this.boxThisLapRequested = !this.boxThisLapRequested;
+    return this.boxThisLapRequested;
+  }
+
+  getClutchZoneBounds() {
+    const halfBonus = (this.pitModifiers?.clutchZoneBonus || 0) * 0.5;
+    return {
+      sweetMin: Math.max(0.18, 0.38 - halfBonus),
+      sweetMax: Math.min(0.84, 0.64 + halfBonus),
+      goodMin: Math.max(0.10, 0.28 - halfBonus),
+      goodMax: Math.min(0.92, 0.74 + halfBonus),
+    };
   }
 
   getActiveYellowSectorSet() {
@@ -99,7 +144,7 @@ export class RaceSystemsController {
     this.yellowSectors.set(sec.id, 26.0);
 
     if ((isMultiCar || this.recentIncidentTimestamps.length >= 2) && !this.vscActive) {
-      // Full-Course Yellow / Virtual Safety Car (~1 lap = 65s at 160 km/h)
+      // Full-Course Yellow / Virtual Safety Car (~1 lap at 160 km/h delta)
       this.vscActive = true;
       this.vscRemainingSec = 58.0;
       if (callbacks.onVSCDeployed) {
@@ -114,17 +159,29 @@ export class RaceSystemsController {
     if (!this.clutchGame.active || this.clutchGame.resolved) return null;
     this.clutchGame.resolved = true;
     const c = this.clutchGame.cursor;
-    // Green sweet spot: [0.38, 0.64]
-    if (c >= 0.38 && c <= 0.64) {
+    const bounds = this.getClutchZoneBounds();
+
+    // Green optimal sweet spot (widened by Career Pit Crew R&D!)
+    if (c >= bounds.sweetMin && c <= bounds.sweetMax) {
       playerCar.pitStopTimer = Math.max(0.05, playerCar.pitStopTimer - 0.35);
-      this.clutchGame.resultText = 'PERFECT CLUTCH LAUNCH! -0.35s';
+      this.clutchGame.resultText = '⚡ PERFECT CLUTCH LAUNCH! -0.35s';
       this.clutchGame.bonusApplied = true;
+      this.clutchGame.bonusSec = 0.35;
       return 'PERFECT';
-    } else {
-      this.clutchGame.resultText = c < 0.38 ? 'EARLY CLUTCH BOG!' : 'WHEELSPIN LAUNCH!';
-      this.clutchGame.bonusApplied = false;
-      return 'MISS';
     }
+    // Amber good release zone
+    if (c >= bounds.goodMin && c <= bounds.goodMax) {
+      playerCar.pitStopTimer = Math.max(0.05, playerCar.pitStopTimer - 0.15);
+      this.clutchGame.resultText = 'CLEAN CLUTCH RELEASE! -0.15s';
+      this.clutchGame.bonusApplied = true;
+      this.clutchGame.bonusSec = 0.15;
+      return 'GOOD';
+    }
+
+    this.clutchGame.resultText = c < bounds.goodMin ? 'EARLY CLUTCH BOG!' : 'WHEELSPIN LAUNCH!';
+    this.clutchGame.bonusApplied = false;
+    this.clutchGame.bonusSec = 0.0;
+    return 'MISS';
   }
 
   // --------------------------------------------------------------------------
@@ -136,23 +193,30 @@ export class RaceSystemsController {
 
     const s = car.s;
 
-    // 1. Check Pit Entry split at Sector 10 (s in [906..930])
-    if (!car.inPitLane && s >= 906 && s <= 930) {
-      const playerSteeredIn = car.isPlayer && car.lateralOffset >= ROAD_HALF_WIDTH * 0.46;
+    // 1. Check Pit Entry split at Sector 10 (s in [895..930])
+    const entryStartS = (car.isPlayer && this.boxThisLapRequested) ? 895 : 906;
+    if (!car.inPitLane && s >= entryStartS && s <= 930) {
+      const entryLatThreshold = this.boxThisLapRequested
+        ? ROAD_HALF_WIDTH * 0.16
+        : ROAD_HALF_WIDTH * 0.46;
+      const playerSteeredIn = car.isPlayer && car.lateralOffset >= entryLatThreshold;
       const aiPittingNow = !car.isPlayer && car.aiWantsToPit;
       if (playerSteeredIn || aiPittingNow) {
         car.inPitLane = true;
         car.pitPhase = 'ENTRY';
         car.pitSpeedingFlagged = false;
-        if (car.isPlayer && callbacks.onPlayerEnteredPitLane) {
-          callbacks.onPlayerEnteredPitLane();
+        if (car.isPlayer) {
+          this.boxThisLapRequested = false;
+          if (callbacks.onPlayerEnteredPitLane) {
+            callbacks.onPlayerEnteredPitLane();
+          }
         }
       }
     }
 
     if (!car.inPitLane) return;
 
-    // 2. Check 80 km/h Speed Limit Line at s = 936
+    // 2. Check 80 km/h Speed Limit Line at s = 942
     if (
       car.pitPhase === 'ENTRY' &&
       s >= PIT_LANE_CONFIG.speedLimitLineS &&
@@ -186,7 +250,6 @@ export class RaceSystemsController {
     if (car.pitPhase === 'STOPPED') {
       car.pitStopTimer -= dt;
       const elapsed = car.pitStopTotalDuration - car.pitStopTimer;
-      const progress = Math.max(0, Math.min(1, elapsed / Math.max(0.1, car.pitStopTotalDuration)));
 
       // Jack lift animation (lifts in first 0.35s, drops in final 0.35s)
       if (car.pitStopTimer > 0.4) {
@@ -196,10 +259,10 @@ export class RaceSystemsController {
       }
 
       // Trigger Player Optimal Clutch Release mini-timing bar in final 1.45s!
-      if (car.isPlayer && car.pitStopTimer <= 1.45 && car.pitStopTimer > 0.08) {
+      if (car.isPlayer && car.pitStopTimer <= 1.45 && car.pitStopTimer > 0.06) {
         this.clutchGame.active = true;
         if (!this.clutchGame.resolved) {
-          this.clutchGame.cursor += this.clutchGame.dir * dt * 1.55;
+          this.clutchGame.cursor += this.clutchGame.dir * dt * 1.52;
           if (this.clutchGame.cursor >= 1.0) {
             this.clutchGame.cursor = 1.0;
             this.clutchGame.dir = -1;
@@ -215,7 +278,7 @@ export class RaceSystemsController {
       }
     }
 
-    // 5. Pit Exit Merge back onto Main Straight at s = 118
+    // 5. Pit Exit Merge back onto Main Straight at s = 115
     if (car.pitPhase === 'EXIT') {
       if (s < PIT_LANE_CONFIG.mergeEndS || s > 900) {
         if (!car.isPlayer) {
@@ -251,11 +314,14 @@ export class RaceSystemsController {
     const pushCfg = PIT_CREW_MODES[plan.crewPushMode] || PIT_CREW_MODES.BALANCED;
     const repCfg = REPAIR_ORDERS[plan.repairOrder] || REPAIR_ORDERS.NONE;
 
-    let duration = pushCfg.baseTireSec;
+    const durMult = car.isPlayer ? (this.pitModifiers?.pitStopDurationMult ?? 1.0) : 1.0;
+    const errMult = car.isPlayer ? (this.pitModifiers?.pitErrorProbMult ?? 1.0) : 1.0;
+
+    let duration = pushCfg.baseTireSec * durMult;
     let stickyError = false;
-    if (Math.random() < pushCfg.errorProb) {
+    if (Math.random() < pushCfg.errorProb * errMult) {
       stickyError = true;
-      duration += pushCfg.errorDelaySec;
+      duration += pushCfg.errorDelaySec * Math.max(0.65, durMult);
     }
 
     const remainingLaps = Math.max(1, totalLaps - car.lap + 1.5);
@@ -283,6 +349,7 @@ export class RaceSystemsController {
       this.clutchGame.resolved = false;
       this.clutchGame.resultText = stickyError ? 'STICKY WHEEL GUN! +3.0s' : '';
       this.clutchGame.bonusApplied = false;
+      this.clutchGame.bonusSec = 0.0;
       if (callbacks.onPlayerPitStopped) {
         callbacks.onPlayerPitStopped(car._activeServicePlan);
       }
@@ -315,9 +382,8 @@ export class RaceSystemsController {
       car.damage.suspension = 0.0;
     }
 
-    const actualSec = Number(
-      (plan.totalDuration - (car.isPlayer && this.clutchGame.bonusApplied ? 0.35 : 0)).toFixed(2)
-    );
+    const savedSec = car.isPlayer && this.clutchGame.bonusApplied ? (this.clutchGame.bonusSec || 0.35) : 0.0;
+    const actualSec = Number(Math.max(1.4, plan.totalDuration - savedSec).toFixed(2));
     car.pitStopsCompleted += 1;
     car.pitHistory.push({
       lap: car.lap,
@@ -329,11 +395,12 @@ export class RaceSystemsController {
     car.aiWantsToPit = false;
     car.pitJackLift = 0;
     car.pitPhase = 'EXIT';
-    car.speedKmh = car.isPlayer && this.clutchGame.bonusApplied ? 56.0 : 38.0;
+    car.speedKmh = car.isPlayer && this.clutchGame.bonusApplied
+      ? (savedSec >= 0.30 ? 58.0 : 48.0)
+      : 38.0;
 
     if (car.isPlayer) {
       this.clutchGame.active = false;
-      // Auto-reset repair order back to NONE after repair
       this.playerPitPlan.repairOrder = 'NONE';
       if (callbacks.onPlayerPitReleased) {
         callbacks.onPlayerPitReleased(car, actualSec);
@@ -350,6 +417,7 @@ export class RaceSystemsController {
   updateCollisionsAndCautions(allCars, playerCar, dt, ctx) {
     const { mode, callbacks = {} } = ctx;
     const isClassic = mode === '1982_ORIGINAL';
+    const mPerGameM = this.track.realMetersPerGameMeter || REAL_METERS_PER_GAME_METER;
 
     // Decay yellow sector timers & VSC timer
     for (const [secId, rem] of this.yellowSectors.entries()) {
@@ -377,7 +445,7 @@ export class RaceSystemsController {
       if (Math.abs(car.lateralOffset) < ROAD_HALF_WIDTH + 1.8) continue;
 
       for (const bb of this.track.billboards) {
-        const dsM = Math.abs(signedDeltaS(car.s, bb.s)) * REAL_METERS_PER_GAME_METER;
+        const dsM = Math.abs(signedDeltaS(car.s, bb.s)) * mPerGameM;
         const dLat = Math.abs(car.lateralOffset - bb.lateralOffset);
         if (dsM < 2.2 && dLat < bb.halfWidth * 0.72) {
           if (isClassic || car.speedKmh > 220) {
@@ -404,7 +472,7 @@ export class RaceSystemsController {
       for (const car of allCars) {
         if (car.exploded || car.inPitLane || car.damage.hasPuncture) continue;
         for (const deb of this.effects.debrisItems) {
-          const dsM = Math.abs(signedDeltaS(car.s, deb.s)) * REAL_METERS_PER_GAME_METER;
+          const dsM = Math.abs(signedDeltaS(car.s, deb.s)) * mPerGameM;
           const dLat = Math.abs(car.lateralOffset - deb.lateralOffset);
           if (dsM < deb.radius && dLat < deb.radius && car.speedKmh > 85) {
             const key = `${car.id}_DEB_${Math.round(deb.s)}`;
@@ -437,20 +505,20 @@ export class RaceSystemsController {
         if (b.exploded || b.inPitLane) continue;
 
         const dsGame = signedDeltaS(b.s, a.s); // > 0 means b is ahead of a
-        const dsReal = dsGame * REAL_METERS_PER_GAME_METER;
+        const dsReal = dsGame * mPerGameM;
         const absLongM = Math.abs(dsReal);
         const dLat = b.lateralOffset - a.lateralOffset;
         const absLatM = Math.abs(dLat);
 
-        // Slipstream Draft Wake (trailing car 6m..42m behind within +-2.2m lateral)
-        if (absLongM > 5.2 && absLongM < 42.0 && absLatM < 2.25) {
+        // Slipstream Draft Wake (trailing car 5.2m..43.0m behind within +-2.25m lateral)
+        if (absLongM > 5.2 && absLongM < 43.0 && absLatM < 2.25) {
           const trailer = dsReal > 0 ? a : b;
           const leader = dsReal > 0 ? b : a;
-          if (leader.speedKmh > 135) {
-            const tow = (1.0 - (absLongM - 5.2) / 36.8) * (1.0 - absLatM / 2.25);
+          if (leader.speedKmh > 130) {
+            const tow = (1.0 - (absLongM - 5.2) / 37.8) * (1.0 - absLatM / 2.25);
             if (tow > trailer.slipstreamFactor) {
               trailer.slipstreamFactor = tow;
-              trailer.inSlipstream = tow > 0.18;
+              trailer.inSlipstream = tow > 0.16;
             }
           }
         }
@@ -466,7 +534,6 @@ export class RaceSystemsController {
             if (a.isPlayer) this._explodeCar(a, callbacks);
             else if (b.isPlayer) this._explodeCar(b, callbacks);
             else {
-              // AI-AI minor separation in 1982 mode
               a.lateralOffset -= Math.sign(dLat || 1) * 0.8;
               b.lateralOffset += Math.sign(dLat || 1) * 0.8;
             }
@@ -494,12 +561,13 @@ export class RaceSystemsController {
   }
 
   _resolve2026CarCollision(a, b, dsReal, dLat, callbacks) {
-    // dsReal > 0 means b is ahead of a
     const trailer = dsReal >= 0 ? a : b;
     const leader = dsReal >= 0 ? b : a;
-    const closingKmh = Math.max(12, Math.abs(trailer.speedKmh - leader.speedKmh) + Math.abs(a.lateralVel - b.lateralVel) * 2.2);
+    const closingKmh = Math.max(
+      12,
+      Math.abs(trailer.speedKmh - leader.speedKmh) + Math.abs(a.lateralVel - b.lateralVel) * 2.2
+    );
 
-    // Catastrophic > 220 km/h head-on/massive rear-end crash
     if (closingKmh > 220) {
       this._explodeCar(trailer, callbacks);
       this.triggerIncidentCaution(trailer.s, trailer.lateralOffset, true, callbacks);
@@ -510,7 +578,6 @@ export class RaceSystemsController {
     const severity = Math.min(0.85, closingKmh / 145.0);
 
     if (isRearEnd) {
-      // Trailer damages Front Wing; Leader takes Rear Wing damage!
       trailer.damage.frontWing = Math.min(1.0, trailer.damage.frontWing + severity * 0.65);
       leader.damage.rearWing = Math.min(1.0, leader.damage.rearWing + severity * 0.50);
 
@@ -523,8 +590,7 @@ export class RaceSystemsController {
         callbacks.onCollision(leader, closingKmh, 'REAR_WING');
       }
     } else {
-      // Sidepod / Wheel-to-Wheel impact -> Suspension / Toe damage!
-      const pushDir = dLat >= 0 ? 1 : -1; // b is to the right of a if dLat >= 0
+      const pushDir = dLat >= 0 ? 1 : -1;
       a.lateralOffset -= pushDir * 0.85;
       b.lateralOffset += pushDir * 0.85;
       a.lateralVel = -pushDir * 5.0;
@@ -544,7 +610,6 @@ export class RaceSystemsController {
       }
     }
 
-    // High-energy collision spawns carbon fiber debris & triggers Local Yellow (or VSC)!
     if (closingKmh > 48 || trailer.damage.frontWing > 0.45) {
       this.triggerIncidentCaution(trailer.s, trailer.lateralOffset, closingKmh > 110, callbacks);
     }
@@ -556,7 +621,7 @@ export class RaceSystemsController {
 
     if (this.yellowPassWarning.active) {
       const rival = allCars.find((c) => c.id === this.yellowPassWarning.rivalId);
-      // Check if player gave the position back!
+      // Clear warning immediately if player ceded the position back or rival pitted/crashed
       if (!rival || rival.inPitLane || rival.exploded || rival.totalDistanceGameM >= playerCar.totalDistanceGameM) {
         this.yellowPassWarning.active = false;
         if (callbacks.onYellowPassCleared) callbacks.onYellowPassCleared();
@@ -576,11 +641,18 @@ export class RaceSystemsController {
 
     if (inYellowNow) {
       for (const rival of allCars) {
-        if (rival.isPlayer || rival.inPitLane || rival.exploded || rival.speedKmh < 65) continue;
+        if (
+          rival.isPlayer ||
+          rival.inPitLane ||
+          rival.exploded ||
+          rival.speedKmh < 75 ||
+          Math.abs(rival.lateralOffset) > ROAD_HALF_WIDTH + 0.8
+        ) {
+          continue;
+        }
         const prevAhead = rival._wasAheadOfPlayer;
         const nowAhead = rival.totalDistanceGameM > playerCar.totalDistanceGameM;
         if (prevAhead && !nowAhead && Math.abs(rival.totalDistanceGameM - playerCar.totalDistanceGameM) < 12) {
-          // Player just overtook a healthy rival inside a Yellow Flag zone!
           this.yellowPassWarning.active = true;
           this.yellowPassWarning.rivalId = rival.id;
           this.yellowPassWarning.rivalName = rival.name;

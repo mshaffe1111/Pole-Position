@@ -1,9 +1,9 @@
 // ============================================================================
 // RACE PHANATIC F1 — POLE POSITION 2026: RETRO GRAND PRIX
-// Dual-Mode Telemetry HUD, Live GPS Minimap, Pre-Pit Strategy & Podium Modal
+// Dual-Mode Broadcast Telemetry HUD, Anti-Aliased GPS Minimap & Pit Strategy
 // ============================================================================
 
-import { TIRE_COMPOUNDS, FUJI_SECTORS } from './config.js';
+import { TIRE_COMPOUNDS, FUJI_SECTORS, PIT_LANE_CONFIG } from './config.js';
 
 export function formatLapTimeArcade(sec) {
   if (sec === null || sec === undefined || !isFinite(sec)) return '--"--';
@@ -44,7 +44,13 @@ export class TelemetryHUD {
     this.raceSystems = raceSystems;
     this.callbacks = callbacks;
     this.pitDrawerOpen = false;
+    this.speedUnit = 'KMH';
     this.bannerTimeout = null;
+    this._lastDisplayedGear = 1;
+    this._shiftPulseTimer = null;
+    this._mapLogicalW = 0;
+    this._mapLogicalH = 0;
+    this._mapDpr = 1;
 
     this._cacheElements();
     this._bindStrategyButtons();
@@ -61,8 +67,13 @@ export class TelemetryHUD {
     this.posEl = document.getElementById('hud-position');
     this.lapTimeEl = document.getElementById('hud-lap-time');
     this.bestLapEl = document.getElementById('hud-best-lap');
+    this.sectorReadoutEl = document.getElementById('hud-sector-readout');
+    this.speedUnitLabelEl = document.querySelector('.speed-col .stat-lbl');
     this.speedKmhEl = document.getElementById('hud-speed-kmh');
     this.speedMphEl = document.getElementById('hud-speed-mph');
+    this.gearBoxEl = document.getElementById('hud-gear-box');
+    this.gearValEl = document.getElementById('hud-gear-val');
+    this.gearModeEl = document.getElementById('hud-gear-mode');
     this.rpmFillEl = document.getElementById('hud-rpm-fill');
     this.slipBadgeEl = document.getElementById('hud-slipstream-badge');
 
@@ -92,7 +103,9 @@ export class TelemetryHUD {
     this.radioToastEl = document.getElementById('engineer-radio-toast');
     this.centerCalloutEl = document.getElementById('center-callout');
 
-    // Pre-Pit Strategy Drawer & Pit Stop Clutch Overlay
+    // Pre-Pit Strategy Drawer, BOX THIS LAP & Pit Stop Clutch Overlay
+    this.pitActionRowEl = document.getElementById('pit-action-row');
+    this.boxRequestBtn = document.getElementById('btn-request-box');
     this.pitToggleBtn = document.getElementById('btn-toggle-pit-strategy');
     this.pitDrawerEl = document.getElementById('pit-strategy-drawer');
     this.pitApproachHintEl = document.getElementById('pit-approach-hint');
@@ -101,6 +114,8 @@ export class TelemetryHUD {
     this.pitServiceStatusEl = document.getElementById('pit-service-status');
     this.pitServiceTimerEl = document.getElementById('pit-service-timer');
     this.clutchWrapEl = document.getElementById('clutch-minigame-wrap');
+    this.clutchGoodZoneEl = document.querySelector('.clutch-good-zone');
+    this.clutchSweetZoneEl = document.querySelector('.clutch-sweet-zone');
     this.clutchCursorEl = document.getElementById('clutch-cursor');
     this.clutchResultEl = document.getElementById('clutch-result-text');
     this.clutchReleaseBtn = document.getElementById('btn-clutch-release');
@@ -110,7 +125,19 @@ export class TelemetryHUD {
     this.minimapCtx = this.minimapCanvas ? this.minimapCanvas.getContext('2d') : null;
   }
 
+  setSpeedUnit(unit = 'KMH') {
+    this.speedUnit = unit === 'MPH' ? 'MPH' : 'KMH';
+  }
+
   _bindStrategyButtons() {
+    if (this.boxRequestBtn) {
+      this.boxRequestBtn.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (this.callbacks.onRequestBox) this.callbacks.onRequestBox();
+      });
+    }
+
     if (this.pitToggleBtn) {
       this.pitToggleBtn.addEventListener('pointerdown', (e) => {
         e.preventDefault();
@@ -200,8 +227,26 @@ export class TelemetryHUD {
     );
     if (this.pitToggleBtn) {
       const cShort = TIRE_COMPOUNDS[plan.nextCompound]?.short || 'M';
-      this.pitToggleBtn.innerHTML = `🔧 PIT PLAN: <b>${cShort}</b> • +${plan.fuelToAdd === 'FILL' ? 'FILL' : plan.fuelToAdd + 'L'}`;
+      this.pitToggleBtn.innerHTML = `🔧 <b>${cShort}</b> +${plan.fuelToAdd === 'FILL' ? 'FL' : plan.fuelToAdd + 'L'}`;
     }
+    this.syncBoxButtonState();
+  }
+
+  syncBoxButtonState() {
+    if (!this.boxRequestBtn) return;
+    const armed = !!this.raceSystems.boxThisLapRequested;
+    this.boxRequestBtn.classList.toggle('armed', armed);
+    this.boxRequestBtn.textContent = armed ? '📻 BOX✓' : '📻 BOX';
+  }
+
+  triggerGearShiftPulse(shiftDir = 'UP') {
+    if (!this.gearBoxEl) return;
+    this.gearBoxEl.classList.remove('shift-pulse-up', 'shift-pulse-down');
+    this.gearBoxEl.classList.add(shiftDir === 'DOWN' ? 'shift-pulse-down' : 'shift-pulse-up');
+    clearTimeout(this._shiftPulseTimer);
+    this._shiftPulseTimer = setTimeout(() => {
+      this.gearBoxEl?.classList.remove('shift-pulse-up', 'shift-pulse-down');
+    }, 150);
   }
 
   showCenterCallout(text, durationMs = 1900, color = '#ffffff') {
@@ -228,7 +273,9 @@ export class TelemetryHUD {
   setModeVisibility(mode) {
     const is2026 = mode === '2026_UPDATED';
     if (this.telemetryPanelEl) this.telemetryPanelEl.style.display = is2026 ? 'flex' : 'none';
+    if (this.pitActionRowEl) this.pitActionRowEl.style.display = is2026 ? 'flex' : 'none';
     if (this.pitToggleBtn) this.pitToggleBtn.style.display = is2026 ? 'inline-flex' : 'none';
+    if (this.boxRequestBtn) this.boxRequestBtn.style.display = is2026 ? 'inline-flex' : 'none';
     if (!is2026) this.togglePitDrawer(false);
   }
 
@@ -269,6 +316,7 @@ export class TelemetryHUD {
 
     if (this.posEl) {
       this.posEl.innerHTML = `${ordinalSuffix(playerPos)}<small>/${totalCars}</small>`;
+      this.posEl.style.color = playerPos === 1 ? '#ffd600' : (playerPos <= 3 ? '#00e676' : '#f4f8ff');
     }
 
     if (this.lapTimeEl) this.lapTimeEl.textContent = formatLapTimeArcade(playerCar.currentLapTime);
@@ -278,21 +326,64 @@ export class TelemetryHUD {
         : 'BEST --"--';
     }
 
+    if (this.sectorReadoutEl) {
+      const sec = this.track.getSector(playerCar.s);
+      this.sectorReadoutEl.textContent = playerCar.inPitLane ? 'PIT LANE' : `SEC ${sec.id}`;
+    }
+
     const kmh = Math.round(playerCar.speedKmh);
     const mph = Math.round(playerCar.speedKmh * 0.621371);
-    if (this.speedKmhEl) this.speedKmhEl.textContent = String(kmh).padStart(3, '0');
-    if (this.speedMphEl) this.speedMphEl.textContent = `${mph} MPH`;
+    if (this.speedUnit === 'MPH') {
+      if (this.speedUnitLabelEl) this.speedUnitLabelEl.textContent = 'MPH';
+      if (this.speedKmhEl) this.speedKmhEl.textContent = String(mph).padStart(3, '0');
+      if (this.speedMphEl) this.speedMphEl.textContent = `${kmh} KM/H`;
+    } else {
+      if (this.speedUnitLabelEl) this.speedUnitLabelEl.textContent = 'KM/H';
+      if (this.speedKmhEl) this.speedKmhEl.textContent = String(kmh).padStart(3, '0');
+      if (this.speedMphEl) this.speedMphEl.textContent = `${mph} MPH`;
+    }
+
+    if (playerCar.gear !== this._lastDisplayedGear) {
+      this.triggerGearShiftPulse(playerCar.gear > this._lastDisplayedGear ? 'UP' : 'DOWN');
+      this._lastDisplayedGear = playerCar.gear;
+    }
+
+    if (this.gearValEl) {
+      if (playerCar.gearboxMode === 'CLASSIC_2SPD') {
+        this.gearValEl.textContent = playerCar.gear >= 2 ? 'HI' : 'LO';
+      } else {
+        this.gearValEl.textContent = `G${playerCar.gear}`;
+      }
+    }
+    if (this.gearModeEl) {
+      this.gearModeEl.textContent = playerCar.gearboxMode === 'AUTO_8SPD'
+        ? 'AUTO 8'
+        : (playerCar.gearboxMode === 'CLASSIC_2SPD' ? '82 MAN' : 'MAN 8');
+    }
 
     if (this.rpmFillEl) {
-      const rpmPct = Math.max(5, Math.min(100, ((playerCar.rpm - 1800) / 10800) * 100));
-      this.rpmFillEl.style.width = `${rpmPct}%`;
-      this.rpmFillEl.style.background = playerCar.overRevTimer > 0
-        ? '#ff1744'
-        : (rpmPct > 86 ? '#ff3d00' : (rpmPct > 65 ? '#ffd600' : '#00e676'));
+      const rpmPct = Math.max(6, Math.min(100, ((playerCar.rpm - 3600) / 9200) * 100));
+      this.rpmFillEl.style.width = `${rpmPct.toFixed(1)}%`;
+      if (playerCar.overRevTimer > 0) {
+        this.rpmFillEl.style.background = '#ff1744';
+      } else if (rpmPct > 86) {
+        this.rpmFillEl.style.background = 'linear-gradient(90deg, #00e676 0%, #ffd600 50%, #ff1e38 78%, #00e5ff 100%)';
+      } else if (rpmPct > 68) {
+        this.rpmFillEl.style.background = 'linear-gradient(90deg, #00e676 0%, #ffd600 62%, #ff1e38 100%)';
+      } else if (rpmPct > 48) {
+        this.rpmFillEl.style.background = 'linear-gradient(90deg, #00e676 0%, #ffd600 100%)';
+      } else {
+        this.rpmFillEl.style.background = '#00e676';
+      }
+      this.rpmFillEl.classList.toggle('shift-flash', rpmPct > 91 || playerCar.overRevTimer > 0);
     }
 
     if (this.slipBadgeEl) {
       this.slipBadgeEl.style.display = playerCar.inSlipstream ? 'inline-block' : 'none';
+      if (playerCar.inSlipstream) {
+        const towKmh = Math.max(5, Math.round((playerCar.slipstreamFactor || 0.5) * 15));
+        this.slipBadgeEl.textContent = `⚡ DRS +${towKmh}`;
+      }
     }
 
     // Caution / Yellow Flag / Illegal Pass Banner
@@ -344,9 +435,11 @@ export class TelemetryHUD {
   }
 
   _update2026Telemetry(playerCar, weatherSummary, sessionPhase) {
+    this.syncBoxButtonState();
+
     const comp = TIRE_COMPOUNDS[playerCar.compound] || TIRE_COMPOUNDS.SOFT;
     if (this.compoundBadgeEl) {
-      this.compoundBadgeEl.textContent = `${comp.name}`;
+      this.compoundBadgeEl.textContent = comp.name;
       this.compoundBadgeEl.style.borderColor = comp.colorHex;
       this.compoundBadgeEl.style.color = comp.colorHex;
     }
@@ -355,13 +448,14 @@ export class TelemetryHUD {
       const box = this.tireBoxes[k];
       if (!box) continue;
       const t = playerCar.tires[k];
-      const pct = Math.round(t.life * 100);
+      const pct = Math.max(0, Math.round(t.life * 100));
       const col = tireWearColor(t.life, t.punctured);
       box.style.borderColor = col;
       box.innerHTML = `
         <span class="t-corner">${k}</span>
         <span class="t-pct" style="color:${col}">${t.punctured ? 'PUNC' : pct + '%'}</span>
-        <span class="t-temp">${Math.round(t.temp)}°C</span>
+        <span class="t-temp">${Math.round(t.temp)}°</span>
+        <span class="t-wear-bar" style="width:${t.punctured ? 100 : pct}%;background:${col}"></span>
       `;
     }
 
@@ -374,7 +468,9 @@ export class TelemetryHUD {
     if (this.fuelFillEl) {
       const fpct = Math.max(0, Math.min(100, (fuel / playerCar.maxFuelLaps) * 100));
       this.fuelFillEl.style.width = `${fpct}%`;
-      this.fuelFillEl.style.background = fuel < 1.5 ? '#ff1744' : '#00d4ff';
+      this.fuelFillEl.style.background = fuel < 1.5
+        ? '#ff1744'
+        : 'linear-gradient(90deg, #00b0ff, #00e5ff)';
     }
 
     // Weather & Moisture W
@@ -383,9 +479,7 @@ export class TelemetryHUD {
         this.weatherCurEl.textContent = `${weatherSummary.current.icon} ${weatherSummary.current.label}`;
       }
       if (this.weatherNextEl) {
-        this.weatherNextEl.textContent = weatherSummary.current.id !== weatherSummary.next.id
-          ? `→ ${weatherSummary.next.icon} (${weatherSummary.etaSec}s)`
-          : '→ STABLE';
+        this.weatherNextEl.textContent = 'LOCKED';
       }
       if (this.moistureValEl) {
         const gPct = Math.round(weatherSummary.grooveMoisture * 100);
@@ -403,8 +497,16 @@ export class TelemetryHUD {
 
     // Sector 9/10 Pit Entry Approach Hint
     if (this.pitApproachHintEl) {
-      const nearPitSplit = sessionPhase === 'RACING' && !playerCar.inPitLane && playerCar.s >= 785 && playerCar.s <= 918;
+      const armed = !!this.raceSystems.boxThisLapRequested;
+      const nearPitSplit = sessionPhase === 'RACING' && !playerCar.inPitLane && (
+        (playerCar.s >= 785 && playerCar.s <= 922) || (armed && playerCar.s >= 720 && playerCar.s <= 926)
+      );
       this.pitApproachHintEl.style.display = nearPitSplit ? 'block' : 'none';
+      if (nearPitSplit) {
+        this.pitApproachHintEl.textContent = armed
+          ? '📻 BOX THIS LAP ARMED: KEEP RIGHT INTO PIT LANE!'
+          : 'PIT ENTRY AHEAD: STEER RIGHT FOR SERVICE';
+      }
     }
 
     // Active Pit Stop Crew & Optimal Clutch Release Overlay
@@ -425,8 +527,21 @@ export class TelemetryHUD {
 
           const cg = this.raceSystems.clutchGame;
           this.clutchWrapEl.style.display = cg.active ? 'flex' : 'none';
-          if (cg.active && this.clutchCursorEl) {
-            this.clutchCursorEl.style.left = `${(cg.cursor * 100).toFixed(1)}%`;
+          if (cg.active) {
+            if (this.raceSystems.getClutchZoneBounds) {
+              const zb = this.raceSystems.getClutchZoneBounds();
+              if (this.clutchGoodZoneEl) {
+                this.clutchGoodZoneEl.style.left = `${(zb.goodMin * 100).toFixed(1)}%`;
+                this.clutchGoodZoneEl.style.width = `${((zb.goodMax - zb.goodMin) * 100).toFixed(1)}%`;
+              }
+              if (this.clutchSweetZoneEl) {
+                this.clutchSweetZoneEl.style.left = `${(zb.sweetMin * 100).toFixed(1)}%`;
+                this.clutchSweetZoneEl.style.width = `${((zb.sweetMax - zb.sweetMin) * 100).toFixed(1)}%`;
+              }
+            }
+            if (this.clutchCursorEl) {
+              this.clutchCursorEl.style.left = `${(cg.cursor * 100).toFixed(1)}%`;
+            }
           }
           if (this.clutchResultEl) {
             this.clutchResultEl.textContent = cg.resultText || 'HIT GREEN ZONE AS JACKS DROP (-0.35s)!';
@@ -441,41 +556,87 @@ export class TelemetryHUD {
   }
 
   // --------------------------------------------------------------------------
-  // LIVE GPS MINIMAP RENDERER
+  // ANTI-ALIASED HIGH-CONTRAST LIVE GPS MINIMAP RENDERER
   // --------------------------------------------------------------------------
   _prepareMinimapStaticPath() {
     this.bounds = this.track.computeMinimapBounds();
   }
 
+  refreshTrackMinimap() {
+    this.bounds = this.track.computeMinimapBounds();
+  }
+
+  _ensureHiDPIMinimap() {
+    const canvas = this.minimapCanvas;
+    if (!canvas) return { w: 0, h: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const cssW = rect.width > 20 ? Math.round(rect.width) : 160;
+    const cssH = rect.height > 20 ? Math.round(rect.height) : 116;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+
+    if (cssW !== this._mapLogicalW || cssH !== this._mapLogicalH || dpr !== this._mapDpr) {
+      this._mapLogicalW = cssW;
+      this._mapLogicalH = cssH;
+      this._mapDpr = dpr;
+      canvas.width = Math.round(cssW * dpr);
+      canvas.height = Math.round(cssH * dpr);
+    }
+    this.minimapCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { w: cssW, h: cssH };
+  }
+
   _worldToMap(x, z, w, h) {
     const b = this.bounds;
-    const spanX = b.maxX - b.minX;
-    const spanZ = b.maxZ - b.minZ;
-    const scale = Math.min((w - 18) / spanX, (h - 18) / spanZ);
+    const spanX = Math.max(1, b.maxX - b.minX);
+    const spanZ = Math.max(1, b.maxZ - b.minZ);
+    const padX = 13;
+    const padTop = 18;
+    const padBot = 10;
+    const availW = Math.max(24, w - padX * 2);
+    const availH = Math.max(24, h - padTop - padBot);
+    const scale = Math.min(availW / spanX, availH / spanZ);
     const ox = (w - spanX * scale) * 0.5;
-    const oy = (h - spanZ * scale) * 0.5;
+    const oy = padTop + (availH - spanZ * scale) * 0.5;
     return [ox + (x - b.minX) * scale, oy + (z - b.minZ) * scale];
   }
 
   _drawMinimap(playerCar, allCars) {
     if (!this.minimapCtx || !this.minimapCanvas) return;
+    const { w, h } = this._ensureHiDPIMinimap();
+    if (w <= 0 || h <= 0) return;
+
     const ctx = this.minimapCtx;
-    const w = this.minimapCanvas.width;
-    const h = this.minimapCanvas.height;
-
     ctx.clearRect(0, 0, w, h);
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
 
-    // Pit lane bypass trace
+    // 1. Subtle tactical radar grid lines
+    ctx.strokeStyle = 'rgba(0, 229, 255, 0.05)';
+    ctx.lineWidth = 1;
+    for (let gx = 20; gx < w; gx += 24) {
+      ctx.beginPath();
+      ctx.moveTo(gx, 14);
+      ctx.lineTo(gx, h - 4);
+      ctx.stroke();
+    }
+    for (let gy = 22; gy < h; gy += 22) {
+      ctx.beginPath();
+      ctx.moveTo(4, gy);
+      ctx.lineTo(w - 4, gy);
+      ctx.stroke();
+    }
+
+    // 2. Pit lane bypass trace & Pit Box marker
     ctx.beginPath();
     let startedPit = false;
     const pitOrder = [];
     for (const s of this.track.samples) if (s.s >= 905) pitOrder.push(s);
     for (const s of this.track.samples) if (s.s <= 122) pitOrder.push(s);
-    for (let i = 0; i < pitOrder.length; i += 4) {
+    for (let i = 0; i < pitOrder.length; i += 3) {
       const smp = pitOrder[i];
       if (smp.pitOffset === null) continue;
-      const px = smp.pos.x + smp.right.x * smp.pitOffset * 2.2;
-      const pz = smp.pos.z + smp.right.z * smp.pitOffset * 2.2;
+      const px = smp.pos.x + smp.right.x * smp.pitOffset * 1.55;
+      const pz = smp.pos.z + smp.right.z * smp.pitOffset * 1.55;
       const [mx, my] = this._worldToMap(px, pz, w, h);
       if (!startedPit) {
         ctx.moveTo(mx, my);
@@ -484,29 +645,42 @@ export class TelemetryHUD {
         ctx.lineTo(mx, my);
       }
     }
-    ctx.strokeStyle = '#00d4ff';
-    ctx.lineWidth = 2.0;
+    ctx.strokeStyle = 'rgba(0, 229, 255, 0.88)';
+    ctx.lineWidth = 1.9;
     ctx.stroke();
 
-    // Main Fuji Speedway track outline
+    // Player Pit Box dot along Pit Lane
+    const pbFr = this.track.sampleAt(PIT_LANE_CONFIG.playerBoxS, PIT_LANE_CONFIG.lateralOffset * 1.55);
+    const [pbx, pby] = this._worldToMap(pbFr.pos.x, pbFr.pos.z, w, h);
+    ctx.fillStyle = '#00e676';
+    ctx.fillRect(pbx - 2, pby - 2, 4, 4);
+
+    // 3. Multi-pass Anti-Aliased Circuit Ribbon (Outer Glow + Dark Casing + Crisp White/Cyan Track)
     ctx.beginPath();
-    for (let i = 0; i < this.track.samples.length; i += 6) {
+    for (let i = 0; i < this.track.samples.length; i += 4) {
       const p = this.track.samples[i].pos;
       const [mx, my] = this._worldToMap(p.x, p.z, w, h);
       if (i === 0) ctx.moveTo(mx, my);
       else ctx.lineTo(mx, my);
     }
     ctx.closePath();
-    ctx.strokeStyle = 'rgba(255,255,255,0.28)';
-    ctx.lineWidth = 6.0;
-    ctx.stroke();
-    ctx.strokeStyle = '#90a4be';
-    ctx.lineWidth = 2.8;
+
+    ctx.strokeStyle = 'rgba(0, 229, 255, 0.22)';
+    ctx.lineWidth = 7.6;
     ctx.stroke();
 
-    // Highlight active Yellow-Flag Sectors in bright yellow!
+    ctx.strokeStyle = '#07101f';
+    ctx.lineWidth = 5.4;
+    ctx.stroke();
+
+    ctx.strokeStyle = '#dcebff';
+    ctx.lineWidth = 2.6;
+    ctx.stroke();
+
+    // 4. Highlight active Yellow-Flag / VSC Sectors in pulsing bright yellow
     const yellowSet = this.raceSystems.getActiveYellowSectorSet();
     if (this.raceSystems.vscActive || yellowSet.size > 0) {
+      const pulseAlpha = 0.65 + 0.35 * Math.sin(performance.now() * 0.012);
       for (const sec of FUJI_SECTORS) {
         if (!this.raceSystems.vscActive && !yellowSet.has(sec.id)) continue;
         ctx.beginPath();
@@ -521,38 +695,88 @@ export class TelemetryHUD {
             ctx.lineTo(mx, my);
           }
         }
-        ctx.strokeStyle = '#ffea00';
-        ctx.lineWidth = 4.5;
+        ctx.strokeStyle = `rgba(255, 234, 0, ${pulseAlpha.toFixed(2)})`;
+        ctx.lineWidth = 4.2;
         ctx.stroke();
       }
     }
 
-    // Start/Finish tick mark
+    // 5. Crisp Perpendicular Start/Finish Line Checkered Tick
     const sf = this.track.sampleAt(0, 0);
+    const sfL = this.track.sampleAt(0, -14);
+    const sfR = this.track.sampleAt(0, 14);
+    const [lx, ly] = this._worldToMap(sfL.pos.x, sfL.pos.z, w, h);
+    const [rx, ry] = this._worldToMap(sfR.pos.x, sfR.pos.z, w, h);
     const [sfx, sfy] = this._worldToMap(sf.pos.x, sf.pos.z, w, h);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(sfx - 2, sfy - 5, 4, 10);
-
-    // AI rival dots
-    for (const c of allCars) {
-      if (c.isPlayer) continue;
-      const fr = this.track.sampleAt(c.s, c.lateralOffset);
-      const [cx, cy] = this._worldToMap(fr.pos.x, fr.pos.z, w, h);
-      ctx.beginPath();
-      ctx.arc(cx, cy, 3.2, 0, Math.PI * 2);
-      ctx.fillStyle = c.liveryHex || '#ff9800';
-      ctx.fill();
-    }
-
-    // Player pulsing marker on top
-    const pFr = this.track.sampleAt(playerCar.s, playerCar.lateralOffset);
-    const [px, py] = this._worldToMap(pFr.pos.x, pFr.pos.z, w, h);
+    const ndx = rx - lx;
+    const ndy = ry - ly;
+    const nLen = Math.hypot(ndx, ndy) || 1;
+    const ux = (ndx / nLen) * 5.0;
+    const uy = (ndy / nLen) * 5.0;
     ctx.beginPath();
-    ctx.arc(px, py, 5.2, 0, Math.PI * 2);
-    ctx.fillStyle = '#00ff88';
-    ctx.fill();
-    ctx.strokeStyle = '#061018';
+    ctx.moveTo(sfx - ux, sfy - uy);
+    ctx.lineTo(sfx + ux, sfy + uy);
+    ctx.strokeStyle = '#ff1e38';
+    ctx.lineWidth = 3.2;
+    ctx.stroke();
+    ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 1.6;
     ctx.stroke();
+
+    // 6. High-Contrast Rival Dots
+    let leadRival = null;
+    for (const c of allCars) {
+      if (!c.isPlayer && (!leadRival || c.totalDistanceGameM > leadRival.totalDistanceGameM)) {
+        leadRival = c;
+      }
+    }
+
+    for (const c of allCars) {
+      if (c.isPlayer || c.exploded) continue;
+      const lat = c.inPitLane ? PIT_LANE_CONFIG.lateralOffset * 1.55 : c.lateralOffset;
+      const fr = this.track.sampleAt(c.s, lat);
+      const [cx, cy] = this._worldToMap(fr.pos.x, fr.pos.z, w, h);
+      ctx.beginPath();
+      ctx.arc(cx, cy, c === leadRival ? 3.5 : 3.0, 0, Math.PI * 2);
+      ctx.fillStyle = c.liveryHex || '#ff9800';
+      ctx.fill();
+      ctx.strokeStyle = c === leadRival ? '#ffd600' : '#040812';
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+    }
+
+    // 7. Directional & Pulsing Player Marker on Top
+    const pLat = playerCar.inPitLane ? PIT_LANE_CONFIG.lateralOffset * 1.55 : playerCar.lateralOffset;
+    const pFr = this.track.sampleAt(playerCar.s, pLat);
+    const pAhead = this.track.sampleAt(playerCar.s + 3.5, pLat);
+    const [px, py] = this._worldToMap(pFr.pos.x, pFr.pos.z, w, h);
+    const [ax, ay] = this._worldToMap(pAhead.pos.x, pAhead.pos.z, w, h);
+    const mapHeading = Math.atan2(ay - py, ax - px) + (playerCar.relYaw || 0) * 0.5;
+
+    // Expanding radar pulse halo
+    const pulsePhase = (performance.now() * 0.0014) % 1.0;
+    const haloR = 5.2 + pulsePhase * 7.5;
+    ctx.beginPath();
+    ctx.arc(px, py, haloR, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(0, 255, 136, ${(0.68 * (1 - pulsePhase)).toFixed(2)})`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Directional player chevron arrow
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(mapHeading);
+    ctx.beginPath();
+    ctx.moveTo(6.6, 0);
+    ctx.lineTo(-4.6, 4.3);
+    ctx.lineTo(-2.4, 0);
+    ctx.lineTo(-4.6, -4.3);
+    ctx.closePath();
+    ctx.fillStyle = '#00ff88';
+    ctx.fill();
+    ctx.strokeStyle = '#041018';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.restore();
   }
 }
