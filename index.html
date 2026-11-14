@@ -6,10 +6,10 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <meta name="theme-color" content="#050811" />
-  <title>Race Phanatic F1 — Pole Position 2026: Retro Grand Prix</title>
+  <meta name="theme-color" content="#080c14" />
+  <title>Pole Position 2026 — Grand Prix Motorsport Sim</title>
   <link rel="manifest" href="./manifest.webmanifest" />
-  <link rel="stylesheet" href="./styles.css?v=20261114aplus" />
+  <link rel="stylesheet" href="./styles.css?v=20261114sim" />
   <script type="importmap">
     {
       "imports": {
@@ -24,58 +24,92 @@
   <div id="boot-loading">
     <div class="boot-crest">F1</div>
     <div class="boot-spinner"></div>
-    <div class="boot-title">RACE PHANATIC F1</div>
-    <div class="boot-sub">LOADING PBR CARS, 1:1 1982 ENGINE, CAREER R&amp;D &amp; 6 WORLD CIRCUITS...</div>
+    <div class="boot-title">POLE POSITION</div>
+    <div class="boot-sub">INITIALIZING 240HZ VEHICLE DYNAMICS, 6 WORLD CIRCUITS &amp; SIM TELEMETRY...</div>
   </div>
 
-  <!-- 3D WebGL Viewport, High-Speed Wind Vignette & 1982 CRT Scanline Filter -->
+  <!-- 3D WebGL Viewport & Optional 1982 CRT Scanline Filter (Bloom & Neon Vignette Disabled) -->
   <div id="webgl-container"></div>
-  <div id="speed-vignette"></div>
-  <div id="arcade-scanlines"></div>
+  <div id="speed-vignette" aria-hidden="true"></div>
+  <div id="arcade-scanlines" aria-hidden="true"></div>
 
   <!-- ====================================================================
-       AAA SHOWROOM START SCREEN (OPEN 3D HERO STAGE — ZERO WALL OF BOXES!)
+       MODERN MOTORSPORT SIM MENU (CLEAN 3-ZONE GT7 / F1 24 ARCHITECTURE)
        ==================================================================== -->
   <section id="pre-race-menu">
-    <!-- Top Broadcast Identity & Utility Bar -->
+    <!-- Zone 1: Unified Minimal Top Header (48-52px) -->
     <header class="showroom-topbar">
       <div class="showroom-brand">
-        <div class="brand-wing-row">
-          <span class="f1-crest-badge">F1</span>
-          <span class="f1-speed-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-          <span class="brand-kicker">RACE PHANATIC • WORLD GRAND PRIX</span>
+        <span class="f1-crest-badge">F1</span>
+        <div class="brand-wordmark-group">
+          <h1 class="showroom-title">POLE POSITION</h1>
+          <span class="showroom-circuit-pill" id="menu-circuit-subtitle">JPN • FUJI SPEEDWAY</span>
         </div>
-        <div class="brand-title-row">
-          <h1 class="showroom-title">POLE POSITION <span>'26</span></h1>
-          <div class="showroom-circuit-pill" id="menu-circuit-subtitle">
-            🇯🇵 FUJI SPEEDWAY '82 • MT. FUJI ALPINE &amp; SAKURA GROVES
-          </div>
-          <div class="showroom-career-pill" id="menu-career-pill">🏆 S1 • R1/6 • NAMCO SCUDERIA</div>
+
+        <!-- Inline Segmented Era Selector -->
+        <div class="era-segmented-switch" role="group" aria-label="Simulation Era">
+          <button class="era-seg-btn cfg-btn selected" data-cfg-mode="2026_UPDATED" type="button">2026 SIM</button>
+          <button class="era-seg-btn cfg-btn" data-cfg-mode="1982_ORIGINAL" type="button">1982 RETRO</button>
         </div>
       </div>
 
       <div class="showroom-top-actions">
-        <button id="btn-launch-1982-direct" class="glass-action-pill retro-pill" type="button" title="1-tap authentic 1982 Namco arcade race">🕹️ 1982 <span class="pill-label">1:1</span></button>
-        <button id="btn-open-career" class="glass-action-pill career-pill" type="button" title="Career, Teams, Car R&amp;D &amp; Strategy">🏆 <span class="pill-label">CAREER</span> <b id="menu-credits-badge">$150K</b></button>
-        <button id="btn-open-garage" class="glass-action-pill accent-pill" type="button" title="Garage rules, controls &amp; audio mixer">⚙️ <span class="pill-label">SETTINGS</span></button>
-        <button id="btn-menu-audio" class="glass-action-pill" type="button" title="Sound on / off">🔊 <span class="pill-label">SOUND</span></button>
-        <button id="btn-menu-fullscreen" class="glass-action-pill gold-pill" type="button" title="Fullscreen">⛶</button>
+        <!-- Legacy 1-tap hook preserved hidden for 100% DOM ID backward compatibility -->
+        <button id="btn-launch-1982-direct" type="button" hidden aria-hidden="true" tabindex="-1">1982</button>
+
+        <button id="btn-open-career" class="sim-top-btn career-pill" type="button" title="Garage, Works Teams, Car R&amp;D &amp; Championship">
+          <svg class="ui-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <path d="M3.5 14.5L5.5 7.5L10 4.5L14.5 7.5L16.5 14.5H3.5Z" />
+            <path d="M7.5 14.5V10.5H12.5V14.5" />
+          </svg>
+          <span class="pill-label" id="menu-career-pill">S1 • R1/6</span>
+          <b class="credits-chip" id="menu-credits-badge">$150K</b>
+        </button>
+
+        <button id="btn-open-garage" class="sim-top-btn" type="button" title="Controls, Assists, Session Rules &amp; Audio">
+          <svg class="ui-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <circle cx="10" cy="10" r="2.7" />
+            <path d="M10 3V5M10 15V17M3 10H5M15 10H17M5.05 5.05L6.46 6.46M13.54 13.54L14.95 14.95M14.95 5.05L13.54 6.46M6.46 13.54L5.05 14.95" />
+          </svg>
+          <span class="pill-label">SETTINGS</span>
+        </button>
+
+        <button id="btn-menu-audio" class="sim-top-btn icon-only-sm" type="button" title="Toggle Audio">
+          <svg class="ui-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <path d="M3.5 8H6.8L11 4.5V15.5L6.8 12H3.5V8Z" />
+            <path d="M13.8 7.2C14.9 8.4 14.9 11.6 13.8 12.8M15.8 5.2C17.8 7.5 17.8 12.5 15.8 14.8" />
+          </svg>
+          <span class="pill-label" id="menu-audio-label">ON</span>
+        </button>
+
+        <button id="btn-menu-fullscreen" class="sim-top-btn icon-only" type="button" title="Toggle Fullscreen" aria-label="Fullscreen">
+          <svg class="ui-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <path d="M3.5 7.5V3.5H7.5M12.5 3.5H16.5V7.5M16.5 12.5V16.5H12.5M7.5 16.5H3.5V12.5" />
+          </svg>
+        </button>
       </div>
     </header>
 
-    <!-- Open Interactive 3D Hero Stage (Center 65%+ crystal clear — drag to orbit #1 car!) -->
+    <!-- Zone 2: Calm Unobstructed 3D Car Showcase (65-72% Clear Center Screen) -->
     <div id="showroom-orbit-zone" class="showroom-stage-spacer">
-      <div class="orbit-hint-chip">⟳ DRAG TO ORBIT #1 POLE POSITION CAR</div>
+      <div class="orbit-hint-chip" id="orbit-hint-chip">
+        <svg class="ui-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+          <ellipse cx="10" cy="10" rx="7.5" ry="3.6" />
+          <path d="M14.5 7.2L16.8 9.2L14.2 10.6" />
+        </svg>
+        <span>360° DRAG TO INSPECT #1 CAR</span>
+      </div>
     </div>
 
-    <!-- Bottom Championship Circuit Ribbon & Launch Pod -->
+    <!-- Zone 3: Clean Structured Bottom Race Dock -->
     <footer class="showroom-bottom-dock">
+      <!-- Horizontal Circuit Selector Strip -->
       <div class="circuit-showcase-strip" role="listbox" aria-label="Select Grand Prix Circuit">
         <!-- R1. Fuji Speedway '82 -->
         <button class="track-card selected" data-cfg-track="FUJI_1982" type="button">
           <div class="tc-top">
-            <span class="tc-flag">🇯🇵 JPN</span>
-            <span class="tc-len">4.36 KM</span>
+            <span class="tc-flag">JPN • R1</span>
+            <span class="tc-len">4.36 KM • 10T</span>
           </div>
           <svg class="tc-svg" viewBox="0 0 128 50" aria-hidden="true">
             <path class="tc-track-bg" d="M28,10 L98,10 C112,10 118,16 116,25 C114,31 106,31 99,29 C91,27 85,26 78,30 L56,42 C47,46 37,46 31,41 C20,34 11,26 13,17 C14,11 20,10 28,10 Z" />
@@ -83,16 +117,16 @@
             <line class="tc-sf" x1="52" y1="6.2" x2="52" y2="13.8" />
             <circle class="tc-pole" cx="46" cy="10" r="2.2" />
           </svg>
-          <span class="tc-name">Fuji Speedway '82</span>
+          <span class="tc-name">Fuji Speedway</span>
           <span class="tc-short">FUJI</span>
-          <span class="tc-desc">Mt. Fuji • Fast 300R</span>
+          <span class="tc-desc">1.4km Straight • 300R</span>
         </button>
 
         <!-- R2. Monte Carlo Harbor -->
         <button class="track-card" data-cfg-track="MONACO_HARBOR" type="button">
           <div class="tc-top">
-            <span class="tc-flag">🇲🇨 MON</span>
-            <span class="tc-len">3.34 KM</span>
+            <span class="tc-flag">MON • R2</span>
+            <span class="tc-len">3.34 KM • 19T</span>
           </div>
           <svg class="tc-svg" viewBox="0 0 128 50" aria-hidden="true">
             <path class="tc-track-bg" d="M29,10 L97,10 C108,10 115,15 114,24 C113,33 103,38 92,38 C85,38 82,29 77,30 C71,31 69,39 61,41 L43,44 C34,44 26,38 20,32 C13,26 12,18 17,13 C20,10 24,10 29,10 Z" />
@@ -102,14 +136,14 @@
           </svg>
           <span class="tc-name">Monte Carlo</span>
           <span class="tc-short">MONACO</span>
-          <span class="tc-desc">Yachts • Sea Tunnel</span>
+          <span class="tc-desc">Harbor Walls • Hairpin</span>
         </button>
 
         <!-- R3. Suzuka Figure-8 -->
         <button class="track-card" data-cfg-track="SUZUKA_130R" type="button">
           <div class="tc-top">
-            <span class="tc-flag">🇯🇵 JPN</span>
-            <span class="tc-len">5.81 KM</span>
+            <span class="tc-flag">JPN • R3</span>
+            <span class="tc-len">5.81 KM • 18T</span>
           </div>
           <svg class="tc-svg" viewBox="0 0 128 50" aria-hidden="true">
             <path class="tc-track-bg" d="M22,10 L52,10 C60,10 64,14 66,20 L70,30 C74,40 84,44 96,42 C110,40 118,34 116,24 C114,14 104,10 94,12 C84,14 76,20 70,25 L62,32 C56,40 44,44 32,42 C18,40 10,32 12,22 C14,14 18,10 22,10 Z" />
@@ -119,14 +153,14 @@
           </svg>
           <span class="tc-name">Suzuka Circuit</span>
           <span class="tc-short">SUZUKA</span>
-          <span class="tc-desc">Figure-8 • 130R</span>
+          <span class="tc-desc">Figure-8 • Essess &amp; 130R</span>
         </button>
 
         <!-- R4. Monza Temple of Speed -->
         <button class="track-card" data-cfg-track="MONZA_TEMPLE" type="button">
           <div class="tc-top">
-            <span class="tc-flag">🇮🇹 ITA</span>
-            <span class="tc-len">5.79 KM</span>
+            <span class="tc-flag">ITA • R4</span>
+            <span class="tc-len">5.79 KM • 11T</span>
           </div>
           <svg class="tc-svg" viewBox="0 0 128 50" aria-hidden="true">
             <path class="tc-track-bg" d="M26,10 L99,10 C109,10 115,15 116,25 C117,34 109,41 100,42 L79,44 L56,38 L33,40 C20,40 12,35 12,24 C12,14 17,10 26,10 Z" />
@@ -134,16 +168,16 @@
             <line class="tc-sf" x1="48" y1="6.2" x2="48" y2="13.8" />
             <circle class="tc-pole" cx="42" cy="10" r="2.2" />
           </svg>
-          <span class="tc-name">Monza Temple</span>
+          <span class="tc-name">Monza Autodromo</span>
           <span class="tc-short">MONZA</span>
-          <span class="tc-desc">Royal Park • 330 KM/H</span>
+          <span class="tc-desc">Chicanes • Parabolica</span>
         </button>
 
         <!-- R5. Silverstone GP -->
         <button class="track-card" data-cfg-track="SILVERSTONE_GP" type="button">
           <div class="tc-top">
-            <span class="tc-flag">🇬🇧 GBR</span>
-            <span class="tc-len">5.89 KM</span>
+            <span class="tc-flag">GBR • R5</span>
+            <span class="tc-len">5.89 KM • 18T</span>
           </div>
           <svg class="tc-svg" viewBox="0 0 128 50" aria-hidden="true">
             <path class="tc-track-bg" d="M24,10 L84,10 C96,10 104,8 110,14 C116,20 112,28 104,28 L92,26 C86,26 84,32 88,36 C92,40 88,44 80,44 L60,42 C54,42 52,36 46,38 C40,40 38,34 32,36 C24,38 18,44 12,38 C8,32 10,24 14,18 C16,12 20,10 24,10 Z" />
@@ -156,11 +190,11 @@
           <span class="tc-desc">Maggotts-Becketts</span>
         </button>
 
-        <!-- R6. Las Vegas Neon Strip -->
+        <!-- R6. Las Vegas Strip -->
         <button class="track-card" data-cfg-track="VEGAS_NEON" type="button">
           <div class="tc-top">
-            <span class="tc-flag">🇺🇸 USA</span>
-            <span class="tc-len">6.20 KM</span>
+            <span class="tc-flag">USA • R6</span>
+            <span class="tc-len">6.20 KM • 17T</span>
           </div>
           <svg class="tc-svg" viewBox="0 0 128 50" aria-hidden="true">
             <path class="tc-track-bg" d="M28,10 L100,10 C111,10 116,16 115,25 C114,34 103,39 92,39 L69,36 L52,44 L30,43 C20,42 13,36 13,28 L14,15 C14,11 20,10 28,10 Z" />
@@ -170,221 +204,286 @@
           </svg>
           <span class="tc-name">Las Vegas Strip</span>
           <span class="tc-short">VEGAS</span>
-          <span class="tc-desc">LED Sphere • Night GP</span>
+          <span class="tc-desc">342 KM/H Night Strip</span>
         </button>
       </div>
 
+      <!-- Unified Session, Inline Brake Assist & Launch Bar -->
       <div class="showroom-launch-pod">
-        <button id="btn-setup-summary" class="setup-summary-bar" type="button" title="Customize Garage &amp; Rules">
-          <span class="sum-chip" id="sum-mode">2026 GP • 5L</span>
-          <span class="sum-chip" id="sum-gear">AUTO 8-SPD</span>
-          <span class="sum-chip" id="sum-weather">RANDOM WEATHER</span>
-          <span class="sum-chip" id="sum-steer">WHEEL</span>
-          <span class="sum-edit">⚙️ SETUP</span>
-        </button>
+        <div class="dock-session-controls">
+          <!-- Inline Brake Assist Selector (OFF | MIN | FULL) -->
+          <div class="dock-assist-cluster" role="group" aria-label="Brake Assist Mode" title="MIN = Safety Net Only on Tight Turns — Never Caps Straight or Sweeper Speed">
+            <span class="dock-cluster-lbl">BRAKE ASSIST</span>
+            <div class="dock-seg-group">
+              <button class="dock-seg-btn cfg-btn" data-cfg-assist="OFF" type="button">OFF</button>
+              <button class="dock-seg-btn cfg-btn selected" data-cfg-assist="MIN" type="button">MIN</button>
+              <button class="dock-seg-btn cfg-btn" data-cfg-assist="FULL" type="button">FULL</button>
+            </div>
+          </div>
+
+          <!-- Quick Session & Control Pills + Full Setup Trigger -->
+          <div class="dock-pills-row">
+            <button id="btn-dock-laps" class="dock-quick-pill" type="button" title="Cycle Race Distance">
+              <span class="dq-kicker">SESSION</span>
+              <span class="dq-val" id="sum-mode">2026 SIM • 5L</span>
+            </button>
+            <button id="btn-dock-weather" class="dock-quick-pill" type="button" title="Cycle Weather Condition">
+              <span class="dq-kicker">WEATHER</span>
+              <span class="dq-val" id="sum-weather">DYNAMIC</span>
+            </button>
+            <button id="btn-dock-steer" class="dock-quick-pill" type="button" title="Cycle Steering Input Mode">
+              <span class="dq-kicker">STEER</span>
+              <span class="dq-val" id="sum-steer">WHEEL</span>
+            </button>
+            <button id="btn-setup-summary" class="dock-quick-pill setup-summary-bar" type="button" title="Open Full Controls, Assists &amp; Session Setup">
+              <span class="dq-kicker">GEAR / OPTIONS</span>
+              <span class="dq-val"><span id="sum-gear">AUTO 8</span> • SETUP</span>
+            </button>
+          </div>
+        </div>
 
         <button id="btn-launch-race" class="launch-btn" type="button">
-          <span class="launch-sheen"></span>
-          <span class="launch-txt">🏁 RACE NOW</span>
+          <span class="launch-txt">START RACE</span>
         </button>
       </div>
     </footer>
 
-    <!-- Slide-Over Garage, Controls & Championship Rules Drawer -->
+    <!-- Organized 3-Tab Settings & Engineering Modal/Drawer -->
     <div id="garage-backdrop" class="garage-backdrop">
-      <aside id="garage-drawer" class="garage-drawer" aria-label="Garage and Rules Setup">
+      <aside id="garage-drawer" class="garage-drawer" aria-label="Controls, Assists and Session Settings">
         <div class="garage-head">
           <div>
-            <div class="garage-kicker">RACE ENGINEERING BAY</div>
-            <h2 class="garage-title">SETTINGS &amp; RULES</h2>
+            <div class="garage-kicker">RACE ENGINEERING &amp; TELEMETRY</div>
+            <h2 class="garage-title">SETTINGS</h2>
           </div>
-          <button id="btn-close-garage" class="glass-action-pill" type="button">✕ DONE</button>
+          <button id="btn-close-garage" class="sim-top-btn" type="button">DONE</button>
+        </div>
+
+        <!-- Clean 3-Tab Switcher -->
+        <div class="settings-tabs" role="tablist" aria-label="Settings Categories">
+          <button class="settings-tab selected" data-settings-tab="CONTROLS" type="button">CONTROLS</button>
+          <button class="settings-tab" data-settings-tab="ASSISTS" type="button">ASSISTS &amp; REALISM</button>
+          <button class="settings-tab" data-settings-tab="AUDIO" type="button">AUDIO &amp; DISPLAY</button>
         </div>
 
         <div class="garage-scroll">
-          <!-- 1. Championship Rules -->
-          <div class="garage-group">
-            <div class="cfg-label">Championship Ruleset</div>
-            <div class="pill-row">
-              <button class="cfg-btn selected" data-cfg-mode="2026_UPDATED" type="button">🏎️ 2026 PRO GP</button>
-              <button class="cfg-btn" data-cfg-mode="1982_ORIGINAL" type="button">🕹️ 1982 ARCADE</button>
-            </div>
-            <div class="cfg-note">2026: Tire Wear, Fuel, Pit Crew &amp; Damage. 1982: 73s Quali + Extended Play.</div>
-          </div>
-
-          <!-- 2. Transmission (Default: Realistic 8-Speed F1 Automatic!) -->
-          <div class="garage-group">
-            <div class="cfg-label">Transmission &amp; Shifting</div>
-            <div class="pill-row">
-              <button class="cfg-btn selected" data-cfg-gearbox="AUTO_8SPD" type="button">⚡ AUTO 8-SPD</button>
-              <button class="cfg-btn" data-cfg-gearbox="MANUAL_8SPD" type="button">🎛️ MAN 8-SPD</button>
-              <button class="cfg-btn" data-cfg-gearbox="CLASSIC_2SPD" type="button">🕹️ 82 LO/HI</button>
-            </div>
-            <div class="cfg-note">Auto 8-Speed shifts seamlessly across G1–G8 up to 331 KM/H with downshift rev-blips.</div>
-          </div>
-
-          <!-- 3. Mobile Touch Steering, Tilt Gyro & Handedness -->
-          <div class="garage-group">
-            <div class="cfg-label">Steering Input &amp; Handedness</div>
-            <div class="pill-row" style="margin-bottom:6px;">
-              <button class="cfg-btn selected" data-cfg-steer="WHEEL" type="button">🎡 F1 WHEEL</button>
-              <button class="cfg-btn" data-cfg-steer="BUTTONS" type="button">◀▶ ARROWS</button>
-              <button class="cfg-btn" data-cfg-steer="TILT" type="button">📱 TILT GYRO</button>
-            </div>
-            <div class="pill-row" style="margin-bottom:6px;">
-              <button class="cfg-btn selected" data-cfg-hand="RIGHT_HANDED" type="button">🤚 RIGHT-HAND</button>
-              <button class="cfg-btn" data-cfg-hand="LEFT_HANDED" type="button">✋ LEFT-HAND</button>
-            </div>
-            <button id="btn-calibrate-tilt" class="cfg-btn calibrate-btn" type="button">🧭 CALIBRATE 0° TILT CENTER</button>
-          </div>
-
-          <!-- 4. Driving Assists & Cockpit Ergonomics -->
-          <div class="garage-group">
-            <div class="cfg-label">Driving Assists &amp; Ergonomics</div>
-            <div class="assist-grid">
-              <span class="assist-lbl">Speed Unit</span>
-              <div class="pill-row">
-                <button class="cfg-btn selected" data-cfg-units="KMH" type="button">KM/H</button>
-                <button class="cfg-btn" data-cfg-units="MPH" type="button">MPH</button>
-              </div>
-              <span class="assist-lbl">Braking Assist</span>
-              <div class="pill-row">
-                <button class="cfg-btn selected" data-cfg-assist="OFF" type="button">OFF</button>
-                <button class="cfg-btn" data-cfg-assist="LOW" type="button">LOW</button>
-                <button class="cfg-btn" data-cfg-assist="MEDIUM" type="button">MED</button>
-                <button class="cfg-btn" data-cfg-assist="HIGH" type="button">HIGH</button>
-              </div>
-              <span class="assist-lbl">Auto-Throttle</span>
-              <div class="pill-row">
-                <button class="cfg-btn selected" data-cfg-autothrottle="OFF" type="button">OFF</button>
-                <button class="cfg-btn" data-cfg-autothrottle="ON" type="button">ON</button>
-              </div>
-              <span class="assist-lbl">Haptics</span>
-              <div class="pill-row">
-                <button class="cfg-btn selected" data-cfg-haptics="ON" type="button">ON</button>
-                <button class="cfg-btn" data-cfg-haptics="OFF" type="button">OFF</button>
-              </div>
-            </div>
-            <label class="slider-row">
-              <span class="slider-lbl">Steering Sensitivity</span>
-              <input id="slider-ctrl-sens" type="range" min="60" max="150" step="5" value="100" />
-              <span class="slider-val" id="slider-ctrl-sens-val">100%</span>
-            </label>
-            <label class="slider-row">
-              <span class="slider-lbl">Touch Control Size</span>
-              <input id="slider-ctrl-scale" type="range" min="75" max="125" step="5" value="100" />
-              <span class="slider-val" id="slider-ctrl-scale-val">100%</span>
-            </label>
-          </div>
-
-          <!-- 5. Live 5-Channel Audio Mixer -->
-          <div class="garage-group">
-            <div class="cfg-label">Audio Mixer</div>
-            <label class="slider-row">
-              <span class="slider-lbl">Master</span>
-              <input id="slider-mix-master" type="range" min="0" max="100" step="5" value="85" />
-              <span class="slider-val" id="slider-mix-master-val">85%</span>
-            </label>
-            <label class="slider-row">
-              <span class="slider-lbl">Engine</span>
-              <input id="slider-mix-engine" type="range" min="0" max="100" step="5" value="80" />
-              <span class="slider-val" id="slider-mix-engine-val">80%</span>
-            </label>
-            <label class="slider-row">
-              <span class="slider-lbl">SFX &amp; Crowd</span>
-              <input id="slider-mix-sfx" type="range" min="0" max="100" step="5" value="80" />
-              <span class="slider-val" id="slider-mix-sfx-val">80%</span>
-            </label>
-            <label class="slider-row">
-              <span class="slider-lbl">Radio Voice</span>
-              <input id="slider-mix-voice" type="range" min="0" max="100" step="5" value="85" />
-              <span class="slider-val" id="slider-mix-voice-val">85%</span>
-            </label>
-            <label class="slider-row">
-              <span class="slider-lbl">Fanfare / Music</span>
-              <input id="slider-mix-music" type="range" min="0" max="100" step="5" value="75" />
-              <span class="slider-val" id="slider-mix-music-val">75%</span>
-            </label>
-          </div>
-
-          <!-- 1982 Classic Laps -->
-          <div id="cfg-section-1982" class="garage-group" style="display:none;">
-            <div class="cfg-label">1982 Grand Prix Laps (After 1-Lap Quali)</div>
-            <div class="pill-row">
-              <button class="cfg-btn" data-cfg-classic-laps="3" type="button">3 LAPS</button>
-              <button class="cfg-btn selected" data-cfg-classic-laps="4" type="button">4 LAPS</button>
-              <button class="cfg-btn" data-cfg-classic-laps="5" type="button">5 LAPS</button>
-            </div>
-          </div>
-
-          <!-- 2026 Pro GP Options -->
-          <div id="cfg-section-2026">
+          <!-- TAB 1: CONTROLS -->
+          <section class="settings-panel" data-settings-panel="CONTROLS">
             <div class="garage-group">
-              <div class="cfg-label">Race Distance &amp; Pit Window</div>
-              <div class="pill-row">
-                <button class="cfg-btn selected" data-cfg-length="SHORT" type="button">SHORT (5L)</button>
-                <button class="cfg-btn" data-cfg-length="MEDIUM" type="button">MEDIUM (12L)</button>
-                <button class="cfg-btn" data-cfg-length="LONG" type="button">LONG (25L)</button>
-              </div>
-              <div class="cfg-note" id="cfg-length-summary">0–1 Pit Stop • 1.0x Tire/Fuel</div>
-            </div>
-
-            <div class="garage-group">
-              <div class="cfg-label">Race Weather (Locked Per Race)</div>
-              <div class="pill-row">
-                <button class="cfg-btn selected" data-cfg-weather="RANDOM" type="button">🎲 RANDOM</button>
-                <button class="cfg-btn" data-cfg-weather="HOT_SUNNY" type="button">☀️ SUNNY</button>
-                <button class="cfg-btn" data-cfg-weather="GOLDEN_SUNSET" type="button">🌅 SUNSET</button>
-                <button class="cfg-btn" data-cfg-weather="OVERCAST_COOL" type="button">⛅ COOL</button>
-                <button class="cfg-btn" data-cfg-weather="LIGHT_DRIZZLE" type="button">🌦️ RAIN</button>
-                <button class="cfg-btn" data-cfg-weather="MONSOON_STORM" type="button">⛈️ STORM</button>
-              </div>
-            </div>
-
-            <div class="garage-group">
-              <div class="cfg-label">Starting Tire Compound</div>
-              <div class="pill-row">
-                <button class="cfg-btn selected" data-cfg-compound="SOFT" type="button">🔴 SOFT</button>
-                <button class="cfg-btn" data-cfg-compound="MEDIUM" type="button">🟡 MED</button>
-                <button class="cfg-btn" data-cfg-compound="HARD" type="button">⚪ HARD</button>
-                <button class="cfg-btn" data-cfg-compound="INTERMEDIATE" type="button">🟢 INTER</button>
-                <button class="cfg-btn" data-cfg-compound="FULL_WET" type="button">🔵 WET</button>
-              </div>
-            </div>
-
-            <div class="garage-group">
-              <div class="cfg-label">Session Format &amp; Grid Size</div>
+              <div class="cfg-label">Steering Input &amp; Layout</div>
               <div class="pill-row" style="margin-bottom:6px;">
-                <button class="cfg-btn selected" data-cfg-quali2026="OFF" type="button">INSTANT RACE (P5)</button>
-                <button class="cfg-btn" data-cfg-quali2026="ON" type="button">1-LAP QUALI</button>
+                <button class="cfg-btn selected" data-cfg-steer="WHEEL" type="button">F1 WHEEL</button>
+                <button class="cfg-btn" data-cfg-steer="BUTTONS" type="button">TOUCH PAD</button>
+                <button class="cfg-btn" data-cfg-steer="TILT" type="button">TILT GYRO</button>
               </div>
-              <div class="pill-row">
-                <button class="cfg-btn selected" data-cfg-grid="8" type="button">8 CARS</button>
-                <button class="cfg-btn" data-cfg-grid="16" type="button">16 CARS</button>
+              <div class="pill-row" style="margin-bottom:6px;">
+                <button class="cfg-btn selected" data-cfg-hand="RIGHT_HANDED" type="button">STEER LEFT / PEDALS RIGHT</button>
+                <button class="cfg-btn" data-cfg-hand="LEFT_HANDED" type="button">PEDALS LEFT / STEER RIGHT</button>
               </div>
+              <button id="btn-calibrate-tilt" class="cfg-btn calibrate-btn" type="button">CALIBRATE 0° TILT NEUTRAL</button>
             </div>
-          </div>
 
-          <!-- Graphics Pipeline -->
-          <div class="garage-group">
-            <div class="cfg-label">Visual Render Pipeline</div>
-            <div class="pill-row">
-              <button class="cfg-btn selected" data-cfg-shader="2026_PBR" type="button">✨ 2026 AAA HDR + BLOOM</button>
-              <button class="cfg-btn" data-cfg-shader="1982_ARCADE" type="button">📺 1982 RETRO CRT</button>
+            <div class="garage-group">
+              <div class="cfg-label">Transmission</div>
+              <div class="pill-row">
+                <button class="cfg-btn selected" data-cfg-gearbox="AUTO_8SPD" type="button">AUTO 8-SPD</button>
+                <button class="cfg-btn" data-cfg-gearbox="MANUAL_8SPD" type="button">MANUAL 8-SPD</button>
+                <button class="cfg-btn" data-cfg-gearbox="CLASSIC_2SPD" type="button">1982 LO / HI</button>
+              </div>
+              <div class="cfg-note">8-Speed Seamless Gearbox shifts across G1–G8 with corner-entry downshift protection.</div>
             </div>
-          </div>
+
+            <div class="garage-group">
+              <div class="cfg-label">Steering Calibration &amp; Touch Ergonomics</div>
+              <label class="slider-row">
+                <span class="slider-lbl">Steering Sensitivity</span>
+                <input id="slider-ctrl-sens" type="range" min="60" max="150" step="5" value="100" />
+                <span class="slider-val" id="slider-ctrl-sens-val">100%</span>
+              </label>
+              <label class="slider-row">
+                <span class="slider-lbl">Steering Linearity</span>
+                <input id="slider-ctrl-lin" type="range" min="0" max="45" step="5" value="0" />
+                <span class="slider-val" id="slider-ctrl-lin-val">1:1 LIN</span>
+              </label>
+              <label class="slider-row">
+                <span class="slider-lbl">Touch Control Scale</span>
+                <input id="slider-ctrl-scale" type="range" min="75" max="125" step="5" value="100" />
+                <span class="slider-val" id="slider-ctrl-scale-val">100%</span>
+              </label>
+              <label class="slider-row">
+                <span class="slider-lbl">Touch HUD Opacity</span>
+                <input id="slider-ctrl-opacity" type="range" min="40" max="100" step="5" value="88" />
+                <span class="slider-val" id="slider-ctrl-opacity-val">88%</span>
+              </label>
+              <div class="cfg-note">0% Linearity gives pure 1:1 pro sim wheel response with speed-sensitive front-grip authority.</div>
+            </div>
+          </section>
+
+          <!-- TAB 2: ASSISTS & REALISM -->
+          <section class="settings-panel" data-settings-panel="ASSISTS" hidden>
+            <div class="garage-group">
+              <div class="cfg-label">Kinematic Braking Assist</div>
+              <div class="pill-row">
+                <button class="cfg-btn" data-cfg-assist="OFF" type="button">OFF (PRO)</button>
+                <button class="cfg-btn selected" data-cfg-assist="MIN" type="button">MIN (SAFETY NET)</button>
+                <button class="cfg-btn" data-cfg-assist="FULL" type="button">FULL (GUIDED)</button>
+              </div>
+              <div class="cfg-note" id="assist-mode-desc">
+                MIN = Safety Net Only on Tight Turns — Never caps straight-line or high-speed sweeper speed; intervenes smoothly only if closing on a tight corner faster than tire friction allows.
+              </div>
+            </div>
+
+            <div class="garage-group">
+              <div class="cfg-label">Throttle Assist &amp; AI Constructor Pace</div>
+              <div class="assist-grid">
+                <span class="assist-lbl">Auto-Throttle</span>
+                <div class="pill-row">
+                  <button class="cfg-btn selected" data-cfg-autothrottle="OFF" type="button">OFF</button>
+                  <button class="cfg-btn" data-cfg-autothrottle="ON" type="button">ON</button>
+                </div>
+                <span class="assist-lbl">AI Pace</span>
+                <div class="pill-row">
+                  <button class="cfg-btn" data-cfg-ai-diff="ROOKIE" type="button">CHALLENGER</button>
+                  <button class="cfg-btn selected" data-cfg-ai-diff="PRO" type="button">PRO WORKS</button>
+                  <button class="cfg-btn" data-cfg-ai-diff="LEGEND" type="button">LEGEND</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="garage-group">
+              <div class="cfg-label">Simulation Era</div>
+              <div class="pill-row">
+                <button class="cfg-btn selected" data-cfg-mode="2026_UPDATED" type="button">2026 SIM GP</button>
+                <button class="cfg-btn" data-cfg-mode="1982_ORIGINAL" type="button">1982 RETRO</button>
+              </div>
+            </div>
+
+            <!-- 1982 Classic Laps -->
+            <div id="cfg-section-1982" class="garage-group" style="display:none;">
+              <div class="cfg-label">1982 Grand Prix Laps (After 1-Lap Quali)</div>
+              <div class="pill-row">
+                <button class="cfg-btn" data-cfg-classic-laps="3" type="button">3 LAPS</button>
+                <button class="cfg-btn selected" data-cfg-classic-laps="4" type="button">4 LAPS</button>
+                <button class="cfg-btn" data-cfg-classic-laps="5" type="button">5 LAPS</button>
+              </div>
+            </div>
+
+            <!-- 2026 Pro GP Session Options -->
+            <div id="cfg-section-2026">
+              <div class="garage-group">
+                <div class="cfg-label">Race Distance &amp; Pit Window</div>
+                <div class="pill-row">
+                  <button class="cfg-btn selected" data-cfg-length="SHORT" type="button">SPRINT (5L)</button>
+                  <button class="cfg-btn" data-cfg-length="MEDIUM" type="button">FEATURE (12L)</button>
+                  <button class="cfg-btn" data-cfg-length="LONG" type="button">GRAND PRIX (25L)</button>
+                </div>
+                <div class="cfg-note" id="cfg-length-summary">0–1 Pit Stop • 1.0x Tire/Fuel</div>
+              </div>
+
+              <div class="garage-group">
+                <div class="cfg-label">Session Weather</div>
+                <div class="pill-row">
+                  <button class="cfg-btn selected" data-cfg-weather="RANDOM" type="button">DYNAMIC</button>
+                  <button class="cfg-btn" data-cfg-weather="HOT_SUNNY" type="button">SUNNY</button>
+                  <button class="cfg-btn" data-cfg-weather="GOLDEN_SUNSET" type="button">SUNSET</button>
+                  <button class="cfg-btn" data-cfg-weather="OVERCAST_COOL" type="button">OVERCAST</button>
+                  <button class="cfg-btn" data-cfg-weather="LIGHT_DRIZZLE" type="button">DRIZZLE</button>
+                  <button class="cfg-btn" data-cfg-weather="MONSOON_STORM" type="button">STORM</button>
+                </div>
+              </div>
+
+              <div class="garage-group">
+                <div class="cfg-label">Starting Tire Compound</div>
+                <div class="pill-row">
+                  <button class="cfg-btn selected" data-cfg-compound="SOFT" type="button"><i class="tire-dot soft"></i> SOFT</button>
+                  <button class="cfg-btn" data-cfg-compound="MEDIUM" type="button"><i class="tire-dot med"></i> MED</button>
+                  <button class="cfg-btn" data-cfg-compound="HARD" type="button"><i class="tire-dot hard"></i> HARD</button>
+                  <button class="cfg-btn" data-cfg-compound="INTERMEDIATE" type="button"><i class="tire-dot inter"></i> INTER</button>
+                  <button class="cfg-btn" data-cfg-compound="FULL_WET" type="button"><i class="tire-dot wet"></i> WET</button>
+                </div>
+              </div>
+
+              <div class="garage-group">
+                <div class="cfg-label">Session Format &amp; Grid Size</div>
+                <div class="pill-row" style="margin-bottom:6px;">
+                  <button class="cfg-btn selected" data-cfg-quali2026="OFF" type="button">STANDING GRID (P5)</button>
+                  <button class="cfg-btn" data-cfg-quali2026="ON" type="button">1-LAP QUALIFYING</button>
+                </div>
+                <div class="pill-row">
+                  <button class="cfg-btn selected" data-cfg-grid="8" type="button">8 CARS</button>
+                  <button class="cfg-btn" data-cfg-grid="16" type="button">16 CARS</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- TAB 3: AUDIO & DISPLAY -->
+          <section class="settings-panel" data-settings-panel="AUDIO" hidden>
+            <div class="garage-group">
+              <div class="cfg-label">5-Channel Audio Mixer</div>
+              <label class="slider-row">
+                <span class="slider-lbl">Master</span>
+                <input id="slider-mix-master" type="range" min="0" max="100" step="5" value="85" />
+                <span class="slider-val" id="slider-mix-master-val">85%</span>
+              </label>
+              <label class="slider-row">
+                <span class="slider-lbl">V6 Power Unit</span>
+                <input id="slider-mix-engine" type="range" min="0" max="100" step="5" value="80" />
+                <span class="slider-val" id="slider-mix-engine-val">80%</span>
+              </label>
+              <label class="slider-row">
+                <span class="slider-lbl">Tires, Kerbs &amp; Aero</span>
+                <input id="slider-mix-sfx" type="range" min="0" max="100" step="5" value="80" />
+                <span class="slider-val" id="slider-mix-sfx-val">80%</span>
+              </label>
+              <label class="slider-row">
+                <span class="slider-lbl">Race Engineer</span>
+                <input id="slider-mix-voice" type="range" min="0" max="100" step="5" value="85" />
+                <span class="slider-val" id="slider-mix-voice-val">85%</span>
+              </label>
+              <label class="slider-row">
+                <span class="slider-lbl">Broadcast Theme</span>
+                <input id="slider-mix-music" type="range" min="0" max="100" step="5" value="75" />
+                <span class="slider-val" id="slider-mix-music-val">75%</span>
+              </label>
+            </div>
+
+            <div class="garage-group">
+              <div class="cfg-label">Telemetry Units &amp; Haptics</div>
+              <div class="assist-grid">
+                <span class="assist-lbl">Speed Unit</span>
+                <div class="pill-row">
+                  <button class="cfg-btn selected" data-cfg-units="KMH" type="button">KM/H</button>
+                  <button class="cfg-btn" data-cfg-units="MPH" type="button">MPH</button>
+                </div>
+                <span class="assist-lbl">Haptic Kerbs</span>
+                <div class="pill-row">
+                  <button class="cfg-btn selected" data-cfg-haptics="ON" type="button">ON</button>
+                  <button class="cfg-btn" data-cfg-haptics="OFF" type="button">OFF</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="garage-group">
+              <div class="cfg-label">Visual Render Pipeline</div>
+              <div class="pill-row">
+                <button class="cfg-btn selected" data-cfg-shader="2026_PBR" type="button">2026 PRO SIM PBR (MSAA)</button>
+                <button class="cfg-btn" data-cfg-shader="1982_ARCADE" type="button">1982 RETRO CRT</button>
+              </div>
+              <div class="cfg-note">Direct ACES Filmic PBR pipeline with zero artificial bloom haze and crisp optical horizon clarity.</div>
+            </div>
+          </section>
         </div>
 
         <div class="garage-foot">
           <button id="btn-garage-race" class="launch-btn" type="button">
-            <span class="launch-sheen"></span>
-            <span class="launch-txt">🏁 APPLY &amp; RACE NOW</span>
+            <span class="launch-txt">APPLY &amp; START RACE</span>
           </button>
         </div>
       </aside>
     </div>
 
-    <!-- Flagship Career, Works Teams, Car R&D & Strategy Hub -->
+    <!-- Works Teams, Car R&D & Championship Hub -->
     <div id="career-backdrop" class="garage-backdrop career-backdrop">
       <aside id="career-drawer" class="garage-drawer career-drawer" aria-label="Career, Teams, R&amp;D and Strategy">
         <div class="garage-head career-head">
@@ -396,33 +495,33 @@
             </div>
           </div>
           <div class="career-head-right">
-            <span class="career-credits">💰 <b id="career-credits-val">$150,000</b></span>
-            <button id="btn-close-career" class="glass-action-pill" type="button">✕</button>
+            <span class="career-credits"><b id="career-credits-val">$150,000</b></span>
+            <button id="btn-close-career" class="sim-top-btn" type="button">DONE</button>
           </div>
         </div>
 
         <div class="career-tabs" role="tablist">
-          <button class="career-tab selected" data-career-tab="TEAMS" type="button">🏎️ TEAMS</button>
-          <button class="career-tab" data-career-tab="RND" type="button">🔧 R&amp;D</button>
-          <button class="career-tab" data-career-tab="STRATEGY" type="button">📐 SETUP</button>
-          <button class="career-tab" data-career-tab="STANDINGS" type="button">🏆 TITLE</button>
+          <button class="career-tab selected" data-career-tab="TEAMS" type="button">TEAMS</button>
+          <button class="career-tab" data-career-tab="RND" type="button">CAR R&amp;D</button>
+          <button class="career-tab" data-career-tab="STRATEGY" type="button">CAR SETUP</button>
+          <button class="career-tab" data-career-tab="STANDINGS" type="button">STANDINGS</button>
         </div>
 
         <div class="garage-scroll career-scroll">
           <section class="career-panel" data-career-panel="TEAMS">
-            <div class="cfg-note">Pick your works team. Livery repaints the showroom car &amp; pit crew live; team perks stack with R&amp;D.</div>
+            <div class="cfg-note">Select your constructor. Livery updates the #1 grid car and pit crew live; works perks combine with Car R&amp;D.</div>
             <div id="career-teams-grid" class="career-teams-grid"></div>
           </section>
 
           <section class="career-panel" data-career-panel="RND" hidden>
-            <div class="cfg-label">Car Performance Ratings</div>
+            <div class="cfg-label">Chassis &amp; Power Unit Ratings</div>
             <div id="career-ratings" class="career-ratings"></div>
-            <div class="cfg-label" style="margin-top:10px;">Upgrade Parts (Lv 1–5)</div>
+            <div class="cfg-label" style="margin-top:10px;">Engineering Upgrades (Lv 1–5)</div>
             <div id="career-parts-list" class="career-parts-list"></div>
           </section>
 
           <section class="career-panel" data-career-panel="STRATEGY" hidden>
-            <div class="cfg-label">Wing Trim</div>
+            <div class="cfg-label">Aero Wing Trim</div>
             <div id="career-setup-wing" class="pill-row career-setup-row"></div>
             <div class="cfg-label" style="margin-top:8px;">Fuel Load</div>
             <div id="career-setup-fuel" class="pill-row career-setup-row"></div>
@@ -432,65 +531,90 @@
           </section>
 
           <section class="career-panel" data-career-panel="STANDINGS" hidden>
-            <div class="cfg-label">Championship Calendar</div>
+            <div class="cfg-label">World Championship Calendar</div>
             <div id="career-calendar" class="career-calendar"></div>
             <div id="career-stats" class="career-stats"></div>
-            <div class="cfg-label" style="margin-top:8px;">Driver Standings</div>
+            <div class="cfg-label" style="margin-top:8px;">Driver Classification</div>
             <div id="career-standings" class="career-standings"></div>
-            <button id="btn-career-reset" class="cfg-btn career-reset-btn" type="button">↺ RESET SEASON</button>
+            <button id="btn-career-reset" class="cfg-btn career-reset-btn" type="button">RESET CHAMPIONSHIP SEASON</button>
           </section>
         </div>
 
         <div class="garage-foot career-foot">
           <button id="btn-career-race-round" class="launch-btn" type="button">
-            <span class="launch-sheen"></span>
-            <span class="launch-txt" id="career-race-round-label">🏁 RACE ROUND 1: JAPANESE GP</span>
+            <span class="launch-txt" id="career-race-round-label">START ROUND 1: JAPANESE GP</span>
           </button>
-          <button id="btn-career-test" class="cfg-btn career-test-btn" type="button">🧪 TEST ON SELECTED TRACK (NO POINTS)</button>
+          <button id="btn-career-test" class="cfg-btn career-test-btn" type="button">TRACK TEST SESSION (NON-CHAMPIONSHIP)</button>
         </div>
       </aside>
     </div>
   </section>
 
   <!-- ====================================================================
-       DUAL-MODE IN-RACE BROADCAST TELEMETRY HUD (CLEAN CENTER VIEW!)
+       IN-RACE MOTORSPORT TELEMETRY HUD (CLEAN SIGHTLINES + LIVE DELTA + MFD)
        ==================================================================== -->
   <div id="race-hud" style="display:none;">
     <header class="top-hud-bar">
-      <div class="hud-stat stat-score">
+      <!-- Shown ONLY in 1982 Retro Mode (hidden in 2026 Sim Mode) -->
+      <div class="hud-stat stat-score" id="hud-score-card">
         <span class="stat-lbl">SCORE</span>
         <span class="stat-val gold" id="hud-score">000000</span>
         <span class="stat-sub">TOP <span id="hud-top-score">025000</span></span>
       </div>
 
       <div class="hud-stat center-timer">
-        <span class="stat-lbl" id="hud-timer-label">RACE CLOCK</span>
-        <span class="stat-val cyan" id="hud-timer">00"00</span>
+        <span class="stat-lbl" id="hud-timer-label">SESSION</span>
+        <span class="stat-val cyan" id="hud-timer">0:00.00</span>
         <span class="stat-sub" id="hud-lap">LAP 1/5</span>
       </div>
 
       <div class="hud-stat stat-pos">
         <span class="stat-lbl">POS</span>
-        <span class="stat-val green" id="hud-position">1ST<small>/8</small></span>
-        <span class="stat-sub" id="hud-best-lap">BEST --"--</span>
+        <span class="stat-val green" id="hud-position">P1<small>/8</small></span>
+        <span class="stat-sub" id="hud-best-lap">BEST --:--.--</span>
       </div>
 
       <div class="hud-stat stat-lap">
-        <span class="stat-lbl">LAP TIME</span>
-        <span class="stat-val" id="hud-lap-time">00"00</span>
+        <div class="lap-head-row">
+          <span class="stat-lbl">LAP TIME</span>
+          <span class="delta-pill neutral" id="hud-delta-val">±0.00s</span>
+        </div>
+        <span class="stat-val" id="hud-lap-time">0:00.00</span>
+        <div class="delta-bar-track" id="hud-delta-bar-wrap" aria-hidden="true">
+          <div class="delta-bar-center"></div>
+          <div id="hud-delta-bar-fill"></div>
+        </div>
         <div class="lap-sub-row">
-          <span class="stat-sub" id="hud-sector-readout">SEC 1</span>
-          <span class="slip-badge" id="hud-slipstream-badge">⚡ DRS +15</span>
+          <span class="stat-sub" id="hud-sector-readout">S1</span>
+          <span class="slip-badge" id="hud-slipstream-badge">DRS</span>
         </div>
       </div>
 
       <div class="hud-stat speed-cluster">
         <div class="speed-gear-row">
           <div class="speed-col">
-            <span class="stat-lbl">KM/H</span>
+            <span class="stat-lbl" id="hud-speed-unit-lbl">KM/H</span>
             <span class="stat-val" id="hud-speed-kmh">000</span>
             <span class="stat-sub" id="hud-speed-mph">0 MPH</span>
           </div>
+
+          <!-- Live Throttle / Manual Brake / Assist-Intervention Telemetry Bars -->
+          <div class="hud-pedal-bars" title="Live Pedal &amp; Brake-Assist Telemetry (Teal=Throttle, Red=Manual Brake, Amber=Assist)">
+            <div class="pbar-col">
+              <div class="pbar-track">
+                <div class="pbar-fill throttle" id="hud-throttle-bar"></div>
+              </div>
+              <span class="pbar-lbl">T</span>
+            </div>
+            <div class="pbar-col">
+              <div class="pbar-track">
+                <div class="pbar-fill brake-manual" id="hud-brake-manual-bar"></div>
+                <div class="pbar-fill brake-assist" id="hud-brake-assist-bar"></div>
+              </div>
+              <span class="pbar-lbl">B</span>
+            </div>
+          </div>
+
           <div class="gear-badge-box" id="hud-gear-box">
             <span class="gear-mode-tag" id="hud-gear-mode">AUTO 8</span>
             <span class="gear-big-num" id="hud-gear-val">G1</span>
@@ -503,39 +627,60 @@
       </div>
     </header>
 
-    <!-- Quick Live Switches (Top-Right Subrow) -->
+    <!-- Compact Top-Right Utility Switches -->
     <div class="hud-quick-actions">
-      <button class="quick-pill" id="btn-live-fullscreen" title="Fullscreen" type="button">⛶</button>
-      <button class="quick-pill" id="btn-live-steer" title="Toggle Wheel / Touch Arrows" type="button">🎡</button>
-      <button class="quick-pill" id="btn-live-shader" title="Switch 2026 HDR / 1982 Shader" type="button">✨ PBR</button>
-      <button class="quick-pill" id="btn-live-hand" title="Flip Left/Right Handedness" type="button">⇄</button>
-      <button class="quick-pill" id="btn-live-cam" title="Cycle 4 Cameras: Chase / Halo T-Cam / Cockpit / Nose (C)" type="button">🎥</button>
-      <button class="quick-pill" id="btn-live-mute" title="Mute / Unmute Audio" type="button">🔊</button>
-      <button class="quick-pill" id="btn-live-replay" title="Instant Replay (R)" type="button">🎬</button>
-      <button class="quick-pill" id="btn-live-menu" title="Pause Menu (Esc / P)" type="button">☰</button>
+      <button class="quick-pill secondary-quick" id="btn-live-fullscreen" title="Fullscreen" type="button">FULL</button>
+      <button class="quick-pill secondary-quick" id="btn-live-steer" title="Cycle Steering Mode" type="button">STR</button>
+      <button class="quick-pill secondary-quick" id="btn-live-shader" title="Switch PBR / CRT" type="button">PBR</button>
+      <button class="quick-pill secondary-quick" id="btn-live-hand" title="Swap Control Sides" type="button">SWAP</button>
+      <button class="quick-pill" id="btn-live-cam" title="Cycle 5 Driving Cameras: Chase / Halo T-Cam / Cockpit / Bonnet / Nose (C)" type="button">CAM</button>
+      <button class="quick-pill" id="btn-live-replay" title="Instant Replay &amp; TV Broadcast (R)" type="button">RPL</button>
+      <button class="quick-pill" id="btn-live-mute" title="Mute / Unmute Audio" type="button">SND</button>
+      <button class="quick-pill" id="btn-live-menu" title="Pause &amp; Settings (Esc / P)" type="button">PAUSE</button>
     </div>
 
-    <!-- Live GPS Track Minimap (Top-Left) -->
+    <!-- Clean Vector Track Map (Top-Left) -->
     <div class="minimap-card">
       <div class="minimap-header">
         <span class="minimap-circuit-tag" id="hud-circuit-tag">FUJI '82</span>
-        <span class="minimap-gps-dot">GPS</span>
+        <span class="minimap-gps-dot" aria-hidden="true">MAP</span>
       </div>
       <canvas id="gps-minimap" width="240" height="176"></canvas>
     </div>
 
-    <!-- Right-Side Docked 2026 Pro Telemetry + Pit Plan Button -->
+    <!-- Right-Side 2026 Sim Car MFD (4-Tire Temp/Wear/Flat-Spot + Wing/Suspension Silhouette + Pit) -->
     <div id="right-telemetry-dock">
       <aside id="telemetry-2026-panel">
         <div class="tel-row-head">
-          <span>TIRES</span>
-          <span class="comp-pill" id="tel-compound-badge">SOFT</span>
+          <span class="mfd-title">TYRE &amp; CHASSIS</span>
+          <div class="mfd-badges">
+            <span class="assist-mini-pill" id="tel-assist-badge">AST MIN</span>
+            <span class="comp-pill" id="tel-compound-badge">SOFT</span>
+          </div>
         </div>
-        <div class="tires-4grid">
-          <div class="tire-cell" id="tire-box-FL"></div>
-          <div class="tire-cell" id="tire-box-FR"></div>
-          <div class="tire-cell" id="tire-box-RL"></div>
-          <div class="tire-cell" id="tire-box-RR"></div>
+
+        <div class="mfd-chassis-matrix">
+          <div class="tires-4grid">
+            <div class="tire-cell" id="tire-box-FL"></div>
+            <div class="tire-cell" id="tire-box-FR"></div>
+            <div class="tire-cell" id="tire-box-RL"></div>
+            <div class="tire-cell" id="tire-box-RR"></div>
+          </div>
+
+          <!-- Top-Down F1 Aero & Suspension Damage Silhouette -->
+          <svg id="mfd-car-svg" class="mfd-car-svg" viewBox="0 0 44 88" aria-label="Chassis Damage Diagram">
+            <!-- Front Wing Left / Right -->
+            <rect id="dmg-svg-fw-l" x="4" y="5" width="17" height="6" rx="1.5" fill="#10b981" />
+            <rect id="dmg-svg-fw-r" x="23" y="5" width="17" height="6" rx="1.5" fill="#10b981" />
+            <!-- Front Wishbones -->
+            <line id="dmg-svg-susp-f" x1="8" y1="20" x2="36" y2="20" stroke="#10b981" stroke-width="2.4" />
+            <!-- Monocoque & Sidepods -->
+            <path id="dmg-svg-body" d="M19,11 L25,11 L27,28 L33,35 L32,62 L26,68 L25,77 L19,77 L18,68 L12,62 L11,35 L17,28 Z" fill="#334155" stroke="#64748b" stroke-width="1.2" />
+            <!-- Rear Wishbones -->
+            <line id="dmg-svg-susp-r" x1="8" y1="68" x2="36" y2="68" stroke="#10b981" stroke-width="2.4" />
+            <!-- Rear Wing -->
+            <rect id="dmg-svg-rw" x="9" y="78" width="26" height="6" rx="1.5" fill="#10b981" />
+          </svg>
         </div>
 
         <div class="tel-row-head" style="margin-top:2px;">
@@ -545,60 +690,60 @@
         <div class="fuel-bar-wrap"><div id="tel-fuel-fill"></div></div>
 
         <div class="weather-mini">
-          <div class="weather-cur-row"><strong id="tel-weather-cur">☀️ CLEAR SUNNY</strong> <span id="tel-weather-next"></span></div>
-          <div id="tel-moisture-val">W: 0% LINE / 0% OFF</div>
+          <div class="weather-cur-row"><strong id="tel-weather-cur">DRY • CLEAR</strong> <span id="tel-weather-next"></span></div>
+          <div id="tel-moisture-val">TRACK WET: 0%</div>
         </div>
 
         <div class="dmg-row">
           <span class="dmg-chip" id="dmg-part-fw">FW</span>
           <span class="dmg-chip" id="dmg-part-susp">SUSP</span>
           <span class="dmg-chip" id="dmg-part-rw">RW</span>
-          <span class="dmg-chip" id="dmg-part-punc">TIRE</span>
+          <span class="dmg-chip" id="dmg-part-punc">FLAT</span>
         </div>
       </aside>
 
       <div id="pit-action-row" class="pit-action-row">
-        <button id="btn-request-box" type="button" title="Radio the crew: box this lap (B)">📻 BOX</button>
-        <button id="btn-toggle-pit-strategy" type="button">🔧 <b>M</b> +5L</button>
+        <button id="btn-request-box" type="button" title="Radio pit crew: Box this lap (B)">BOX</button>
+        <button id="btn-toggle-pit-strategy" type="button"><b>MED</b> +5L</button>
       </div>
     </div>
 
     <!-- Caution, Pit Approach, Radio & Callouts -->
     <div id="caution-banner" class="caution-banner"></div>
-    <div id="pit-approach-hint">➡️ PIT ENTRY SPLIT ON RIGHT (80 KM/H LIMIT)</div>
+    <div id="pit-approach-hint">PIT LANE ENTRY RIGHT — 80 KM/H SPEED LIMIT</div>
     <div id="center-callout"></div>
     <div id="engineer-radio-toast"></div>
 
     <!-- Pre-Pit Strategy Drawer -->
     <div id="pit-strategy-drawer">
       <div class="tel-row-head">
-        <span style="color:#00e5ff; letter-spacing:0.08em;">PRE-PIT CREW ORDERS</span>
+        <span style="color:#00d2be; letter-spacing:0.08em;">PIT WALL STRATEGY</span>
         <button id="btn-close-pit-drawer" class="pit-opt" style="flex:0 0 auto; padding:2px 8px;" type="button">✕</button>
       </div>
 
       <div class="pit-drawer-row">
         <span class="pit-drawer-lbl">Next Tire Compound</span>
         <div class="pit-opt-group">
-          <button class="pit-opt" data-pit-compound="SOFT" type="button">🔴 S</button>
-          <button class="pit-opt" data-pit-compound="MEDIUM" type="button">🟡 M</button>
-          <button class="pit-opt" data-pit-compound="HARD" type="button">⚪ H</button>
-          <button class="pit-opt" data-pit-compound="INTERMEDIATE" type="button">🟢 INT</button>
-          <button class="pit-opt" data-pit-compound="FULL_WET" type="button">🔵 WET</button>
+          <button class="pit-opt" data-pit-compound="SOFT" type="button">SOFT</button>
+          <button class="pit-opt" data-pit-compound="MEDIUM" type="button">MED</button>
+          <button class="pit-opt" data-pit-compound="HARD" type="button">HARD</button>
+          <button class="pit-opt" data-pit-compound="INTERMEDIATE" type="button">INT</button>
+          <button class="pit-opt" data-pit-compound="FULL_WET" type="button">WET</button>
         </div>
       </div>
 
       <div class="pit-drawer-row">
-        <span class="pit-drawer-lbl">Fuel to Add</span>
+        <span class="pit-drawer-lbl">Fuel Load</span>
         <div class="pit-opt-group">
-          <button class="pit-opt" data-pit-fuel="2" type="button">+2 LAPS</button>
-          <button class="pit-opt" data-pit-fuel="5" type="button">+5 LAPS</button>
-          <button class="pit-opt" data-pit-fuel="10" type="button">+10 LAPS</button>
-          <button class="pit-opt" data-pit-fuel="FILL" type="button">FILL END</button>
+          <button class="pit-opt" data-pit-fuel="2" type="button">+2L</button>
+          <button class="pit-opt" data-pit-fuel="5" type="button">+5L</button>
+          <button class="pit-opt" data-pit-fuel="10" type="button">+10L</button>
+          <button class="pit-opt" data-pit-fuel="FILL" type="button">TO END</button>
         </div>
       </div>
 
       <div class="pit-drawer-row">
-        <span class="pit-drawer-lbl">Damage Repair Order</span>
+        <span class="pit-drawer-lbl">Aero / Chassis Repair</span>
         <div class="pit-opt-group">
           <button class="pit-opt" data-pit-repair="NONE" type="button">NONE (0s)</button>
           <button class="pit-opt" data-pit-repair="WINGS" type="button">WINGS (+2.5s)</button>
@@ -607,37 +752,37 @@
       </div>
 
       <div class="pit-drawer-row">
-        <span class="pit-drawer-lbl">Pit Crew Push Mode</span>
+        <span class="pit-drawer-lbl">Crew Release Target</span>
         <div class="pit-opt-group">
           <button class="pit-opt" data-pit-push="SAFE" type="button">SAFE 3.3s</button>
-          <button class="pit-opt" data-pit-push="BALANCED" type="button">BAL 2.5s</button>
-          <button class="pit-opt" data-pit-push="AGGRESSIVE_UNDERCUT" type="button">UNDERCUT 1.9s</button>
+          <button class="pit-opt" data-pit-push="BALANCED" type="button">STD 2.5s</button>
+          <button class="pit-opt" data-pit-push="AGGRESSIVE_UNDERCUT" type="button">FAST 1.9s</button>
         </div>
       </div>
     </div>
 
-    <!-- Stationary Pit Box Service & Optimal Clutch Release Mini-Bar -->
+    <!-- Stationary Pit Box Service & Optimal Clutch Release -->
     <div id="pit-stop-overlay">
-      <div class="pit-overlay-kicker">FIA PIT BOX TELEMETRY</div>
+      <div class="pit-overlay-kicker">FIA PIT LANE SERVICE</div>
       <div id="pit-service-status">PIT CREW SERVICING</div>
       <div id="pit-service-timer">2.50s</div>
       <div id="clutch-minigame-wrap">
-        <div id="clutch-result-text">HIT GREEN ZONE AS JACKS DROP (-0.35s)!</div>
+        <div id="clutch-result-text">RELEASE CLUTCH IN GREEN ZONE AS JACKS DROP (-0.35s)</div>
         <div class="clutch-bar-outer">
           <div class="clutch-good-zone"></div>
           <div class="clutch-sweet-zone"></div>
           <div id="clutch-cursor"></div>
         </div>
-        <button id="btn-clutch-release" type="button">⚡ RELEASE CLUTCH NOW! (SPACE / TAP)</button>
+        <button id="btn-clutch-release" type="button">RELEASE CLUTCH (SPACE / TAP)</button>
       </div>
     </div>
   </div>
 
   <!-- ====================================================================
-       AAA ERGONOMIC BOTTOM-CORNER MULTI-TOUCH CONTROLS
+       ERGONOMIC BOTTOM-CORNER MULTI-TOUCH CONTROLS
        ==================================================================== -->
   <div id="mobile-controls-layer" class="right-handed" style="display:none;">
-    <!-- Option A: Sculpted Carbon-Fiber F1 Steering Wheel (Relative-Anchor Drag, Zero Snap!) -->
+    <!-- Option A: Carbon-Fiber F1 Steering Wheel -->
     <div id="touch-wheel-zone">
       <div class="wheel-ring-outer">
         <div id="virtual-wheel-graphic">
@@ -657,10 +802,10 @@
           <div class="wheel-hub" id="wheel-angle-readout">G1 • 0°</div>
         </div>
       </div>
-      <div class="control-caption">SLIDE TO STEER</div>
+      <div class="control-caption">STEER</div>
     </div>
 
-    <!-- Option B: Dual Ergonomic Touch Steering Arrows (◀ / ▶) -->
+    <!-- Option B: Dual Touch Steering Pads -->
     <div id="touch-arrow-zone" style="display:none;">
       <div class="steer-arrow-pad" id="btn-steer-left">
         <span class="arrow-glyph">◀</span>
@@ -674,20 +819,17 @@
 
     <!-- Analog Gas/Brake Pedals + Optional Manual Shifter Assembly -->
     <div id="touch-pedal-assembly">
-      <!-- Classic 1982 2-Speed LOW/HIGH Toggle (hidden in AUTO_8SPD) -->
       <button id="touch-shifter-btn" type="button" style="display:none;">
         <span class="shifter-label">GEAR</span>
         <span class="shifter-val low">LOW</span>
       </button>
 
-      <!-- Manual 8-Speed Sequential Paddles (hidden in AUTO_8SPD) -->
       <div id="seq-shifter-wrap" style="display:none;">
         <button class="seq-btn" id="touch-shift-down-btn" type="button">− DN</button>
         <span id="seq-gear-num">G1</span>
         <button class="seq-btn" id="touch-shift-up-btn" type="button">+ UP</button>
       </div>
 
-      <!-- Dual Vertical Analog Slide Pedals (Roll horizontally for Trail-Braking!) -->
       <div id="touch-pedal-zone">
         <div class="analog-pedal brake" id="pedal-brake-card">
           <div class="pedal-fill" id="pedal-brake-fill"></div>
@@ -698,7 +840,7 @@
         <div class="analog-pedal gas" id="pedal-gas-card">
           <div class="pedal-fill" id="pedal-gas-fill"></div>
           <div class="pedal-treads"></div>
-          <span class="pedal-name">GAS</span>
+          <span class="pedal-name">THROTTLE</span>
           <span class="pedal-pct" id="pedal-gas-pct">0%</span>
         </div>
       </div>
@@ -713,25 +855,24 @@
       <div class="brand-kicker">1982 RANK A QUALIFYING</div>
       <h2 class="modal-hero-title">DID NOT QUALIFY</h2>
       <p id="dnq-detail" style="color:#cbd8ec; font-size:0.86rem; margin-bottom:16px;">
-        Must complete 1 lap under 73"00 to qualify for the Grand Prix!
+        Complete 1 lap under 73"00 to qualify for the Grand Prix grid.
       </p>
       <div class="modal-actions">
         <button id="btn-dnq-retry" class="launch-btn" style="margin-top:0;" type="button">
-          <span class="launch-sheen"></span>
-          <span class="launch-txt">🔄 RETRY QUALIFYING</span>
+          <span class="launch-txt">RETRY QUALIFYING</span>
         </button>
-        <button id="btn-dnq-override" class="cfg-btn" style="padding:12px;" type="button">START P8 ANYWAY</button>
+        <button id="btn-dnq-override" class="cfg-btn" style="padding:12px;" type="button">START P8 GRID</button>
       </div>
     </div>
   </div>
 
   <!-- ====================================================================
-       POST-RACE PODIUM CEREMONY & TELEMETRY STINT SUMMARY MODAL
+       POST-RACE PODIUM CLASSIFICATION & STINT TELEMETRY MODAL
        ==================================================================== -->
   <div id="podium-modal" class="modal-backdrop">
     <div class="modal-box podium-modal-box">
-      <div class="brand-kicker" id="podium-circuit-kicker">GRAND PRIX OFFICIAL CLASSIFICATION</div>
-      <h2 id="podium-headline" class="modal-hero-title">🏁 FINISHED 1ST PLACE!</h2>
+      <div class="brand-kicker" id="podium-circuit-kicker">FIA OFFICIAL RACE CLASSIFICATION</div>
+      <h2 id="podium-headline" class="modal-hero-title">FINISHED P1</h2>
 
       <div class="podium-row">
         <div class="podium-step p2-step" id="podium-p2"></div>
@@ -741,33 +882,33 @@
 
       <div class="results-table">
         <div class="res-cell">
-          <div class="res-lbl">Final Total Score</div>
-          <div class="res-val" id="res-total-score" style="color:#ffd600;">0</div>
+          <div class="res-lbl">Session Points / Score</div>
+          <div class="res-val" id="res-total-score" style="color:#f5b700;">0</div>
         </div>
         <div class="res-cell">
           <div class="res-lbl">Fastest Lap</div>
-          <div class="res-val" id="res-fastest-lap" style="color:#00e5ff;">--"--</div>
+          <div class="res-val" id="res-fastest-lap" style="color:#00d2be;">--:--.--</div>
         </div>
         <div class="res-cell">
-          <div class="res-lbl">Qualifying Grid Bonus</div>
+          <div class="res-lbl">Grid Bonus</div>
           <div class="res-val" id="res-quali-bonus">+0</div>
         </div>
         <div class="res-cell">
-          <div class="res-lbl">Overtaking Bonus</div>
+          <div class="res-lbl">Positions Gained</div>
           <div class="res-val" id="res-pass-bonus">+0</div>
         </div>
         <div class="res-cell">
-          <div class="res-lbl">Finish / Time Bonus</div>
+          <div class="res-lbl">Finish Bonus</div>
           <div class="res-val" id="res-time-bonus">+0</div>
         </div>
         <div class="res-cell">
-          <div class="res-lbl">Penalties</div>
-          <div class="res-val" id="res-penalties">NONE</div>
+          <div class="res-lbl">Incidents</div>
+          <div class="res-val" id="res-penalties">CLEAN</div>
         </div>
       </div>
 
       <div class="stint-box">
-        <strong>PIT, TIRE &amp; WEATHER TELEMETRY:</strong>
+        <strong>STINT, TYRE &amp; WEATHER TELEMETRY:</strong>
         <div id="res-pit-stints" style="margin-top:4px;">—</div>
       </div>
 
@@ -775,11 +916,10 @@
 
       <div class="modal-actions">
         <button id="btn-podium-again" class="launch-btn" style="margin-top:0; flex:2;" type="button">
-          <span class="launch-sheen"></span>
-          <span class="launch-txt" id="podium-again-label">🏁 NEXT RACE (RANDOM WEATHER)</span>
+          <span class="launch-txt" id="podium-again-label">NEXT SESSION</span>
         </button>
-        <button id="btn-podium-replay" class="cfg-btn" style="flex:1;" type="button">🎬 WATCH REPLAY</button>
-        <button id="btn-podium-menu" class="cfg-btn" style="flex:1;" type="button">🏆 CAREER / TRACKS</button>
+        <button id="btn-podium-replay" class="cfg-btn" style="flex:1;" type="button">TV REPLAY</button>
+        <button id="btn-podium-menu" class="cfg-btn" style="flex:1;" type="button">MAIN MENU</button>
       </div>
     </div>
   </div>
@@ -790,22 +930,21 @@
   <div id="pause-modal" class="modal-backdrop">
     <div class="modal-box pause-modal-box">
       <div class="brand-kicker" id="pause-kicker">SESSION PAUSED</div>
-      <h2 class="modal-hero-title">⏸ PAUSED</h2>
+      <h2 class="modal-hero-title">PAUSED</h2>
       <div class="pause-actions">
         <button id="btn-pause-resume" class="launch-btn" type="button">
-          <span class="launch-sheen"></span>
-          <span class="launch-txt">▶ RESUME RACE</span>
+          <span class="launch-txt">RESUME SESSION</span>
         </button>
-        <button id="btn-pause-replay" class="cfg-btn" type="button">🎬 INSTANT REPLAY</button>
-        <button id="btn-pause-settings" class="cfg-btn" type="button">⚙️ SETTINGS &amp; MIXER</button>
-        <button id="btn-pause-restart" class="cfg-btn" type="button">🔄 RESTART SESSION</button>
-        <button id="btn-pause-quit" class="cfg-btn" type="button">🏠 EXIT TO SHOWROOM</button>
+        <button id="btn-pause-replay" class="cfg-btn" type="button">TV BROADCAST REPLAY</button>
+        <button id="btn-pause-settings" class="cfg-btn" type="button">CONTROLS &amp; ASSISTS</button>
+        <button id="btn-pause-restart" class="cfg-btn" type="button">RESTART SESSION</button>
+        <button id="btn-pause-quit" class="cfg-btn" type="button">EXIT TO MENU</button>
       </div>
     </div>
   </div>
 
   <!-- ====================================================================
-       60HZ INSTANT REPLAY & 6-ANGLE TV BROADCAST DIRECTOR OVERLAY
+       60HZ INSTANT REPLAY & TV BROADCAST DIRECTOR OVERLAY
        ==================================================================== -->
   <div id="replay-overlay" style="display:none;">
     <div class="replay-top-row">
@@ -825,12 +964,12 @@
         <button class="replay-btn replay-speed selected" data-replay-speed="1" type="button">1×</button>
         <button class="replay-btn replay-speed" data-replay-speed="2" type="button">2×</button>
       </div>
-      <button id="btn-replay-cam" class="replay-btn replay-wide" type="button">🎥 TV CAM</button>
-      <button id="btn-replay-focus" class="replay-btn replay-wide" type="button">🏎️ YOU</button>
-      <button id="btn-replay-exit" class="replay-btn replay-exit" type="button">✕ EXIT</button>
+      <button id="btn-replay-cam" class="replay-btn replay-wide" type="button">TV CAM</button>
+      <button id="btn-replay-focus" class="replay-btn replay-wide" type="button">DRIVER</button>
+      <button id="btn-replay-exit" class="replay-btn replay-exit" type="button">EXIT</button>
     </div>
   </div>
 
-  <script type="module" src="./src/main.js?v=20261114aplus"></script>
+  <script type="module" src="./src/main.js?v=20261114sim"></script>
 </body>
 </html>

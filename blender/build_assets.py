@@ -46,7 +46,16 @@ def reset_scene():
     bpy.ops.wm.read_factory_settings(use_empty=True)
 
 
-def make_mat(name, color, metallic=0.2, roughness=0.35, emission=None, emission_strength=0.0):
+def make_mat(
+    name,
+    color,
+    metallic=0.2,
+    roughness=0.35,
+    clearcoat=0.0,
+    clearcoat_roughness=0.06,
+    emission=None,
+    emission_strength=0.0,
+):
     mat = bpy.data.materials.new(name=name)
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
@@ -54,6 +63,12 @@ def make_mat(name, color, metallic=0.2, roughness=0.35, emission=None, emission_
         bsdf.inputs["Base Color"].default_value = (color[0], color[1], color[2], 1.0)
         bsdf.inputs["Metallic"].default_value = metallic
         bsdf.inputs["Roughness"].default_value = roughness
+        if "Coat Weight" in bsdf.inputs:
+            bsdf.inputs["Coat Weight"].default_value = clearcoat
+            bsdf.inputs["Coat Roughness"].default_value = clearcoat_roughness
+        elif "Clearcoat" in bsdf.inputs:
+            bsdf.inputs["Clearcoat"].default_value = clearcoat
+            bsdf.inputs["Clearcoat Roughness"].default_value = clearcoat_roughness
         if emission is not None and "Emission Color" in bsdf.inputs:
             bsdf.inputs["Emission Color"].default_value = (emission[0], emission[1], emission[2], 1.0)
             bsdf.inputs["Emission Strength"].default_value = emission_strength
@@ -281,28 +296,29 @@ def build_f1_chassis():
     """
     reset_scene()
 
-    # Exact required material names preserved 100%
-    mat_primary = make_mat("Livery_Primary", (0.86, 0.05, 0.09), metallic=0.46, roughness=0.16)
-    mat_accent = make_mat("Livery_Accent", (0.97, 0.97, 0.99), metallic=0.26, roughness=0.20)
-    mat_carbon = make_mat("Carbon_Fiber", (0.042, 0.046, 0.055), metallic=0.32, roughness=0.36)
-    mat_metal = make_mat("Titanium_Exhaust", (0.72, 0.69, 0.64), metallic=0.96, roughness=0.16)
-    mat_helmet = make_mat("Driver_Helmet_Mat", (0.0, 0.82, 0.98), metallic=0.45, roughness=0.14)
-    mat_visor = make_mat("Driver_Visor_Mat", (0.015, 0.035, 0.075), metallic=0.98, roughness=0.04)
+    # Exact required material names preserved 100% — authentic motorsport PBR, zero cartoon glow
+    mat_primary = make_mat("Livery_Primary", hex_to_linear_rgb("#d8101c"), metallic=0.38, roughness=0.16, clearcoat=0.92, clearcoat_roughness=0.05)
+    mat_accent = make_mat("Livery_Accent", hex_to_linear_rgb("#f4f6fa"), metallic=0.22, roughness=0.18, clearcoat=0.88, clearcoat_roughness=0.06)
+    mat_carbon = make_mat("Carbon_Fiber", hex_to_linear_rgb("#161a21"), metallic=0.16, roughness=0.38, clearcoat=0.22, clearcoat_roughness=0.24)
+    mat_metal = make_mat("Titanium_Exhaust", hex_to_linear_rgb("#a3998d"), metallic=0.94, roughness=0.22, emission_strength=0.0)
+    mat_helmet = make_mat("Driver_Helmet_Mat", hex_to_linear_rgb("#00bae6"), metallic=0.38, roughness=0.15, clearcoat=0.95)
+    mat_visor = make_mat("Driver_Visor_Mat", hex_to_linear_rgb("#081324"), metallic=0.98, roughness=0.04, clearcoat=1.0)
     mat_rainlight = make_mat(
         "Rain_Light_Mat",
-        (1.0, 0.03, 0.02),
-        metallic=0.1,
-        roughness=0.15,
-        emission=(1.0, 0.04, 0.02),
-        emission_strength=6.5,
+        hex_to_linear_rgb("#ff1822"),
+        metallic=0.08,
+        roughness=0.16,
+        emission=hex_to_linear_rgb("#ff1822"),
+        emission_strength=3.6,
     )
     mat_oled = make_mat(
         "OLED_Telemetry_Mat",
-        (0.02, 0.16, 0.22),
+        hex_to_linear_rgb("#061018"),
         metallic=0.10,
         roughness=0.12,
-        emission=(0.0, 0.88, 0.96),
-        emission_strength=2.8,
+        clearcoat=0.75,
+        emission=hex_to_linear_rgb("#00f096"),
+        emission_strength=1.8,
     )
 
     # --------------------------------------------------------------------------
@@ -611,10 +627,10 @@ def build_f1_chassis():
         (0.0, -0.692, 0.595),
         (0.0, -0.668, 0.678),
     ]
-    pylon_r = [(0.013, 0.036), (0.012, 0.030), (0.016, 0.032)]
+    pylon_r = [(0.011, 0.036), (0.010, 0.030), (0.013, 0.034)]
     add_swept_tube(bm_halo, pylon_pts, pylon_r, segs=12, up_hint=(1.0, 0.0, 0.0), cap_ends=True)
 
-    # Swept 2026 Halo boomerang carbon aero fairings & side vortex winglets
+    # Swept 2026 Halo boomerang carbon aero fairings, side vortex winglets & FIA high-speed driver cam
     for side in (-1.0, 1.0):
         winglet_pts = [
             (side * 0.185, -0.54, 0.698),
@@ -622,8 +638,9 @@ def build_f1_chassis():
             (side * 0.228, -0.14, 0.648),
         ]
         add_swept_tube(bm_halo, winglet_pts, (0.024, 0.006), segs=8, up_hint=(0.0, 0.0, 1.0), cap_ends=True)
+    add_box(bm_halo, -0.042, -0.652, 0.664, 0.032, 0.042, 0.018)
 
-    create_mesh_object("Halo_Titanium", bm_halo, mat_carbon, shade_smooth=True, subdiv_levels=1, uv_scale=2.5)
+    create_mesh_object("Halo_Titanium", bm_halo, mat_carbon, shade_smooth=True, subdiv_levels=0, uv_scale=2.5)
 
     # --------------------------------------------------------------------------
     # E. ROLL_HOOP_TCAM: Sculpted FOM Overhead Airbox T-Cam Broadcast Pod
@@ -771,30 +788,44 @@ def build_f1_chassis():
     create_mesh_object("Driver_Shoulders", bm_drv, mat_primary, shade_smooth=True, subdiv_levels=1, uv_scale=1.8)
 
     # --------------------------------------------------------------------------
-    # H. SUSPENSION_ARMS: Double-Wishbone Airfoils, Pull/Pushrods & Brake Ducts
+    # H. SUSPENSION_ARMS: Double-Wishbone Airfoils, Pull/Pushrods & Matte-Carbon Brake Ducts
     # --------------------------------------------------------------------------
     bm_susp = bmesh.new()
     for side in (-1.0, 1.0):
-        # Front Axle (y = -1.48, z = 0.34): Upper & Lower V-Wishbones + Tie-Rod + Pullrod
-        add_strut(bm_susp, (side * 0.18, -1.62, 0.39), (side * 0.72, -1.48, 0.42), 0.009, 0.028, segs=6)
-        add_strut(bm_susp, (side * 0.21, -1.32, 0.38), (side * 0.72, -1.48, 0.42), 0.009, 0.026, segs=6)
-        add_strut(bm_susp, (side * 0.16, -1.60, 0.21), (side * 0.72, -1.48, 0.24), 0.009, 0.028, segs=6)
-        add_strut(bm_susp, (side * 0.20, -1.30, 0.20), (side * 0.72, -1.48, 0.24), 0.009, 0.026, segs=6)
-        add_strut(bm_susp, (side * 0.19, -1.52, 0.31), (side * 0.71, -1.52, 0.33), 0.008, 0.020, segs=6)  # Steering tie-rod
-        add_strut(bm_susp, (side * 0.20, -1.38, 0.22), (side * 0.70, -1.48, 0.42), 0.010, 0.016, segs=8)  # Diagonal pullrod
+        # Front Axle (y = -1.48, z = 0.34): Teardrop Upper & Lower V-Wishbones + Tie-Rod + Pullrod + Rocker Blister
+        add_strut(bm_susp, (side * 0.18, -1.64, 0.398), (side * 0.72, -1.495, 0.430), 0.007, 0.030, segs=8)
+        add_strut(bm_susp, (side * 0.21, -1.32, 0.388), (side * 0.72, -1.465, 0.430), 0.007, 0.028, segs=8)
+        add_strut(bm_susp, (side * 0.16, -1.62, 0.202), (side * 0.72, -1.495, 0.236), 0.007, 0.032, segs=8)
+        add_strut(bm_susp, (side * 0.20, -1.30, 0.196), (side * 0.72, -1.465, 0.236), 0.007, 0.030, segs=8)
+        add_strut(bm_susp, (side * 0.19, -1.53, 0.320), (side * 0.71, -1.535, 0.334), 0.006, 0.022, segs=8)  # Steering tie-rod
+        add_strut(bm_susp, (side * 0.20, -1.39, 0.222), (side * 0.70, -1.490, 0.426), 0.008, 0.015, segs=10) # Diagonal pullrod
+        add_strut(bm_susp, (side * 0.72, -1.48, 0.228), (side * 0.72, -1.480, 0.438), 0.018, 0.026, segs=10, up_hint=(1, 0, 0))
 
-        # Rear Axle (y = +1.42, z = 0.34): Upper & Lower V-Wishbones + Toe-Link + Pushrod
-        add_strut(bm_susp, (side * 0.14,  1.18, 0.40), (side * 0.72,  1.42, 0.43), 0.010, 0.030, segs=6)
-        add_strut(bm_susp, (side * 0.11,  1.52, 0.39), (side * 0.72,  1.42, 0.43), 0.010, 0.028, segs=6)
-        add_strut(bm_susp, (side * 0.13,  1.20, 0.20), (side * 0.72,  1.42, 0.24), 0.010, 0.030, segs=6)
-        add_strut(bm_susp, (side * 0.10,  1.54, 0.21), (side * 0.72,  1.42, 0.24), 0.010, 0.028, segs=6)
-        add_strut(bm_susp, (side * 0.14,  1.26, 0.44), (side * 0.70,  1.42, 0.25), 0.011, 0.017, segs=8)  # Diagonal pushrod
+        # Rear Axle (y = +1.42, z = 0.34): Upper & Lower V-Wishbones + Toe-Link + Pushrod + Carbon Driveshaft
+        add_strut(bm_susp, (side * 0.14,  1.18, 0.402), (side * 0.72,  1.405, 0.432), 0.008, 0.030, segs=8)
+        add_strut(bm_susp, (side * 0.11,  1.54, 0.390), (side * 0.72,  1.435, 0.432), 0.008, 0.028, segs=8)
+        add_strut(bm_susp, (side * 0.13,  1.20, 0.198), (side * 0.72,  1.405, 0.236), 0.008, 0.032, segs=8)
+        add_strut(bm_susp, (side * 0.10,  1.56, 0.206), (side * 0.72,  1.435, 0.236), 0.008, 0.030, segs=8)
+        add_strut(bm_susp, (side * 0.14,  1.26, 0.446), (side * 0.70,  1.430, 0.242), 0.009, 0.016, segs=10) # Diagonal pushrod
+        add_strut(bm_susp, (side * 0.12,  1.43, 0.340), (side * 0.72,  1.420, 0.340), 0.018, 0.018, segs=12) # Carbon CV driveshaft
+        add_strut(bm_susp, (side * 0.72,  1.42, 0.228), (side * 0.72,  1.420, 0.438), 0.018, 0.026, segs=10, up_hint=(1, 0, 0))
 
-        # Sculpted Carbon Brake Duct Drums & Aero Cooling Scoops (just inside wheel inner lip |x|=0.674)
-        add_strut(bm_susp, (side * 0.66, -1.48, 0.34), (side * 0.73, -1.48, 0.34), 0.155, 0.155, segs=18, up_hint=(0, 0, 1))
-        add_box(bm_susp, side * 0.65, -1.56, 0.36, 0.055, 0.12, 0.16)  # Front brake cooling scoop
-        add_strut(bm_susp, (side * 0.66,  1.42, 0.34), (side * 0.73,  1.42, 0.34), 0.160, 0.160, segs=18, up_hint=(0, 0, 1))
-        add_box(bm_susp, side * 0.65,  1.33, 0.37, 0.055, 0.14, 0.18)  # Rear brake duct winglets
+        # Sculpted Matte-Carbon Brake Duct Drums, Multi-Vane Cooling Scoops & FIA Wheel-Wake Deflectors
+        for (ay, scoop_dy) in ((-1.48, -0.17), (1.42, -0.16)):
+            add_strut(bm_susp, (side * 0.655, ay, 0.34), (side * 0.755, ay, 0.34), 0.174, 0.174, segs=24, up_hint=(0, 0, 1))
+            add_swept_tube(
+                bm_susp,
+                [
+                    (side * 0.635, ay + scoop_dy, 0.375),
+                    (side * 0.650, ay + scoop_dy * 0.45, 0.365),
+                    (side * 0.672, ay + 0.02, 0.355),
+                ],
+                [(0.030, 0.068), (0.026, 0.058), (0.022, 0.046)],
+                segs=10,
+                up_hint=(0, 0, 1),
+            )
+            add_box(bm_susp, side * 0.648, ay + 0.08, 0.565, 0.012, 0.24, 0.082)
+            add_box(bm_susp, side * 0.652, ay + 0.09, 0.165, 0.012, 0.20, 0.052)
 
     create_mesh_object("Suspension_Arms", bm_susp, mat_carbon, shade_smooth=True, uv_scale=2.4)
 
@@ -852,15 +883,23 @@ def build_f1_chassis():
             ep_rings = [list(reversed(r)) for r in ep_rings]
         add_loft(bm_fwe, ep_rings, closed_ring=True, cap_start=True, cap_end=True)
 
-        # Outwash footplate tunnel + 2 S-curved outboard aero diveplane canards!
-        add_box(bm_fwe, side * 0.034, 0.01, -0.072, 0.082, 0.47, 0.020)
+        # Outwash footplate tunnel + 3 upper outwash louvre vanes + 2 S-curved outboard aero diveplane canards!
+        add_box(bm_fwe, side * 0.034, 0.01, -0.072, 0.082, 0.47, 0.016)
+        for sl_i in range(3):
+            sl_v = add_box(bm_fwe, side * 0.018, -0.08 + sl_i * 0.11, 0.145, 0.014, 0.082, 0.052)
+            bmesh.ops.rotate(
+                bm_fwe,
+                cent=(side * 0.018, -0.08 + sl_i * 0.11, 0.145),
+                matrix=Matrix.Rotation(side * 0.18, 3, "Y") @ Matrix.Rotation(side * -0.14, 3, "Z"),
+                verts=sl_v,
+            )
         for dv_z in (0.0, 0.055):
             dive_pts = [
                 (side * 0.014, -0.15, -0.015 + dv_z),
                 (side * 0.044,  0.02,  0.032 + dv_z),
                 (side * 0.058,  0.19,  0.086 + dv_z),
             ]
-            add_swept_tube(bm_fwe, dive_pts, (0.032, 0.007), segs=8, up_hint=(1.0, 0.0, 0.0), cap_ends=True)
+            add_swept_tube(bm_fwe, dive_pts, (0.030, 0.006), segs=8, up_hint=(1.0, 0.0, 0.0), cap_ends=True)
 
         create_mesh_object(
             f"Front_Wing_Endplate_{label}",
@@ -1017,27 +1056,25 @@ def build_f1_chassis():
 def build_f1_wheel():
     reset_scene()
 
-    # Exact material names listed in modeling specification
-    mat_rubber = make_mat("Tire_Rubber", (0.048, 0.050, 0.056), metallic=0.06, roughness=0.62)
+    # Authentic Motorsport Wheel & Tire Materials — matte vulcanized rubber, ZERO cartoon glow on sidewall ink!
+    mat_rubber = make_mat("Tire_Rubber", hex_to_linear_rgb("#16181d"), metallic=0.03, roughness=0.76)
     mat_compound = make_mat(
         "Compound_Stripe",
-        (0.98, 0.12, 0.14),
-        metallic=0.08,
-        roughness=0.34,
-        emission=(0.98, 0.12, 0.14),
-        emission_strength=0.22,
+        hex_to_linear_rgb("#e21e28"),
+        metallic=0.04,
+        roughness=0.48,
+        clearcoat=0.15,
+        clearcoat_roughness=0.30,
+        emission_strength=0.0,
     )
-    mat_rim = make_mat("Wheel_Rim", (0.14, 0.16, 0.20), metallic=0.92, roughness=0.20)
-    # Dedicated pitch-dark matte 3K carbon barrel & aero cover (preserved untouched by models.js
-    # so the cavity behind the 10 forged Y-spokes is deep dark carbon instead of a silver pie-plate!)
-    mat_aero_drum = make_mat("Aero_Drum_Carbon", (0.012, 0.014, 0.018), metallic=0.16, roughness=0.60)
-    mat_nut = make_mat("Center_Nut_Mat", (0.90, 0.18, 0.18), metallic=0.88, roughness=0.18)
+    mat_rim = make_mat("Wheel_Rim", hex_to_linear_rgb("#242933"), metallic=0.88, roughness=0.24, clearcoat=0.30)
+    mat_aero_drum = make_mat("Aero_Drum_Carbon", hex_to_linear_rgb("#14181e"), metallic=0.14, roughness=0.48, clearcoat=0.18)
+    mat_nut = make_mat("Center_Nut_Mat", hex_to_linear_rgb("#d81b26"), metallic=0.86, roughness=0.20, clearcoat=0.35)
     mat_disc = make_mat(
         "Brake_Disc",
-        (0.28, 0.26, 0.25),
+        hex_to_linear_rgb("#4a4542"),
         metallic=0.80,
-        roughness=0.28,
-        emission=(1.0, 0.32, 0.02),
+        roughness=0.32,
         emission_strength=0.0,
     )
 
@@ -1282,48 +1319,55 @@ def build_pit_crew():
     """
     reset_scene()
 
-    mat_suit = make_mat("Crew_Suit", (0.86, 0.08, 0.12), metallic=0.14, roughness=0.52)
-    mat_stripe = make_mat("Crew_Stripe_Mat", (0.96, 0.97, 0.99), metallic=0.20, roughness=0.38)
-    mat_helm = make_mat("Crew_Helmet_Mat", (0.95, 0.96, 0.99), metallic=0.38, roughness=0.16)
-    mat_visor = make_mat("Crew_Visor", (0.015, 0.04, 0.09), metallic=0.96, roughness=0.05)
-    mat_equip = make_mat("Crew_Equip", (0.09, 0.11, 0.14), metallic=0.68, roughness=0.30)
+    # Natural fireproof Nomex weave (matte roughness 0.82, zero fake glow)
+    mat_suit = make_mat("Crew_Suit", hex_to_linear_rgb("#c8121e"), metallic=0.02, roughness=0.82)
+    mat_stripe = make_mat("Crew_Stripe_Mat", hex_to_linear_rgb("#f2f5fa"), metallic=0.03, roughness=0.78)
+    mat_helm = make_mat("Crew_Helmet_Mat", hex_to_linear_rgb("#f2f5fa"), metallic=0.32, roughness=0.16, clearcoat=0.92)
+    mat_visor = make_mat("Crew_Visor", hex_to_linear_rgb("#081324"), metallic=0.96, roughness=0.05, clearcoat=1.0)
+    mat_equip = make_mat("Crew_Equip", hex_to_linear_rgb("#1b222d"), metallic=0.72, roughness=0.34)
 
-    # 1. Articulated Kneeling-Ready Pit Mechanic Suit (Torso, Angled Thighs/Shins & Reaching Arms)
+    # 1. Clean Anatomical Kneeling-Ready Pit Mechanic Suit (Elliptical Pelvis, Tapered Torso, Deltoids & Reaching Arms)
     bm_suit = bmesh.new()
 
-    # Asymmetric dynamic athletic pit-gunner stance: left knee forward/low, right knee stabilizing!
-    leg_configs = [
-        # (hip, knee, ankle, toe)
-        ((-0.125,  0.06, 0.80), (-0.135, -0.17, 0.44), (-0.135,  0.04, 0.09), (-0.135, -0.12, 0.045)),
-        (( 0.125,  0.08, 0.80), ( 0.135, -0.12, 0.47), ( 0.135,  0.10, 0.09), ( 0.135, -0.06, 0.045)),
-    ]
-    for (hip, knee, ankle, _) in leg_configs:
-        add_swept_tube(bm_suit, [hip, knee, ankle], [(0.082, 0.086), (0.072, 0.076), (0.056, 0.060)], segs=10)
+    def _ell(cx, cy, cz, rx, ry, segs=16):
+        return [(cx + math.cos(2.0 * math.pi * i / segs) * rx, cy + math.sin(2.0 * math.pi * i / segs) * ry, cz) for i in range(segs)]
 
-    # Articulated Pelvis, Waist & Forward-Leaning Athletic Torso
+    leg_configs = [
+        ((-0.125,  0.06, 0.80), (-0.132, -0.06, 0.62), (-0.135, -0.17, 0.44), (-0.135,  0.04, 0.09)),
+        (( 0.125,  0.08, 0.80), ( 0.130, -0.02, 0.63), ( 0.135, -0.12, 0.47), ( 0.135,  0.10, 0.09)),
+    ]
+    for (hip, mid_th, knee, ankle) in leg_configs:
+        add_swept_tube(bm_suit, [hip, mid_th, knee, ankle], [(0.086, 0.090), (0.078, 0.082), (0.066, 0.070), (0.050, 0.054)], segs=12)
+
     torso_stations = [
-        [(-0.17,  0.14, 0.76), (0.17,  0.14, 0.76), (0.17, -0.03, 0.78), (-0.17, -0.03, 0.78)],
-        [(-0.16,  0.11, 0.96), (0.16,  0.11, 0.96), (0.16, -0.07, 0.98), (-0.16, -0.07, 0.98)],
-        [(-0.21,  0.07, 1.18), (0.21,  0.07, 1.18), (0.21, -0.13, 1.21), (-0.21, -0.13, 1.21)],
-        [(-0.17,  0.04, 1.32), (0.17,  0.04, 1.32), (0.17, -0.14, 1.34), (-0.17, -0.14, 1.34)],
+        _ell(0.0,  0.055, 0.76, 0.165, 0.112),
+        _ell(0.0,  0.025, 0.94, 0.156, 0.106),
+        _ell(0.0, -0.015, 1.12, 0.188, 0.122),
+        _ell(0.0, -0.040, 1.26, 0.208, 0.126),
+        _ell(0.0, -0.052, 1.34, 0.165, 0.105),
+        _ell(0.0, -0.058, 1.39, 0.072, 0.068),
     ]
     add_loft(bm_suit, torso_stations, closed_ring=True, cap_start=True, cap_end=True)
 
-    # Articulated Left & Right Arms Reaching Forward to Grip the Pneumatic Wheel Gun
+    for sx in (-0.20, 0.20):
+        ret_sh = bmesh.ops.create_uvsphere(bm_suit, u_segments=14, v_segments=10, radius=0.068)
+        bmesh.ops.scale(bm_suit, vec=(1.05, 0.95, 0.92), verts=ret_sh["verts"])
+        bmesh.ops.translate(bm_suit, vec=(sx, -0.042, 1.265), verts=ret_sh["verts"])
+
     add_swept_tube(
         bm_suit,
-        [(-0.21, -0.04, 1.24), (-0.22, -0.22, 1.02), (-0.09, -0.44, 0.86)],
-        [(0.064, 0.066), (0.054, 0.056), (0.044, 0.046)],
-        segs=10,
+        [(-0.205, -0.04, 1.25), (-0.22, -0.22, 1.02), (-0.09, -0.44, 0.86)],
+        [(0.062, 0.064), (0.052, 0.054), (0.040, 0.042)],
+        segs=12,
     )
     add_swept_tube(
         bm_suit,
-        [(0.21, -0.04, 1.24), (0.20, -0.20, 1.00), (0.04, -0.34, 0.84)],
-        [(0.064, 0.066), (0.054, 0.056), (0.044, 0.046)],
-        segs=10,
+        [(0.205, -0.04, 1.25), (0.20, -0.20, 1.00), (0.04, -0.34, 0.84)],
+        [(0.062, 0.064), (0.052, 0.054), (0.040, 0.042)],
+        segs=12,
     )
 
-    create_mesh_object("Crew_Suit", bm_suit, mat_suit, shade_smooth=True, subdiv_levels=1, uv_scale=1.6)
+    create_mesh_object("Crew_Suit", bm_suit, mat_suit, shade_smooth=True, subdiv_levels=0, uv_scale=1.6)
 
     # 2. Racing Suit Chest Stripes, Shoulder Epaulettes & Belt
     bm_st = bmesh.new()
@@ -1425,18 +1469,18 @@ def build_mount_fuji():
     reset_scene()
 
     c_forest = hex_to_linear_rgb("#1e4628")
-    c_basalt = hex_to_linear_rgb("#2c4263")
-    c_snow = hex_to_linear_rgb("#f4f8ff")
+    c_basalt = hex_to_linear_rgb("#2e4059")
+    c_snow = hex_to_linear_rgb("#f0f5fc")
 
-    mat_forest = make_mat("Fuji_Forest_Base", c_forest, metallic=0.02, roughness=0.88)
-    mat_slope = make_mat("Fuji_Volcanic_Slope", c_basalt, metallic=0.04, roughness=0.84)
+    # Authentic natural alpine materials — ZERO daylight self-emission on snowcap!
+    mat_forest = make_mat("Fuji_Forest_Base", c_forest, metallic=0.0, roughness=0.90)
+    mat_slope = make_mat("Fuji_Volcanic_Slope", c_basalt, metallic=0.02, roughness=0.86)
     mat_snow = make_mat(
         "Fuji_Snow_Cap",
         c_snow,
-        metallic=0.05,
-        roughness=0.34,
-        emission=(0.86, 0.92, 1.00),
-        emission_strength=0.18,
+        metallic=0.0,
+        roughness=0.68,
+        emission_strength=0.0,
     )
 
     segs = 128
@@ -1581,26 +1625,28 @@ def build_luxury_yacht():
     """
     reset_scene()
 
-    mat_white = make_mat("Yacht_Hull_White", hex_to_linear_rgb("#f6f9fd"), metallic=0.18, roughness=0.16)
+    # Authentic marine gelcoat, solar-tinted reflective glass & natural teak — ZERO fake daylight glow!
+    mat_white = make_mat("Yacht_Hull_White", hex_to_linear_rgb("#f5f8fc"), metallic=0.12, roughness=0.18, clearcoat=0.90, clearcoat_roughness=0.05)
     mat_turq = make_mat(
         "Yacht_Turquoise_Stripe",
-        hex_to_linear_rgb("#00d4e8"),
-        metallic=0.32,
+        hex_to_linear_rgb("#00b8d4"),
+        metallic=0.22,
         roughness=0.18,
-        emission=hex_to_linear_rgb("#00b8d4"),
-        emission_strength=0.32,
+        clearcoat=0.85,
+        emission_strength=0.0,
     )
-    mat_navy = make_mat("Yacht_Navy_Trim", hex_to_linear_rgb("#0c1d3d"), metallic=0.36, roughness=0.24)
+    mat_navy = make_mat("Yacht_Navy_Trim", hex_to_linear_rgb("#0c1d3d"), metallic=0.24, roughness=0.26, clearcoat=0.75)
     mat_glass = make_mat(
         "Yacht_Glass",
-        hex_to_linear_rgb("#0b2e4f"),
-        metallic=0.90,
-        roughness=0.06,
-        emission=hex_to_linear_rgb("#38a8e8"),
-        emission_strength=0.42,
+        hex_to_linear_rgb("#081f36"),
+        metallic=0.92,
+        roughness=0.05,
+        clearcoat=1.0,
+        clearcoat_roughness=0.02,
+        emission_strength=0.0,
     )
-    mat_teak = make_mat("Yacht_Teak_Deck", hex_to_linear_rgb("#a67242"), metallic=0.04, roughness=0.62)
-    mat_sunpad = make_mat("Yacht_Sunpad_Cushion", hex_to_linear_rgb("#f7efe0"), metallic=0.05, roughness=0.46)
+    mat_teak = make_mat("Yacht_Teak_Deck", hex_to_linear_rgb("#9e6b3d"), metallic=0.0, roughness=0.74)
+    mat_sunpad = make_mat("Yacht_Sunpad_Cushion", hex_to_linear_rgb("#f4ece0"), metallic=0.0, roughness=0.78)
     mat_chrome = make_mat("Yacht_Chrome_Rail", (0.86, 0.89, 0.93), metallic=0.96, roughness=0.12)
 
     # 1. Lofted Flared Clipper Hull + 3 Aerodynamic Stepped Decks + Swept Radar Arch

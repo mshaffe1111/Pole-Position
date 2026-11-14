@@ -1,7 +1,7 @@
 // ============================================================================
 // RACE PHANATIC F1 — POLE POSITION 2026: RETRO GRAND PRIX
-// Multi-Circuit AAA 3D Track Builder (Fuji '82, Monaco, Vegas, Monza, Suzuka, Silverstone)
-// Zero-Yank Uniform Spline + Zero-Leak Disposal + High-Res Procedural PBR Art
+// Multi-Circuit Sim-Grade 3D Track Builder (Fuji '82, Monaco, Vegas, Monza, Suzuka, Silverstone)
+// Periodic C2 Cubic Spline + 8,192 Arc-Length LUT + CC0 Poly Haven 1K PBR Materials
 // ============================================================================
 
 import * as THREE from 'three';
@@ -17,12 +17,18 @@ import {
 } from './config.js';
 
 const SAMPLES = 2000;
+const ARC_LUT_SIZE = 8192;
+
+// 5-point Gauss-Legendre quadrature nodes & weights on [0, 1]
+const GL5_X = [0.046910077030668, 0.230765344947158, 0.5, 0.769234655052842, 0.953089922969332];
+const GL5_W = [0.118463442528095, 0.239314335249683, 0.284444444444444, 0.239314335249683, 0.118463442528095];
 
 const TEXTURE_SLOTS = [
   'map',
   'bumpMap',
   'roughnessMap',
   'metalnessMap',
+  'aoMap',
   'emissiveMap',
   'normalMap',
   'alphaMap',
@@ -36,12 +42,100 @@ function wrapS(s) {
   return r;
 }
 
+// C2 quintic transition w(t) = 6t^5 - 15t^4 + 10t^3
 function quinticBlend(t) {
   const c = Math.max(0, Math.min(1, t));
   return c * c * c * (10 - 15 * c + 6 * c * c);
 }
 
-// Fast deterministic integer hash [0..1) for crisp procedural PBR grain
+// Analytical C2 quintic transition + 1st & 2nd derivatives wrt t
+function quinticBlendDerivs(t, out) {
+  if (t <= 0.0) {
+    out.w = 0.0; out.wp = 0.0; out.wpp = 0.0;
+    return out;
+  }
+  if (t >= 1.0) {
+    out.w = 1.0; out.wp = 0.0; out.wpp = 0.0;
+    return out;
+  }
+  const t2 = t * t;
+  const t3 = t2 * t;
+  const om = 1.0 - t;
+  out.w = t3 * (10.0 - 15.0 * t + 6.0 * t2);
+  out.wp = 30.0 * t2 * om * om;
+  out.wpp = 60.0 * t * om * (1.0 - 2.0 * t);
+  return out;
+}
+
+// O(M) standard tridiagonal Thomas solver
+function solveTridiagonal(a, b, c, d) {
+  const n = b.length;
+  const cp = new Float64Array(n);
+  const dp = new Float64Array(n);
+  const x = new Float64Array(n);
+  cp[0] = c[0] / b[0];
+  dp[0] = d[0] / b[0];
+  for (let i = 1; i < n; i++) {
+    const denom = b[i] - a[i] * cp[i - 1];
+    cp[i] = i < n - 1 ? c[i] / denom : 0.0;
+    dp[i] = (d[i] - a[i] * dp[i - 1]) / denom;
+  }
+  x[n - 1] = dp[n - 1];
+  for (let i = n - 2; i >= 0; i--) {
+    x[i] = dp[i] - cp[i] * x[i + 1];
+  }
+  return x;
+}
+
+// O(M) cyclic Thomas solver via Sherman-Morrison for exact Periodic C2 Cubic Splines
+function solveCyclicTridiagonal(a, b, c, d) {
+  const n = b.length;
+  const gamma = -b[0];
+  const bb = new Float64Array(b);
+  bb[0] -= gamma;
+  bb[n - 1] -= (c[n - 1] * a[0]) / gamma;
+
+  const x = solveTridiagonal(a, bb, c, d);
+  const u = new Float64Array(n);
+  u[0] = gamma;
+  u[n - 1] = c[n - 1];
+  const z = solveTridiagonal(a, bb, c, u);
+
+  const factor = (x[0] + (a[0] * x[n - 1]) / gamma) / (1.0 + z[0] + (a[0] * z[n - 1]) / gamma);
+  for (let i = 0; i < n; i++) {
+    x[i] -= factor * z[i];
+  }
+  return x;
+}
+
+// Tiny C1-continuous soft-knee (< 0.0004 m^-1) on exact straights: zero hard deadzone step, zero plateau!
+function softKneeRealCurvature(k) {
+  const knee = 0.0004;
+  const ak = Math.abs(k);
+  if (ak >= knee) return k;
+  if (ak <= 1e-12) return 0.0;
+  const u = ak / knee;
+  const u3 = u * u * u;
+  return (k < 0 ? -knee : knee) * (3.0 * u3 - 2.0 * u3 * u);
+}
+
+// Continuous C2 quintic pit-lane lateral offset blend across entry [905..946], straight, and exit [68..122]
+function evalPitOffsetAtS(sw) {
+  if (sw < 905.0 && sw > 122.0) return null;
+  const trackJoinOffset = ROAD_HALF_WIDTH * 0.55;
+  const laneOffset = PIT_LANE_CONFIG.lateralOffset;
+  if (sw >= 905.0 && sw < 946.0) {
+    const u = (sw - 905.0) / (946.0 - 905.0);
+    return trackJoinOffset + (laneOffset - trackJoinOffset) * quinticBlend(u);
+  }
+  if (sw >= 946.0 || sw <= 68.0) {
+    return laneOffset;
+  }
+  const u = (sw - 68.0) / (122.0 - 68.0);
+  return laneOffset + (trackJoinOffset - laneOffset) * quinticBlend(u);
+}
+
+// Fast deterministic integer hash [0..1) for crisp procedural detail
 function fastHash2D(x, y, seed = 0) {
   let h = Math.imul(x ^ 0x27d4eb2d, 0x165667b1) ^ Math.imul(y ^ 0x85ebca6b, 0xc2b2ae35) ^ seed;
   h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
@@ -127,6 +221,88 @@ function mergeGlbMeshList(parts) {
 export class FujiTrack {
   static _envGlbCache = null;
   static _envGlbPromise = null;
+  static _pbrBaseCache = new Map();
+  static _pbrVariantCache = new Map();
+  static _pbrAllTexSet = new Set();
+  static _texLoader = null;
+
+  // Load & cache verified 1024x1024 CC0 Poly Haven PBR texture sets with per-(repX, repY) UV repeat clones
+  static _getPbrSet(family, repX = 1, repY = 1) {
+    const varKey = `${family}:${repX.toFixed(3)}:${repY.toFixed(3)}`;
+    if (FujiTrack._pbrVariantCache.has(varKey)) {
+      return FujiTrack._pbrVariantCache.get(varKey);
+    }
+
+    let baseEntry = FujiTrack._pbrBaseCache.get(family);
+    if (!baseEntry) {
+      if (!FujiTrack._texLoader && typeof window !== 'undefined') {
+        FujiTrack._texLoader = new THREE.TextureLoader();
+      }
+      const makeBaseSlot = (suffix, isSrgb) => {
+        const url = `./assets/textures/${family}_${suffix}_1k.jpg`;
+        const clones = [];
+        let tex;
+        if (FujiTrack._texLoader) {
+          tex = FujiTrack._texLoader.load(url, (loaded) => {
+            loaded.wrapS = THREE.RepeatWrapping;
+            loaded.wrapT = THREE.RepeatWrapping;
+            loaded.anisotropy = 8;
+            loaded.colorSpace = isSrgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+            loaded.needsUpdate = true;
+            for (let i = 0; i < clones.length; i++) {
+              const cl = clones[i];
+              cl.image = loaded.image;
+              if (loaded.source) cl.source = loaded.source;
+              cl.needsUpdate = true;
+            }
+          });
+        } else {
+          tex = new THREE.Texture();
+        }
+        tex.wrapS = THREE.RepeatWrapping;
+        tex.wrapT = THREE.RepeatWrapping;
+        tex.anisotropy = 8;
+        tex.colorSpace = isSrgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+        FujiTrack._pbrAllTexSet.add(tex);
+        return { tex, clones, isSrgb };
+      };
+
+      baseEntry = {
+        diff: makeBaseSlot('diff', true),
+        nor: makeBaseSlot('nor_gl', false),
+        arm: makeBaseSlot('arm', false),
+        rough: makeBaseSlot('rough', false),
+      };
+      FujiTrack._pbrBaseCache.set(family, baseEntry);
+    }
+
+    const cloneWithRepeat = (slotObj) => {
+      if (repX === 1 && repY === 1) return slotObj.tex;
+      const cl = slotObj.tex.clone();
+      if (slotObj.tex.image) {
+        cl.image = slotObj.tex.image;
+        if (slotObj.tex.source) cl.source = slotObj.tex.source;
+        cl.needsUpdate = true;
+      }
+      cl.wrapS = THREE.RepeatWrapping;
+      cl.wrapT = THREE.RepeatWrapping;
+      cl.repeat.set(repX, repY);
+      cl.anisotropy = 8;
+      cl.colorSpace = slotObj.isSrgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+      slotObj.clones.push(cl);
+      FujiTrack._pbrAllTexSet.add(cl);
+      return cl;
+    };
+
+    const variant = {
+      diff: cloneWithRepeat(baseEntry.diff),
+      nor: cloneWithRepeat(baseEntry.nor),
+      arm: cloneWithRepeat(baseEntry.arm),
+      rough: cloneWithRepeat(baseEntry.rough),
+    };
+    FujiTrack._pbrVariantCache.set(varKey, variant);
+    return variant;
+  }
 
   constructor(scene, assets) {
     this.scene = scene;
@@ -134,19 +310,30 @@ export class FujiTrack {
     this.currentTrackId = 'FUJI_1982';
     this.trackDef = TRACK_CATALOG.FUJI_1982;
 
+    this.totalLength = TRACK_GAME_LENGTH;
+    this.realLengthM = TRACK_GAME_LENGTH * 3.25;
+    this.metersPerGameUnit = 3.25;
+    this.realMetersPerGameMeter = 3.25;
+
     this.samples = [];
-    this.realMetersPerGameMeter = 4.25;
     this.billboards = [];
     this.puddles = [];
     this.pitBoxes = [];
     this.marshalPosts = [];
     this.gantryLights = [];
     this.animatedProps = [];
+    this._floodAtmosphereMeshes = [];
     this.skidIndex = 0;
     this.maxSkids = 900;
 
-    // Live stadium crowd excitement state (0..2) & shared GPU vertex-animation uniforms
-    this.crowdExcitement = 0.22;
+    // Reusable scratch structs for zero-allocation hot-path spline queries
+    this._scratchRaw = { px: 0, py: 0, pz: 0, d1x: 1, d1y: 0, d1z: 0, d2x: 0, d2y: 0, d2z: 0 };
+    this._scratchQuad = { px: 0, py: 0, pz: 0, d1x: 1, d1y: 0, d1z: 0, d2x: 0, d2y: 0, d2z: 0 };
+    this._scratchEval = { px: 0, py: 0, pz: 0, d1x: 1, d1y: 0, d1z: 0, d2x: 0, d2y: 0, d2z: 0 };
+    this._scratchQuintic = { w: 0, wp: 0, wpp: 0 };
+
+    // Calm natural stadium baseline (0.0); swells naturally ONLY on triggerCrowdExcitement!
+    this.crowdExcitement = 0.0;
     this._lastElapsedSec = 0;
     this._checkeredFlagActive = false;
     this._lastGantryState = { redCount: 0, greenOn: false, yellowFlash: false };
@@ -154,10 +341,10 @@ export class FujiTrack {
     this._loadGeneration = 0;
     this._crowdUniforms = {
       uTime: { value: 0 },
-      uExcitement: { value: 0.22 },
+      uExcitement: { value: 0.0 },
     };
 
-    // Protect shared GLB template buffers/materials/textures from circuit disposal
+    // Protect shared GLB template & CC0 PBR textures from circuit disposal
     this._protectedGeos = new Set();
     this._protectedMats = new Set();
     this._protectedTexs = new Set();
@@ -173,13 +360,13 @@ export class FujiTrack {
 
   triggerCrowdExcitement(boost = 1.0) {
     const add = Number.isFinite(boost) ? Math.max(0.15, boost) : 1.0;
-    this.crowdExcitement = Math.min(2.2, this.crowdExcitement + add);
+    this.crowdExcitement = Math.min(1.8, this.crowdExcitement + add);
     this._crowdUniforms.uExcitement.value = this.crowdExcitement;
   }
 
   setCheckeredFlag(active = false) {
     this._checkeredFlagActive = Boolean(active);
-    if (active) this.triggerCrowdExcitement(1.5);
+    if (active) this.triggerCrowdExcitement(1.4);
   }
 
   _ensureBlenderEnvAssetsLoaded() {
@@ -254,7 +441,7 @@ export class FujiTrack {
         cache.catchFencePostGeo = fenceParts.find((p) => p.matName.includes('post'))?.geometry || null;
         cache.catchFenceWireGeo = fenceParts.find((p) => p.matName.includes('wire'))?.geometry || null;
 
-        // 4. Grandstands, Articulated 3D Cheering Spectators, Flag Wavers & Trackside Marshals
+        // 4. Grandstands, Articulated 3D Spectators, Flag Wavers & Trackside Marshals
         const gsParts = extractNamedGlbMeshes(crowdsScene, 'Grandstand_Tribune-col');
         cache.grandstandStructGeo = mergeGlbMeshList(gsParts.filter((p) => !p.matName.includes('roof')));
         cache.grandstandRoofGeo = gsParts.find((p) => p.matName.includes('roof'))?.geometry || null;
@@ -318,6 +505,9 @@ export class FujiTrack {
         else if (val.isMaterial) this._protectedMats.add(val);
       }
     }
+    for (const pbrTex of FujiTrack._pbrAllTexSet) {
+      this._protectedTexs.add(pbrTex);
+    }
   }
 
   _disposeCircuitGroup() {
@@ -368,8 +558,10 @@ export class FujiTrack {
     this.trackDef = TRACK_CATALOG[this.currentTrackId];
     this._minimapBounds = null;
     this._checkeredFlagActive = false;
+    this.crowdExcitement = 0.0;
+    this._crowdUniforms.uExcitement.value = 0.0;
 
-    // Cleanly dispose all GPU geometries, materials & procedural textures from previous circuit
+    // Cleanly dispose circuit-specific GPU geometries, materials & canvas textures
     this._disposeCircuitGroup();
 
     this.billboards = [];
@@ -378,9 +570,10 @@ export class FujiTrack {
     this.marshalPosts = [];
     this.gantryLights = [];
     this.animatedProps = [];
+    this._floodAtmosphereMeshes = [];
     this.skidIndex = 0;
 
-    this._buildTrueCatmullSpline();
+    this._buildPeriodicC2Spline();
     this._createRichMaterials();
     this._buildRoadAndRunoff();
     this._buildCurbsAndArmcoBarriers();
@@ -397,7 +590,7 @@ export class FujiTrack {
   }
 
   // --------------------------------------------------------------------------
-  // 1. TRUE CATMULL-ROM 3D SPLINE + LASER-STRAIGHT PIT STRAIGHT (ZERO YANK!)
+  // 1. PERIODIC C2 CUBIC SPLINE + 8,192 MONOTONIC ARC-LENGTH LUT (ZERO JERK!)
   // --------------------------------------------------------------------------
   getSector(s) {
     const sw = wrapS(s);
@@ -408,153 +601,339 @@ export class FujiTrack {
     return FUJI_SECTORS[0];
   }
 
-  getPhysicsCurvature(s) {
-    const sw = wrapS(s);
-    const fIdx = (sw / TRACK_GAME_LENGTH) * SAMPLES;
-    const i0 = ((Math.floor(fIdx) % SAMPLES) + SAMPLES) % SAMPLES;
-    const i1 = (i0 + 1) % SAMPLES;
-    const frac = fIdx - Math.floor(fIdx);
-    return this.samples[i0].curvature + (this.samples[i1].curvature - this.samples[i0].curvature) * frac;
+  _buildAxisPeriodicSpline(p, h) {
+    const M = p.length;
+    const sub = new Float64Array(M);
+    const diag = new Float64Array(M);
+    const sup = new Float64Array(M);
+    const rhs = new Float64Array(M);
+
+    for (let i = 0; i < M; i++) {
+      const im1 = (i - 1 + M) % M;
+      const ip1 = (i + 1) % M;
+      const hm1 = h[im1];
+      const hi = h[i];
+      sub[i] = hm1;
+      diag[i] = 2.0 * (hm1 + hi);
+      sup[i] = hi;
+      rhs[i] = 3.0 * ((p[ip1] - p[i]) / hi - (p[i] - p[im1]) / hm1);
+    }
+
+    const c = solveCyclicTridiagonal(sub, diag, sup, rhs);
+    const a = new Float64Array(M);
+    const b = new Float64Array(M);
+    const d = new Float64Array(M);
+    for (let i = 0; i < M; i++) {
+      const ip1 = (i + 1) % M;
+      const hi = h[i];
+      a[i] = p[i];
+      b[i] = (p[ip1] - p[i]) / hi - (hi * (2.0 * c[i] + c[ip1])) / 3.0;
+      d[i] = (c[ip1] - c[i]) / (3.0 * hi);
+    }
+    return { a, b, c, d };
   }
 
-  _buildTrueCatmullSpline() {
-    const ctrlVecs = this.trackDef.controlPoints.map((p) => new THREE.Vector3(p[0], p[1], p[2]));
-    const curve = new THREE.CatmullRomCurve3(ctrlVecs, true, 'centripetal', 0.35);
+  _evalRawSplineAtU(u, out) {
+    const uTotal = this._uTotal;
+    let uw = u % uTotal;
+    if (uw < 0) uw += uTotal;
 
-    const totalLen = curve.getLength();
-    this.realMetersPerGameMeter = totalLen / TRACK_GAME_LENGTH;
+    const knots = this._uKnots;
+    let lo = 0;
+    let hi = this._segCount - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (knots[mid] <= uw) lo = mid;
+      else hi = mid - 1;
+    }
 
-    // Uniform arc-length points around the entire closed circuit
-    const rawPts = curve.getSpacedPoints(SAMPLES);
-    rawPts.pop(); // getSpacedPoints(N) returns N+1 points where last == first
+    const t = uw - knots[lo];
+    const t2 = t * t;
+    const t3 = t2 * t;
 
-    // Rotate array so s = 0 sits right at (0, 0, 0) on the Main Pit Straight heading +X!
-    let startIdx = 0;
-    let bestDist = Infinity;
-    for (let i = 0; i < SAMPLES; i++) {
-      const p = rawPts[i];
-      const nextP = rawPts[(i + 1) % SAMPLES];
-      if (nextP.x > p.x) {
-        const d = p.x * p.x + p.z * p.z * 4.0;
-        if (d < bestDist) {
-          bestDist = d;
-          startIdx = i;
+    const sx = this._splineX;
+    const sy = this._splineY;
+    const sz = this._splineZ;
+
+    out.px = sx.a[lo] + sx.b[lo] * t + sx.c[lo] * t2 + sx.d[lo] * t3;
+    out.py = sy.a[lo] + sy.b[lo] * t + sy.c[lo] * t2 + sy.d[lo] * t3;
+    out.pz = sz.a[lo] + sz.b[lo] * t + sz.c[lo] * t2 + sz.d[lo] * t3;
+
+    out.d1x = sx.b[lo] + 2.0 * sx.c[lo] * t + 3.0 * sx.d[lo] * t2;
+    out.d1y = sy.b[lo] + 2.0 * sy.c[lo] * t + 3.0 * sy.d[lo] * t2;
+    out.d1z = sz.b[lo] + 2.0 * sz.c[lo] * t + 3.0 * sz.d[lo] * t2;
+
+    out.d2x = 2.0 * sx.c[lo] + 6.0 * sx.d[lo] * t;
+    out.d2y = 2.0 * sy.c[lo] + 6.0 * sy.d[lo] * t;
+    out.d2z = 2.0 * sz.c[lo] + 6.0 * sz.d[lo] * t;
+    return out;
+  }
+
+  // Evaluate C2 pit-straight-flattened curve & exact analytical 1st/2nd derivatives wrt tau
+  _evalFlattenedAtTau(tau, out) {
+    const uTotal = this._uTotal;
+    let tw = tau % uTotal;
+    if (tw < 0) tw += uTotal;
+    let u = this._uOrigin + tw;
+    if (u >= uTotal) u -= uTotal;
+
+    const raw = this._evalRawSplineAtU(u, this._scratchRaw);
+    const px = raw.px - this._xOriginShift;
+
+    // Exact preliminary arc-length fraction sPrelim in [0, 1000) via Gauss-Legendre sub-step
+    const fIdx = (u / uTotal) * ARC_LUT_SIZE;
+    const idx = Math.min(ARC_LUT_SIZE - 1, Math.max(0, Math.floor(fIdx)));
+    const u0 = (uTotal * idx) / ARC_LUT_SIZE;
+    const duSub = u - u0;
+    let segSub = 0.0;
+    if (duSub > 1e-12) {
+      const qOut = this._scratchQuad;
+      for (let q = 0; q < 5; q++) {
+        this._evalRawSplineAtU(u0 + duSub * GL5_X[q], qOut);
+        segSub += GL5_W[q] * Math.hypot(qOut.d1x, qOut.d1y, qOut.d1z);
+      }
+      segSub *= duSub;
+    }
+    let sRel = this._rawLutL[idx] + segSub - this._sRawOrigin;
+    if (sRel < 0) sRel += this._rawTotalLen;
+    const sPrelim = (sRel / this._rawTotalLen) * TRACK_GAME_LENGTH;
+
+    if (sPrelim >= 150.0 && sPrelim <= 924.0) {
+      out.px = px; out.py = raw.py; out.pz = raw.pz;
+      out.d1x = raw.d1x; out.d1y = raw.d1y; out.d1z = raw.d1z;
+      out.d2x = raw.d2x; out.d2y = raw.d2y; out.d2z = raw.d2z;
+      return out;
+    }
+
+    if (sPrelim >= 952.0 || sPrelim <= 122.0) {
+      out.px = px; out.py = 0.0; out.pz = 0.0;
+      out.d1x = raw.d1x; out.d1y = 0.0; out.d1z = 0.0;
+      out.d2x = raw.d2x; out.d2y = 0.0; out.d2z = 0.0;
+      return out;
+    }
+
+    const speedRaw = Math.max(1e-9, Math.hypot(raw.d1x, raw.d1y, raw.d1z));
+    const scaleS = TRACK_GAME_LENGTH / this._rawTotalLen;
+    const dsP_du = scaleS * speedRaw;
+    const d2sP_du2 = scaleS * ((raw.d1x * raw.d2x + raw.d1y * raw.d2y + raw.d1z * raw.d2z) / speedRaw);
+
+    const qd = this._scratchQuintic;
+    let m = 1.0;
+    let dm_ds = 0.0;
+    let d2m_ds2 = 0.0;
+    const span = 28.0;
+    if (sPrelim > 924.0 && sPrelim < 952.0) {
+      quinticBlendDerivs((sPrelim - 924.0) / span, qd);
+      m = 1.0 - qd.w;
+      dm_ds = -qd.wp / span;
+      d2m_ds2 = -qd.wpp / (span * span);
+    } else {
+      quinticBlendDerivs((sPrelim - 122.0) / span, qd);
+      m = qd.w;
+      dm_ds = qd.wp / span;
+      d2m_ds2 = qd.wpp / (span * span);
+    }
+
+    const dm_du = dm_ds * dsP_du;
+    const d2m_du2 = d2m_ds2 * dsP_du * dsP_du + dm_ds * d2sP_du2;
+
+    out.px = px;
+    out.py = m * raw.py;
+    out.pz = m * raw.pz;
+
+    out.d1x = raw.d1x;
+    out.d1y = dm_du * raw.py + m * raw.d1y;
+    out.d1z = dm_du * raw.pz + m * raw.d1z;
+
+    out.d2x = raw.d2x;
+    out.d2y = d2m_du2 * raw.py + 2.0 * dm_du * raw.d1y + m * raw.d2y;
+    out.d2z = d2m_du2 * raw.pz + 2.0 * dm_du * raw.d1z + m * raw.d2z;
+    return out;
+  }
+
+  // Invert monotonic 8,192-entry arc-length LUT + 1-step midpoint Newton refinement
+  _tauFromS(sGame) {
+    const sw = wrapS(sGame);
+    const targetL = (sw / TRACK_GAME_LENGTH) * this.realLengthM;
+    const lutL = this._lutSReal;
+    let lo = 0;
+    let hi = ARC_LUT_SIZE;
+    while (lo + 1 < hi) {
+      const mid = (lo + hi) >> 1;
+      if (lutL[mid] <= targetL) lo = mid;
+      else hi = mid;
+    }
+    const l0 = lutL[lo];
+    const l1 = lutL[lo + 1];
+    const dtCell = this._uTotal / ARC_LUT_SIZE;
+    const t0 = lo * dtCell;
+    const t1 = t0 + dtCell;
+    const frac = l1 > l0 ? (targetL - l0) / (l1 - l0) : 0.0;
+    let tau = t0 + frac * dtCell;
+
+    const ev = this._scratchEval;
+    this._evalFlattenedAtTau(0.5 * (t0 + tau), ev);
+    const spdMid = Math.hypot(ev.d1x, ev.d1y, ev.d1z);
+    const lEst = l0 + (tau - t0) * spdMid;
+    this._evalFlattenedAtTau(tau, ev);
+    const spdTau = Math.hypot(ev.d1x, ev.d1y, ev.d1z);
+    if (spdTau > 1e-6) {
+      tau -= (lEst - targetL) / spdTau;
+      if (tau < t0) tau = t0;
+      else if (tau > t1) tau = t1;
+    }
+    return tau;
+  }
+
+  _buildPeriodicC2Spline() {
+    const pts = this.trackDef.controlPoints;
+    const M = pts.length;
+    this._segCount = M;
+
+    const h = new Float64Array(M);
+    const uKnots = new Float64Array(M + 1);
+    const px = new Float64Array(M);
+    const py = new Float64Array(M);
+    const pz = new Float64Array(M);
+
+    uKnots[0] = 0.0;
+    for (let i = 0; i < M; i++) {
+      const p0 = pts[i];
+      const p1 = pts[(i + 1) % M];
+      px[i] = p0[0];
+      py[i] = p0[1];
+      pz[i] = p0[2];
+      const chord = Math.hypot(p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
+      // Centripetal knot spacing (alpha = 0.5) prevents overshoots on tight chicanes after long straights
+      h[i] = Math.sqrt(Math.max(1e-4, chord));
+      uKnots[i + 1] = uKnots[i] + h[i];
+    }
+
+    this._uKnots = uKnots;
+    this._uTotal = uKnots[M];
+    this._splineX = this._buildAxisPeriodicSpline(px, h);
+    this._splineY = this._buildAxisPeriodicSpline(py, h);
+    this._splineZ = this._buildAxisPeriodicSpline(pz, h);
+
+    // Pass 1: 8,192-entry raw arc-length table to locate s=0 origin at (0, 0, 0) heading +X
+    const rawLutL = new Float64Array(ARC_LUT_SIZE + 1);
+    rawLutL[0] = 0.0;
+    const duCell = this._uTotal / ARC_LUT_SIZE;
+    const qOut = this._scratchQuad;
+    for (let i = 0; i < ARC_LUT_SIZE; i++) {
+      const u0 = i * duCell;
+      let seg = 0.0;
+      for (let q = 0; q < 5; q++) {
+        this._evalRawSplineAtU(u0 + duCell * GL5_X[q], qOut);
+        seg += GL5_W[q] * Math.hypot(qOut.d1x, qOut.d1y, qOut.d1z);
+      }
+      rawLutL[i + 1] = rawLutL[i] + seg * duCell;
+    }
+    this._rawLutL = rawLutL;
+    this._rawTotalLen = rawLutL[ARC_LUT_SIZE];
+
+    let bestScore = Infinity;
+    let bestIdx = 0;
+    for (let i = 0; i < ARC_LUT_SIZE; i++) {
+      const uTest = i * duCell;
+      this._evalRawSplineAtU(uTest, qOut);
+      if (qOut.d1x > 0) {
+        const score = qOut.px * qOut.px + qOut.pz * qOut.pz * 8.0;
+        if (score < bestScore) {
+          bestScore = score;
+          bestIdx = i;
         }
       }
     }
+    this._uOrigin = bestIdx * duCell;
+    this._sRawOrigin = rawLutL[bestIdx];
+    this._evalRawSplineAtU(this._uOrigin, qOut);
+    this._xOriginShift = qOut.px;
 
-    const pts = new Array(SAMPLES);
-    for (let i = 0; i < SAMPLES; i++) {
-      pts[i] = rawPts[(startIdx + i) % SAMPLES].clone();
-    }
-
-    const dsGame = TRACK_GAME_LENGTH / SAMPLES;
-    const dsReal = totalLen / SAMPLES;
-
-    // Anchor s = 0 precisely at X = 0 and quintic-flatten Y=0, Z=0 along Main Pit Straight
-    // so Pit Wall, Garages, Grid Boxes & Start Gantry align with zero seam & zero lateral drift!
-    const xOriginShift = pts[0].x;
-    for (let i = 0; i < SAMPLES; i++) {
-      pts[i].x -= xOriginShift;
-      const s = i * dsGame;
-      let lockWeight = 0.0;
-      if (s >= 952.0 || s <= 122.0) {
-        lockWeight = 1.0;
-      } else if (s > 926.0 && s < 952.0) {
-        lockWeight = quinticBlend((s - 926.0) / 26.0);
-      } else if (s > 122.0 && s < 148.0) {
-        lockWeight = 1.0 - quinticBlend((s - 122.0) / 26.0);
+    // Pass 2: Exact 8,192-entry monotonic arc-length LUT of the C2 pit-flattened circuit
+    const lutSReal = new Float64Array(ARC_LUT_SIZE + 1);
+    lutSReal[0] = 0.0;
+    const ev = this._scratchEval;
+    for (let i = 0; i < ARC_LUT_SIZE; i++) {
+      const t0 = i * duCell;
+      let seg = 0.0;
+      for (let q = 0; q < 5; q++) {
+        this._evalFlattenedAtTau(t0 + duCell * GL5_X[q], ev);
+        seg += GL5_W[q] * Math.hypot(ev.d1x, ev.d1y, ev.d1z);
       }
-      if (lockWeight > 0.0) {
-        pts[i].y *= 1.0 - lockWeight;
-        pts[i].z *= 1.0 - lockWeight;
-      }
+      lutSReal[i + 1] = lutSReal[i] + seg * duCell;
     }
+    this._lutSReal = lutSReal;
 
-    const upRef = new THREE.Vector3(0, 1, 0);
-    const tangents = new Array(SAMPLES);
-    const rights = new Array(SAMPLES);
-    const normals = new Array(SAMPLES);
+    this.totalLength = TRACK_GAME_LENGTH;
+    this.realLengthM = lutSReal[ARC_LUT_SIZE];
+    this.metersPerGameUnit = this.realLengthM / this.totalLength;
+    this.realMetersPerGameMeter = this.metersPerGameUnit;
 
-    for (let i = 0; i < SAMPLES; i++) {
-      const s = i * dsGame;
-      if (s >= 954.0 || s <= 120.0) {
-        tangents[i] = new THREE.Vector3(1, 0, 0);
-        rights[i] = new THREE.Vector3(0, 0, 1);
-        normals[i] = new THREE.Vector3(0, 1, 0);
-      } else {
-        const prev = pts[(i - 2 + SAMPLES) % SAMPLES];
-        const next = pts[(i + 2) % SAMPLES];
-        const tan = new THREE.Vector3().subVectors(next, prev).normalize();
-        const rgt = new THREE.Vector3().crossVectors(tan, upRef).normalize();
-        const nrm = new THREE.Vector3().crossVectors(rgt, tan).normalize();
-        tangents[i] = tan;
-        rights[i] = rgt;
-        normals[i] = nrm;
-      }
-    }
-
-    // Compute exact signed geometric curvature directly from 3D tangent rotation!
-    // Positive = road bends RIGHT (+right), Negative = road bends LEFT (-right), 0 = Straight!
-    const rawCurv = new Float64Array(SAMPLES);
-    for (let i = 0; i < SAMPLES; i++) {
-      const tPrev = tangents[(i - 4 + SAMPLES) % SAMPLES];
-      const tNext = tangents[(i + 4) % SAMPLES];
-      const dTan = new THREE.Vector3().subVectors(tNext, tPrev);
-      const dPsi = dTan.dot(rights[i]);
-      const radPerMeter = dPsi / (8.0 * dsReal);
-      rawCurv[i] = Math.max(-0.95, Math.min(0.95, radPerMeter * 82.0));
-    }
-
-    // Smooth curvature over an 11-sample window + strictly clamp Main Pit Straight to 0.0!
+    // Populate 2,000 uniform-s samples directly from the analytical C2 spline (used by minimap, replay & geometry)
     this.samples = new Array(SAMPLES);
+    const dsGame = TRACK_GAME_LENGTH / SAMPLES;
     for (let i = 0; i < SAMPLES; i++) {
-      let cSum = 0;
-      for (let k = -5; k <= 5; k++) {
-        cSum += rawCurv[(i + k + SAMPLES) % SAMPLES];
-      }
-      let curvature = cSum / 11.0;
-
-      const s = i * dsGame;
-      if (s >= 950.0 || s <= 126.0) {
-        curvature = 0.0; // Strictly dead-zero along entire Main Pit Straight!
-      } else if (s > 934.0 && s < 950.0) {
-        curvature *= 1.0 - quinticBlend((s - 934.0) / 16.0);
-      } else if (s > 126.0 && s < 142.0) {
-        curvature *= quinticBlend((s - 126.0) / 16.0);
-      }
-
-      if (Math.abs(curvature) < 0.015) curvature = 0.0;
-
-      let pitOffset = null;
-      if (s >= 905 || s <= 122) {
-        if (s >= 905 && s < 946) {
-          const u = (s - 905) / (946 - 905);
-          pitOffset = ROAD_HALF_WIDTH * 0.55 + (PIT_LANE_CONFIG.lateralOffset - ROAD_HALF_WIDTH * 0.55) * quinticBlend(u);
-        } else if (s >= 946 || s <= 68) {
-          pitOffset = PIT_LANE_CONFIG.lateralOffset;
-        } else if (s > 68 && s <= 122) {
-          const u = (s - 68) / (122 - 68);
-          pitOffset = PIT_LANE_CONFIG.lateralOffset + (ROAD_HALF_WIDTH * 0.55 - PIT_LANE_CONFIG.lateralOffset) * quinticBlend(u);
-        }
-      }
-
-      this.samples[i] = {
-        s,
-        pos: pts[i],
-        tangent: tangents[i],
-        right: rights[i],
-        normal: normals[i],
-        curvature,
-        sector: this.getSector(s),
-        pitOffset,
-      };
+      this.samples[i] = this.sampleAt(i * dsGame, 0);
     }
+
+    // Precompute smooth lateral ideal racing-line groove offset [-0.70..+0.70] across all 2,000 samples
+    const rawGroove = new Float64Array(SAMPLES);
+    for (let i = 0; i < SAMPLES; i++) {
+      let wideSum = 0.0;
+      for (let k = -44; k <= 44; k += 4) {
+        wideSum += this.samples[(i + k + SAMPLES) % SAMPLES].realCurvature;
+      }
+      const kWide = wideSum / 23.0;
+      const kHere = this.samples[i].realCurvature;
+      const apexWeight = Math.min(1.0, Math.abs(kHere) / 0.014);
+      const approachWeight = Math.min(1.0, Math.abs(kWide) / 0.008);
+      // Outside entry/exit (-sign(kWide)) swinging smoothly to inside apex (+sign(kHere))!
+      const apexLat = Math.sign(kHere) * 0.66 * apexWeight;
+      const outLat = -Math.sign(kWide || 1.0) * 0.52 * approachWeight * (1.0 - apexWeight * 0.85);
+      const straightBias = -0.24 * (1.0 - Math.max(apexWeight, approachWeight));
+      rawGroove[i] = Math.max(-0.70, Math.min(0.70, apexLat + outLat + straightBias));
+    }
+    for (let i = 0; i < SAMPLES; i++) {
+      let gSum = 0.0;
+      let wSum = 0.0;
+      for (let k = -24; k <= 24; k++) {
+        const w = 25 - Math.abs(k);
+        gSum += rawGroove[(i + k + SAMPLES) % SAMPLES] * w;
+        wSum += w;
+      }
+      this.samples[i].grooveCenter = gSum / wSum;
+    }
+  }
+
+  // Alias preserved for backward compatibility
+  _buildTrueCatmullSpline() {
+    this._buildPeriodicC2Spline();
+  }
+
+  // Unclamped signed real-world horizontal curvature kappa_real(s) in true m^-1 (+ = right, - = left)
+  getRealCurvature(s) {
+    const tau = this._tauFromS(s);
+    const ev = this._evalFlattenedAtTau(tau, this._scratchEval);
+    const horiz2 = ev.d1x * ev.d1x + ev.d1z * ev.d1z;
+    const spd3 = Math.sqrt(horiz2 + ev.d1y * ev.d1y);
+    if (horiz2 <= 1e-10 || spd3 <= 1e-10) return 0.0;
+    const kReal = (ev.d1x * ev.d2z - ev.d1z * ev.d2x) / (horiz2 * spd3);
+    return softKneeRealCurvature(kReal);
+  }
+
+  getTrueCurvaturePerMeter(s) {
+    return this.getRealCurvature(s);
+  }
+
+  // Smooth C2 scaled curvature for legacy callers (zero +-0.95 plateau, zero <0.015 hard step!)
+  getPhysicsCurvature(s) {
+    const kScaled = this.getRealCurvature(s) * 82.0;
+    return Math.max(-3.2, Math.min(3.2, kScaled));
   }
 
   // Minimum horizontal clearance from any road/pit/grandstand corridor
   _minDistToTrack(worldX, worldZ) {
-    // Also protect Main Straight Pit Building (+Z) and Grandstand (-Z) architectural footprint
     if (worldX >= -220 && worldX <= 545 && worldZ >= -46 && worldZ <= 46) {
       return 0;
     }
@@ -569,25 +948,44 @@ export class FujiTrack {
     return Math.sqrt(minD2);
   }
 
+  // Exact analytical C2 cubic spline evaluation at game-coordinate s (zero piecewise-linear chord kinks!)
   sampleAt(s, lateralOffsetM = 0) {
     const sw = wrapS(s);
-    const fIdx = (sw / TRACK_GAME_LENGTH) * SAMPLES;
-    const i0 = ((Math.floor(fIdx) % SAMPLES) + SAMPLES) % SAMPLES;
-    const i1 = (i0 + 1) % SAMPLES;
-    const frac = fIdx - Math.floor(fIdx);
+    const tau = this._tauFromS(sw);
+    const ev = this._evalFlattenedAtTau(tau, this._scratchEval);
 
-    const a = this.samples[i0];
-    const b = this.samples[i1];
+    const horiz2 = ev.d1x * ev.d1x + ev.d1z * ev.d1z;
+    const spd3 = Math.max(1e-9, Math.sqrt(horiz2 + ev.d1y * ev.d1y));
+    const horiz = Math.sqrt(horiz2);
 
-    const pos = new THREE.Vector3().lerpVectors(a.pos, b.pos, frac);
-    const tangent = new THREE.Vector3().lerpVectors(a.tangent, b.tangent, frac).normalize();
-    const right = new THREE.Vector3().lerpVectors(a.right, b.right, frac).normalize();
-    const normal = new THREE.Vector3().lerpVectors(a.normal, b.normal, frac).normalize();
-    const curvature = a.curvature + (b.curvature - a.curvature) * frac;
+    const tx = ev.d1x / spd3;
+    const ty = ev.d1y / spd3;
+    const tz = ev.d1z / spd3;
+    const tangent = new THREE.Vector3(tx, ty, tz);
 
-    if (lateralOffsetM !== 0) {
-      pos.addScaledVector(right, lateralOffsetM);
+    // Horizontal right vector = normalize(tangent x worldUp) = (-tz, 0, tx) / horiz
+    let rx = 0.0;
+    let rz = 1.0;
+    if (horiz > 1e-8) {
+      rx = -ev.d1z / horiz;
+      rz = ev.d1x / horiz;
     }
+    const right = new THREE.Vector3(rx, 0.0, rz);
+    const normal = new THREE.Vector3(
+      -rz * ty,
+      rz * tx - rx * tz,
+      rx * ty
+    ).normalize();
+
+    const rawK = horiz2 > 1e-10 ? (ev.d1x * ev.d2z - ev.d1z * ev.d2x) / (horiz2 * spd3) : 0.0;
+    const realCurvature = softKneeRealCurvature(rawK);
+    const curvature = Math.max(-3.2, Math.min(3.2, realCurvature * 82.0));
+
+    const pos = new THREE.Vector3(
+      ev.px + rx * lateralOffsetM,
+      ev.py,
+      ev.pz + rz * lateralOffsetM
+    );
 
     const headingYaw = Math.atan2(tangent.x, tangent.z);
     return {
@@ -597,329 +995,283 @@ export class FujiTrack {
       right,
       normal,
       curvature,
+      realCurvature,
+      curvatureReal: realCurvature,
       headingYaw,
-      sector: a.sector,
-      pitOffset: a.pitOffset !== null && b.pitOffset !== null
-        ? a.pitOffset + (b.pitOffset - a.pitOffset) * frac
-        : a.pitOffset,
+      sector: this.getSector(sw),
+      pitOffset: evalPitOffsetAtS(sw),
     };
   }
 
   // --------------------------------------------------------------------------
-  // 2. HIGH-RESOLUTION 1024x1024 DARK BASALT ASPHALT PBR, NORMAL & ROUGHNESS MAPS
+  // 2. REAL CC0 POLY HAVEN 1024x1024 PBR SURFACE MATERIALS & SHADERS
   // --------------------------------------------------------------------------
   _createRichMaterials() {
-    const isVegas = this.trackDef.theme === 'VEGAS';
-    const isMonaco = this.trackDef.theme === 'MONACO';
+    const theme = this.trackDef.theme;
+    const isVegas = theme === 'VEGAS';
+    const isMonaco = theme === 'MONACO';
+    const isSilverstone = theme === 'SILVERSTONE';
+    const isStreetCircuit = isVegas || isMonaco;
 
-    // A. Deep Dark Charcoal Basalt Asphalt (#1b1d21) + 512x512 Tangent Normal & Roughness Maps
-    const c = document.createElement('canvas');
-    c.width = 1024;
-    c.height = 1024;
-    const ctx = c.getContext('2d');
-    const img = ctx.createImageData(1024, 1024);
-    const data = img.data;
+    // Protect all cached CC0 PBR maps from circuit-switch disposal
+    const loopTilesY = Math.max(180, Math.round(this.realLengthM / 4.2));
+    const aspSet = FujiTrack._getPbrSet('asphalt_02', 4.0, loopTilesY);
+    const pitLoopSet = FujiTrack._getPbrSet('asphalt_pit_lane', 1.0, 1.0);
+    const runoffApronSet = FujiTrack._getPbrSet('asphalt_pit_lane', 3.0, Math.max(160, Math.round(this.realLengthM / 4.8)));
+    const gravelSet = FujiTrack._getPbrSet('gravel', 1.0, 1.0);
+    const grassGroundSet = FujiTrack._getPbrSet('leafy_grass', 1350.0, 1350.0);
+    const grassVergeSet = FujiTrack._getPbrSet('leafy_grass', 3.2, Math.max(180, Math.round(this.realLengthM / 3.8)));
+    const urbanGroundSet = FujiTrack._getPbrSet('brushed_concrete', 920.0, 920.0);
+    const concreteWallSet = FujiTrack._getPbrSet('brushed_concrete', 18.0, 1.2);
+    const concreteGenSet = FujiTrack._getPbrSet('brushed_concrete', 2.0, 2.0);
+    const kerbConcreteSet = FujiTrack._getPbrSet('brushed_concrete', 1.0, 1.0);
+    this._collectProtectedAssetResources();
 
-    const normC = document.createElement('canvas');
-    normC.width = 512;
-    normC.height = 512;
-    const nctx = normC.getContext('2d');
-    const nImg = nctx.createImageData(512, 512);
-    const nData = nImg.data;
-
-    const roughC = document.createElement('canvas');
-    roughC.width = 512;
-    roughC.height = 512;
-    const rghCtx = roughC.getContext('2d');
-    const rghImg = rghCtx.createImageData(512, 512);
-    const rghData = rghImg.data;
-
-    // Deep dark charcoal tarmac (#1b1d21 — ZERO icy blue tint!)
-    const baseR = isVegas ? 22 : (isMonaco ? 30 : 27);
-    const baseG = isVegas ? 24 : (isMonaco ? 32 : 29);
-    const baseB = isVegas ? 29 : (isMonaco ? 36 : 33);
-
-    const grooveFactorX = new Float32Array(1024);
-    for (let x = 0; x < 1024; x++) {
-      const u = x / 1023;
-      const leftGroove = Math.exp(-((u - 0.27) * (u - 0.27)) / 0.015);
-      const rightGroove = Math.exp(-((u - 0.73) * (u - 0.73)) / 0.015);
-      const midGroove = Math.exp(-((u - 0.50) * (u - 0.50)) / 0.030) * 0.42;
-      grooveFactorX[x] = Math.min(1.0, Math.max(leftGroove, rightGroove) * 0.96 + midGroove);
-    }
-
-    const heightGrid = new Float32Array(512 * 512);
-    for (let y = 0; y < 1024; y++) {
-      const streak = (fastHash2D(0, y >> 3, 19) - 0.5) * 9.5;
-      for (let x = 0; x < 1024; x++) {
-        const g = grooveFactorX[x];
-        const grainFine = fastHash2D(x, y, 7);
-        const grainCoarse = fastHash2D(x >> 1, y >> 1, 31);
-        const macroStone = fastHash2D(x >> 2, y >> 2, 107);
-        const quartzSparkle = grainFine > 0.962 ? 32 : (grainFine > 0.925 ? 15 : 0);
-
-        const delta =
-          (grainFine - 0.5) * 26.0 +
-          (grainCoarse - 0.5) * 18.0 +
-          (macroStone - 0.5) * 11.0 +
-          streak * g +
-          quartzSparkle * (1.0 - g * 0.55);
-        const rubberDarken = g * 13.5;
-
-        const idx = (y * 1024 + x) * 4;
-        data[idx]     = Math.max(7, Math.min(255, Math.round(baseR + delta - rubberDarken)));
-        data[idx + 1] = Math.max(8, Math.min(255, Math.round(baseG + delta - rubberDarken)));
-        data[idx + 2] = Math.max(9, Math.min(255, Math.round(baseB + delta - rubberDarken)));
-        data[idx + 3] = 255;
-
-        if ((x & 1) === 0 && (y & 1) === 0) {
-          const hx = x >> 1;
-          const hy = y >> 1;
-          heightGrid[hy * 512 + hx] = (grainFine * 0.55 + grainCoarse * 0.30 + macroStone * 0.15) * (1.0 - g * 0.36);
-
-          const bIdx = (hy * 512 + hx) * 4;
-          const rghVal = Math.max(115, Math.min(252, Math.round(244 - g * 62 + (grainCoarse - 0.5) * 26)));
-          rghData[bIdx] = rghVal;
-          rghData[bIdx + 1] = rghVal;
-          rghData[bIdx + 2] = rghVal;
-          rghData[bIdx + 3] = 255;
-        }
-      }
-    }
-
-    // Build crisp 512x512 tangent-space stone-aggregate normal map
-    for (let hy = 0; hy < 512; hy++) {
-      const yPrev = ((hy - 1) & 511) * 512;
-      const yNext = ((hy + 1) & 511) * 512;
-      const yRow = hy * 512;
-      for (let hx = 0; hx < 512; hx++) {
-        const dx = (heightGrid[yRow + ((hx + 1) & 511)] - heightGrid[yRow + ((hx - 1) & 511)]) * 2.45;
-        const dy = (heightGrid[yNext + hx] - heightGrid[yPrev + hx]) * 2.45;
-        const invLen = 1.0 / Math.sqrt(dx * dx + dy * dy + 1.0);
-        const nIdx = (yRow + hx) * 4;
-        nData[nIdx]     = Math.round((-dx * invLen * 0.5 + 0.5) * 255);
-        nData[nIdx + 1] = Math.round((-dy * invLen * 0.5 + 0.5) * 255);
-        nData[nIdx + 2] = Math.round((invLen * 0.5 + 0.5) * 255);
-        nData[nIdx + 3] = 255;
-      }
-    }
-
-    ctx.putImageData(img, 0, 0);
-    nctx.putImageData(nImg, 0, 0);
-    rghCtx.putImageData(rghImg, 0, 0);
-
-    // Longitudinal paver joints + heavy black vulcanized rubbered-in twin tire grooves & braking skids
-    ctx.fillStyle = 'rgba(6, 7, 10, 0.42)';
-    ctx.fillRect(340, 0, 3, 1024);
-    ctx.fillRect(682, 0, 3, 1024);
-
-    for (let i = 0; i < 110; i++) {
-      const laneCenter = i % 2 === 0 ? 276 : 748;
-      const sx = laneCenter + (fastHash2D(i, 3, 99) - 0.5) * 118;
-      const sy = fastHash2D(i, 9, 99) * 880;
-      ctx.fillStyle = i % 3 === 0 ? 'rgba(5, 6, 8, 0.34)' : 'rgba(8, 9, 12, 0.24)';
-      ctx.fillRect(sx, sy, 4.5 + (i % 3) * 1.5, 110 + fastHash2D(i, 15, 99) * 145);
-      ctx.fillRect(sx + 26, sy, 4.5 + (i % 3) * 1.5, 110 + fastHash2D(i, 15, 99) * 145);
-    }
-
-    // Off-line dark tire marble specks near track edges
-    ctx.fillStyle = 'rgba(8, 9, 11, 0.55)';
-    for (let m = 0; m < 420; m++) {
-      const mx = m % 2 === 0 ? 58 + fastHash2D(m, 1, 211) * 95 : 870 + fastHash2D(m, 2, 211) * 95;
-      const my = fastHash2D(m, 3, 211) * 1020;
-      ctx.fillRect(mx, my, 3, 4);
-    }
-
-    // Crisp painted FIA double track-edge boundary lines (white outer + yellow/cyan inner contrast line)
-    ctx.fillStyle = 'rgba(8, 10, 14, 0.52)';
-    ctx.fillRect(14, 0, 40, 1024);
-    ctx.fillRect(970, 0, 40, 1024);
-
-    ctx.fillStyle = '#f8fbff';
-    ctx.fillRect(18, 0, 22, 1024);
-    ctx.fillRect(984, 0, 22, 1024);
-
-    ctx.fillStyle = isVegas ? '#00f0ff' : '#ffd600';
-    ctx.fillRect(44, 0, 7, 1024);
-    ctx.fillRect(973, 0, 7, 1024);
-
-    const roadTex = new THREE.CanvasTexture(c);
-    roadTex.wrapS = THREE.RepeatWrapping;
-    roadTex.wrapT = THREE.RepeatWrapping;
-    roadTex.repeat.set(1, 145);
-    roadTex.anisotropy = 8;
-    roadTex.colorSpace = THREE.SRGBColorSpace;
-
-    const roadNormTex = new THREE.CanvasTexture(normC);
-    roadNormTex.wrapS = THREE.RepeatWrapping;
-    roadNormTex.wrapT = THREE.RepeatWrapping;
-    roadNormTex.repeat.set(3, 435);
-
-    const roughTex = new THREE.CanvasTexture(roughC);
-    roughTex.wrapS = THREE.RepeatWrapping;
-    roughTex.wrapT = THREE.RepeatWrapping;
-    roughTex.repeat.set(1, 145);
-
-    // Dry tarmac: deep dark charcoal, roughness 0.86, metalness 0.04, clearcoat 0.0!
+    // A. Grade-1 Racing Tarmac: CC0 asphalt_02 1K PBR + dynamic rubbered-in racing groove & FIA white lines
     this.asphaltMat = new THREE.MeshPhysicalMaterial({
-      map: roadTex,
-      normalMap: roadNormTex,
-      normalScale: new THREE.Vector2(1.35, 1.35),
-      roughnessMap: roughTex,
+      color: isVegas ? 0x868c98 : (isMonaco ? 0x9b9fa8 : 0x91959e),
+      map: aspSet.diff,
+      normalMap: aspSet.nor,
+      normalScale: new THREE.Vector2(1.18, 1.18),
+      roughnessMap: aspSet.rough,
+      aoMap: aspSet.arm,
+      aoMapIntensity: 0.72,
       roughness: 0.86,
-      metalness: 0.04,
+      metalness: 0.03,
       clearcoat: 0.0,
       clearcoatRoughness: 0.42,
-      reflectivity: 0.28,
-      envMapIntensity: isVegas ? 0.46 : 0.28,
+      reflectivity: 0.26,
+      envMapIntensity: isVegas ? 0.44 : 0.28,
     });
+    this.asphaltMat.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+          attribute vec2 aRoadMeta;
+          varying vec2 vRoadMeta;`
+        )
+        .replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+          vRoadMeta = aRoadMeta;`
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+          varying vec2 vRoadMeta;`
+        )
+        .replace(
+          '#include <map_fragment>',
+          `#include <map_fragment>
+          float grooveW = clamp(vRoadMeta.x, 0.0, 1.0);
+          float absLatU = abs(vRoadMeta.y);
+          float offLineDust = smoothstep(0.66, 0.92, absLatU) * (1.0 - grooveW);
+          diffuseColor.rgb *= mix(1.0, 0.62, grooveW);
+          diffuseColor.rgb *= (1.0 + offLineDust * 0.07);
+          float aaU = max(0.0025, fwidth(absLatU));
+          float fiaLine = smoothstep(0.946 - aaU, 0.946 + aaU, absLatU)
+                        * (1.0 - smoothstep(0.974 - aaU, 0.974 + aaU, absLatU));
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.93, 0.94, 0.96), fiaLine * 0.96);`
+        )
+        .replace(
+          '#include <roughnessmap_fragment>',
+          `#include <roughnessmap_fragment>
+          roughnessFactor = clamp(roughnessFactor * mix(1.0, 0.78, clamp(vRoadMeta.x, 0.0, 1.0)), 0.06, 1.0);`
+        );
+    };
+    this.asphaltMat.customProgramCacheKey = () => 'cc0_asphalt_crowned_groove_v1';
 
+    // B. Pit Lane & Paved Apron Tarmac: CC0 asphalt_pit_lane 1K PBR
     this.pitAsphaltMat = new THREE.MeshPhysicalMaterial({
-      map: roadTex,
-      normalMap: roadNormTex,
-      normalScale: new THREE.Vector2(1.15, 1.15),
-      color: isVegas ? 0x8ea0b8 : 0xb8c0cc,
+      color: isVegas ? 0x8e98a8 : 0xaab0ba,
+      map: pitLoopSet.diff,
+      normalMap: pitLoopSet.nor,
+      normalScale: new THREE.Vector2(1.05, 1.05),
+      roughnessMap: pitLoopSet.rough,
+      aoMap: pitLoopSet.arm,
+      aoMapIntensity: 0.68,
       roughness: 0.82,
-      metalness: 0.05,
+      metalness: 0.04,
       clearcoat: 0.0,
       clearcoatRoughness: 0.38,
-      reflectivity: 0.30,
-      envMapIntensity: isVegas ? 0.48 : 0.30,
+      reflectivity: 0.28,
+      envMapIntensity: isVegas ? 0.46 : 0.30,
     });
 
-    // B. Mowed Two-Tone Stadium Turf / Riviera Stone / Vegas Midnight Ground (512x512)
-    const gc = document.createElement('canvas');
-    gc.width = 512;
-    gc.height = 512;
-    const gctx = gc.getContext('2d');
-    const [gCol1, gCol2] = this.trackDef.grassColors;
-    gctx.fillStyle = gCol1;
-    gctx.fillRect(0, 0, 512, 512);
-    gctx.fillStyle = gCol2;
-    for (let y = 0; y < 512; y += 64) {
-      gctx.fillRect(0, y, 512, 32);
-    }
+    // C. Parkland Turf (CC0 leafy_grass 1K PBR + world-space anti-tiling shader) OR Urban Stone Ground
+    const applyMacroTurfShader = (mat, keySuffix) => {
+      mat.onBeforeCompile = (shader) => {
+        shader.vertexShader = shader.vertexShader
+          .replace(
+            '#include <common>',
+            `#include <common>
+            varying vec2 vWorldGroundXZ;`
+          )
+          .replace(
+            '#include <begin_vertex>',
+            `#include <begin_vertex>
+            vec4 wGround = modelMatrix * vec4(transformed, 1.0);
+            vWorldGroundXZ = wGround.xz;`
+          );
+        shader.fragmentShader = shader.fragmentShader
+          .replace(
+            '#include <common>',
+            `#include <common>
+            varying vec2 vWorldGroundXZ;`
+          )
+          .replace(
+            '#include <map_fragment>',
+            `#include <map_fragment>
+            float macroA = sin(vWorldGroundXZ.x * 0.021 + sin(vWorldGroundXZ.y * 0.017) * 1.4)
+                         * cos(vWorldGroundXZ.y * 0.019 - vWorldGroundXZ.x * 0.008);
+            float macroB = sin(vWorldGroundXZ.x * 0.073 + vWorldGroundXZ.y * 0.061);
+            float mowBand = smoothstep(-0.35, 0.35, sin(vWorldGroundXZ.x * 0.24 + vWorldGroundXZ.y * 0.04));
+            diffuseColor.rgb *= (0.91 + 0.10 * macroA + 0.04 * macroB + 0.06 * mowBand);`
+          );
+      };
+      mat.customProgramCacheKey = () => `cc0_leafy_grass_${keySuffix}`;
+      return mat;
+    };
 
-    if (isMonaco) {
-      // Crisp Riviera travertine/granite paver grid lines
-      gctx.strokeStyle = 'rgba(255,255,255,0.06)';
-      gctx.lineWidth = 2;
-      for (let k = 0; k < 512; k += 32) {
-        gctx.beginPath(); gctx.moveTo(k, 0); gctx.lineTo(k, 512); gctx.stroke();
-        gctx.beginPath(); gctx.moveTo(0, k); gctx.lineTo(512, k); gctx.stroke();
-      }
-    } else if (this.trackDef.theme === 'MONZA' || this.trackDef.theme === 'SUZUKA') {
-      // Subtle golden/crimson fallen autumn leaf speckles on Monza & Suzuka turf
-      const leafPalette = ['rgba(234,179,8,0.28)', 'rgba(217,119,6,0.26)', 'rgba(220,38,38,0.24)'];
-      for (let i = 0; i < 950; i++) {
-        gctx.fillStyle = leafPalette[i % 3];
-        gctx.fillRect(fastHash2D(i, 1, 55) * 510, fastHash2D(i, 2, 55) * 510, 3, 2);
-      }
-    }
-
-    for (let i = 0; i < 4500; i++) {
-      gctx.fillStyle = (i & 1) === 0 ? 'rgba(255,255,255,0.035)' : 'rgba(0,0,0,0.045)';
-      gctx.fillRect(fastHash2D(i, 4, 71) * 510, fastHash2D(i, 5, 71) * 510, 3, 3);
-    }
-
-    const grassTex = new THREE.CanvasTexture(gc);
-    grassTex.wrapS = THREE.RepeatWrapping;
-    grassTex.wrapT = THREE.RepeatWrapping;
-    grassTex.repeat.set(115, 115);
-    grassTex.anisotropy = 4;
-    grassTex.colorSpace = THREE.SRGBColorSpace;
-
-    this.grassMat = new THREE.MeshStandardMaterial({
-      map: grassTex,
-      roughness: isMonaco ? 0.76 : 0.88,
-      metalness: isMonaco ? 0.08 : 0.02,
-    });
-
-    // C. raked FIA Gravel Trap / Paved Runoff Apron Texture (256x256)
-    const rc = document.createElement('canvas');
-    rc.width = 256;
-    rc.height = 256;
-    const rctx = rc.getContext('2d');
-    rctx.fillStyle = this.trackDef.runoffColor;
-    rctx.fillRect(0, 0, 256, 256);
-
-    // Raked FIA gravel furrows / street runoff grip lines
-    if (this.trackDef.theme === 'SILVERSTONE') {
-      rctx.fillStyle = 'rgba(0, 56, 168, 0.24)';
-      for (let y = 0; y < 256; y += 32) {
-        rctx.fillRect(0, y, 256, 10);
-      }
-      rctx.fillStyle = 'rgba(255, 255, 255, 0.16)';
-      rctx.fillRect(14, 0, 10, 256);
+    if (isStreetCircuit) {
+      this.grassMat = new THREE.MeshStandardMaterial({
+        color: isVegas ? 0x262c3a : 0x5c6470,
+        map: urbanGroundSet.diff,
+        normalMap: urbanGroundSet.nor,
+        normalScale: new THREE.Vector2(0.85, 0.85),
+        roughnessMap: urbanGroundSet.rough,
+        aoMap: urbanGroundSet.arm,
+        aoMapIntensity: 0.55,
+        roughness: isMonaco ? 0.78 : 0.84,
+        metalness: 0.04,
+      });
+      this.vergeGrassMat = this.grassMat;
     } else {
-      rctx.fillStyle = isVegas ? 'rgba(0, 240, 255, 0.08)' : 'rgba(0, 0, 0, 0.065)';
-      for (let x = 0; x < 256; x += 16) {
-        rctx.fillRect(x, 0, 5, 256);
-      }
-    }
-    for (let i = 0; i < 3200; i++) {
-      rctx.fillStyle = (i & 1) === 0 ? 'rgba(255,255,255,0.085)' : 'rgba(0,0,0,0.095)';
-      rctx.fillRect(fastHash2D(i, 7, 83) * 254, fastHash2D(i, 8, 83) * 254, 2, 2);
+      const grassTint = theme === 'MONZA' ? 0x9ab089 : (theme === 'SILVERSTONE' ? 0x8fb092 : 0x95b38e);
+      this.grassMat = applyMacroTurfShader(
+        new THREE.MeshStandardMaterial({
+          color: grassTint,
+          map: grassGroundSet.diff,
+          normalMap: grassGroundSet.nor,
+          normalScale: new THREE.Vector2(0.95, 0.95),
+          roughnessMap: grassGroundSet.rough,
+          aoMap: grassGroundSet.arm,
+          aoMapIntensity: 0.65,
+          roughness: 0.92,
+          metalness: 0.0,
+        }),
+        `ground_${theme}`
+      );
+      this.vergeGrassMat = applyMacroTurfShader(
+        new THREE.MeshStandardMaterial({
+          color: grassTint,
+          map: grassVergeSet.diff,
+          normalMap: grassVergeSet.nor,
+          normalScale: new THREE.Vector2(1.05, 1.05),
+          roughnessMap: grassVergeSet.rough,
+          aoMap: grassVergeSet.arm,
+          aoMapIntensity: 0.68,
+          roughness: 0.90,
+          metalness: 0.0,
+        }),
+        `verge_${theme}`
+      );
     }
 
-    const runoffTex = new THREE.CanvasTexture(rc);
-    runoffTex.wrapS = THREE.RepeatWrapping;
-    runoffTex.wrapT = THREE.RepeatWrapping;
-    runoffTex.repeat.set(2, 165);
-    runoffTex.colorSpace = THREE.SRGBColorSpace;
-
-    this.runoffMat = new THREE.MeshStandardMaterial({
-      map: runoffTex,
-      roughness: isVegas ? 0.68 : 0.90,
-      metalness: isVegas ? 0.12 : 0.03,
+    // D. Recessed 3D FIA Gravel Trap Bed (CC0 gravel 1K PBR) & Paved Runoff Shoulder
+    this.gravelMat = new THREE.MeshStandardMaterial({
+      color: theme === 'MONZA' ? 0xd8c8ae : 0xe2d5be,
+      map: gravelSet.diff,
+      normalMap: gravelSet.nor,
+      normalScale: new THREE.Vector2(1.42, 1.42),
+      roughnessMap: gravelSet.rough,
+      aoMap: gravelSet.arm,
+      aoMapIntensity: 0.82,
+      roughness: 0.95,
+      metalness: 0.0,
     });
 
-    // D. Serrated 3D Beveled & Tire-Scuffed Kerb Materials + Corrugated Steel Armco Material
+    if (isStreetCircuit || isSilverstone) {
+      this.runoffMat = new THREE.MeshStandardMaterial({
+        color: isVegas ? 0x525c70 : (isSilverstone ? 0x7b8594 : 0x7c8592),
+        map: runoffApronSet.diff,
+        normalMap: runoffApronSet.nor,
+        normalScale: new THREE.Vector2(0.95, 0.95),
+        roughnessMap: runoffApronSet.rough,
+        aoMap: runoffApronSet.arm,
+        aoMapIntensity: 0.62,
+        roughness: 0.84,
+        metalness: 0.04,
+      });
+    } else {
+      this.runoffMat = this.vergeGrassMat;
+    }
+
+    // E. 3D Sawtooth FIA Kerbs: CC0 brushed_concrete normal/roughness/AO + matte FIA pigment & tire scrub (ZERO emissive!)
     const curbBevelTex = this._makeSerratedCurbTexture();
     this.curbMats = this.trackDef.curbColors.map(
       (hex) => new THREE.MeshStandardMaterial({
         color: hex,
         map: curbBevelTex,
-        bumpMap: curbBevelTex,
-        bumpScale: 0.024,
-        roughness: 0.30,
-        metalness: 0.14,
-        emissive: new THREE.Color(hex),
-        emissiveIntensity: isVegas ? 0.52 : 0.08,
+        normalMap: kerbConcreteSet.nor,
+        normalScale: new THREE.Vector2(0.92, 0.92),
+        roughnessMap: kerbConcreteSet.rough,
+        aoMap: kerbConcreteSet.arm,
+        aoMapIntensity: 0.65,
+        roughness: 0.72,
+        metalness: 0.02,
+        emissive: new THREE.Color(0x000000),
+        emissiveIntensity: 0.0,
       })
     );
 
-    // Corrugated W-beam Armco texture
+    // F. Corrugated W-Beam Galvanized Steel Armco + CC0 Brushed Concrete Structural Materials
     const ac = document.createElement('canvas');
     ac.width = 128;
     ac.height = 128;
     const actx = ac.getContext('2d');
     const aGrad = actx.createLinearGradient(0, 0, 0, 128);
-    aGrad.addColorStop(0.00, '#eef3fa');
-    aGrad.addColorStop(0.22, '#aab5c6');
-    aGrad.addColorStop(0.42, '#f5f8fd');
-    aGrad.addColorStop(0.55, '#7e8a9c');
-    aGrad.addColorStop(0.76, '#eef3fa');
-    aGrad.addColorStop(1.00, '#96a3b5');
+    aGrad.addColorStop(0.00, '#dfe6f0');
+    aGrad.addColorStop(0.22, '#9aa6b8');
+    aGrad.addColorStop(0.42, '#eef3fa');
+    aGrad.addColorStop(0.55, '#727e90');
+    aGrad.addColorStop(0.76, '#dfe6f0');
+    aGrad.addColorStop(1.00, '#8d99ab');
     actx.fillStyle = aGrad;
     actx.fillRect(0, 0, 128, 128);
-    if (isVegas) {
-      actx.fillStyle = '#00f0ff';
-      actx.fillRect(0, 8, 128, 8);
-    }
     const armcoTex = new THREE.CanvasTexture(ac);
     armcoTex.colorSpace = THREE.SRGBColorSpace;
 
     this.armcoMat = new THREE.MeshStandardMaterial({
       map: armcoTex,
-      metalness: 0.78,
-      roughness: 0.26,
+      metalness: 0.74,
+      roughness: 0.30,
     });
 
     this.concreteMat = new THREE.MeshStandardMaterial({
-      color: 0xc2ccd9,
-      roughness: 0.68,
-      metalness: 0.08,
+      color: 0xc8cfd8,
+      map: concreteGenSet.diff,
+      normalMap: concreteGenSet.nor,
+      normalScale: new THREE.Vector2(0.85, 0.85),
+      roughnessMap: concreteGenSet.rough,
+      aoMap: concreteGenSet.arm,
+      aoMapIntensity: 0.65,
+      roughness: 0.80,
+      metalness: 0.03,
+    });
+
+    this.pitWallConcreteMat = new THREE.MeshStandardMaterial({
+      color: 0x8f97a3,
+      map: concreteWallSet.diff,
+      normalMap: concreteWallSet.nor,
+      normalScale: new THREE.Vector2(1.0, 1.0),
+      roughnessMap: concreteWallSet.rough,
+      aoMap: concreteWallSet.arm,
+      aoMapIntensity: 0.72,
+      roughness: 0.78,
+      metalness: 0.04,
     });
 
     this.darkFrameMat = new THREE.MeshStandardMaterial({
@@ -935,31 +1287,32 @@ export class FujiTrack {
     c.height = 256;
     const ctx = c.getContext('2d');
     const g = ctx.createLinearGradient(0, 0, 256, 0);
-    g.addColorStop(0.00, '#ffffff'); // Crisp sunlit bevel edge
-    g.addColorStop(0.18, '#f0f4fa');
-    g.addColorStop(0.78, '#d5dde8');
-    g.addColorStop(1.00, '#9aa6b8'); // Outer shadow bevel
+    g.addColorStop(0.00, '#f4f6fa');
+    g.addColorStop(0.22, '#e8ecf2');
+    g.addColorStop(0.78, '#cfd6e2');
+    g.addColorStop(1.00, '#9ba5b5');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, 256, 256);
 
-    // 3D serrated sawtooth step highlights & recessed shadow grooves
+    // Sawtooth concrete step highlights, expansion joints & recessed shadow grooves
     for (let y = 0; y < 256; y += 32) {
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.36)';
-      ctx.fillRect(0, y, 256, 5);
-      ctx.fillStyle = 'rgba(12, 16, 24, 0.34)';
-      ctx.fillRect(0, y + 27, 256, 5);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.28)';
+      ctx.fillRect(0, y, 256, 4);
+      ctx.fillStyle = 'rgba(12, 16, 24, 0.30)';
+      ctx.fillRect(0, y + 28, 256, 4);
     }
 
-    // Authentic dark Pirelli tire-rubber scuff marks along the inner apex edge
-    ctx.fillStyle = 'rgba(18, 22, 28, 0.26)';
-    for (let i = 0; i < 28; i++) {
-      const sy = fastHash2D(i, 1, 613) * 230;
-      ctx.fillRect(8 + fastHash2D(i, 2, 613) * 55, sy, 18 + fastHash2D(i, 3, 613) * 32, 8);
+    // Authentic black Pirelli tire-rubber scrub streaks along inner apex kerb bevel
+    ctx.fillStyle = 'rgba(16, 18, 22, 0.32)';
+    for (let i = 0; i < 36; i++) {
+      const sy = fastHash2D(i, 1, 613) * 232;
+      ctx.fillRect(6 + fastHash2D(i, 2, 613) * 62, sy, 20 + fastHash2D(i, 3, 613) * 38, 6);
     }
 
     const tex = new THREE.CanvasTexture(c);
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
+    tex.anisotropy = 8;
     tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
   }
@@ -967,35 +1320,42 @@ export class FujiTrack {
   updateVisualState(moistureW, visualStyle, elapsedSec = 0) {
     const dt = Math.max(0, Math.min(0.1, elapsedSec - (this._lastElapsedSec || elapsedSec)));
     this._lastElapsedSec = elapsedSec;
-    if (this.crowdExcitement > 0.22) {
-      this.crowdExcitement = Math.max(0.22, this.crowdExcitement - dt * 0.36);
+    if (this.crowdExcitement > 0.0) {
+      this.crowdExcitement = Math.max(0.0, this.crowdExcitement - dt * 0.38);
     }
     this._crowdUniforms.uTime.value = elapsedSec;
     this._crowdUniforms.uExcitement.value = this.crowdExcitement;
 
     const isArcade = visualStyle === '1982_ARCADE';
     const isVegas = this.trackDef.theme === 'VEGAS';
+
+    // Floodlight volumetric cones & light pools ONLY on Vegas night OR dark heavy storms!
+    const showFloodCones = isVegas || moistureW >= 0.65;
+    if (this._floodAtmosphereMeshes) {
+      for (let i = 0; i < this._floodAtmosphereMeshes.length; i++) {
+        this._floodAtmosphereMeshes[i].visible = showFloodCones;
+      }
+    }
+
     if (isArcade) {
       this.asphaltMat.roughness = moistureW > 0.15 ? 0.14 : 0.86;
-      this.asphaltMat.metalness = moistureW > 0.15 ? 0.56 : 0.04;
+      this.asphaltMat.metalness = moistureW > 0.15 ? 0.56 : 0.03;
       this.asphaltMat.clearcoat = 0.0;
     } else {
-      // Dry tarmac stays deep matte dark charcoal (roughness 0.86, metalness 0.04, clearcoat 0.0)!
-      // ONLY raise clearcoat & mirror sky reflection when moistureW > 0.15!
       const wetFactor = moistureW > 0.15
         ? Math.max(0, Math.min(1, (moistureW - 0.15) / 0.50))
         : 0.0;
-      this.asphaltMat.roughness = 0.86 - wetFactor * 0.76;
-      this.asphaltMat.metalness = 0.04 + wetFactor * 0.60;
-      this.asphaltMat.clearcoat = wetFactor * 1.0;
-      this.asphaltMat.clearcoatRoughness = 0.42 - wetFactor * 0.37;
-      this.asphaltMat.envMapIntensity = (isVegas ? 0.46 : 0.28) + wetFactor * 1.75;
+      this.asphaltMat.roughness = 0.86 - wetFactor * 0.74;
+      this.asphaltMat.metalness = 0.03 + wetFactor * 0.55;
+      this.asphaltMat.clearcoat = wetFactor * 0.95;
+      this.asphaltMat.clearcoatRoughness = 0.42 - wetFactor * 0.36;
+      this.asphaltMat.envMapIntensity = (isVegas ? 0.44 : 0.28) + wetFactor * 1.65;
       if (this.pitAsphaltMat) {
-        this.pitAsphaltMat.roughness = 0.82 - wetFactor * 0.72;
-        this.pitAsphaltMat.metalness = 0.05 + wetFactor * 0.56;
-        this.pitAsphaltMat.clearcoat = wetFactor * 0.96;
-        this.pitAsphaltMat.clearcoatRoughness = 0.38 - wetFactor * 0.33;
-        this.pitAsphaltMat.envMapIntensity = (isVegas ? 0.48 : 0.30) + wetFactor * 1.65;
+        this.pitAsphaltMat.roughness = 0.82 - wetFactor * 0.70;
+        this.pitAsphaltMat.metalness = 0.04 + wetFactor * 0.52;
+        this.pitAsphaltMat.clearcoat = wetFactor * 0.92;
+        this.pitAsphaltMat.clearcoatRoughness = 0.38 - wetFactor * 0.32;
+        this.pitAsphaltMat.envMapIntensity = (isVegas ? 0.46 : 0.30) + wetFactor * 1.55;
       }
     }
 
@@ -1009,19 +1369,202 @@ export class FujiTrack {
   }
 
   // --------------------------------------------------------------------------
-  // 3. ROAD RIBBON + GRAVEL / URBAN RUNOFF APRON
+  // 3. 3D CROWNED TRACK RIBBON + RECESSED 3D FIA GRAVEL TRAPS & VERGES
   // --------------------------------------------------------------------------
   _buildRoadAndRunoff() {
     const groundGeo = new THREE.PlaneGeometry(9200, 9200);
     groundGeo.rotateX(-Math.PI / 2);
+    if (groundGeo.getAttribute('uv')) {
+      groundGeo.setAttribute('uv1', groundGeo.getAttribute('uv'));
+    }
     const ground = new THREE.Mesh(groundGeo, this.grassMat);
     ground.position.y = -0.38;
     ground.receiveShadow = true;
     this.group.add(ground);
 
-    // Continuous Runoff Shoulder Ribbon + Main PBR Asphalt Ribbon
-    this._buildRibbonMesh(ROAD_HALF_WIDTH + 6.4, -0.02, this.runoffMat);
-    this._buildRibbonMesh(ROAD_HALF_WIDTH, 0.028, this.asphaltMat);
+    // Continuous Verge / Urban Apron Shoulder + Recessed 3D FIA Gravel Traps + 3D Crowned Track Ribbon
+    this._buildRibbonMesh(ROAD_HALF_WIDTH + 6.4, -0.022, this.runoffMat);
+    this._buildRecessedGravelTraps();
+    this._buildCrownedTrackRibbon();
+  }
+
+  // 8-slice laterally subdivided 3D crowned asphalt ribbon (+3.6cm drainage camber + racing-line groove)
+  _buildCrownedTrackRibbon() {
+    const slices = 8;
+    const cols = slices + 1;
+    const vertCount = (SAMPLES + 1) * cols;
+    const positions = new Float32Array(vertCount * 3);
+    const normals = new Float32Array(vertCount * 3);
+    const uvs = new Float32Array(vertCount * 2);
+    const roadMeta = new Float32Array(vertCount * 2);
+    const indices = [];
+
+    const crownPeak = 0.036;
+    const baseEdgeLift = 0.024;
+    let pOff = 0;
+    let uvOff = 0;
+
+    for (let i = 0; i <= SAMPLES; i++) {
+      const smp = this.samples[i % SAMPLES];
+      const vCoord = i / SAMPLES;
+      const gCenter = smp.grooveCenter || 0.0;
+
+      for (let c = 0; c <= slices; c++) {
+        const uFrac = c / slices;
+        const uNorm = uFrac * 2.0 - 1.0; // -1 (left edge) .. +1 (right edge)
+        const latM = uNorm * ROAD_HALF_WIDTH;
+        const crownY = baseEdgeLift + crownPeak * (1.0 - uNorm * uNorm);
+
+        positions[pOff] = smp.pos.x + smp.right.x * latM;
+        positions[pOff + 1] = smp.pos.y + crownY;
+        positions[pOff + 2] = smp.pos.z + smp.right.z * latM;
+
+        // Outward drainage camber slope on surface normal
+        const slopeX = (-2.0 * crownPeak * uNorm) / ROAD_HALF_WIDTH;
+        const nx = smp.normal.x - smp.right.x * slopeX;
+        const ny = smp.normal.y;
+        const nz = smp.normal.z - smp.right.z * slopeX;
+        const invN = 1.0 / Math.max(1e-6, Math.hypot(nx, ny, nz));
+        normals[pOff] = nx * invN;
+        normals[pOff + 1] = ny * invN;
+        normals[pOff + 2] = nz * invN;
+        pOff += 3;
+
+        uvs[uvOff] = uFrac;
+        uvs[uvOff + 1] = vCoord;
+
+        // Smooth Pirelli rubber groove centered on the dynamic cornering line + twin wheel-track emphasis
+        const distG = (uNorm - gCenter) / 0.28;
+        const mainGroove = Math.exp(-distG * distG);
+        const twinTrack = 0.82 + 0.18 * Math.cos((uNorm - gCenter) * 26.0);
+        roadMeta[uvOff] = Math.min(1.0, mainGroove * twinTrack);
+        roadMeta[uvOff + 1] = uNorm;
+        uvOff += 2;
+      }
+
+      if (i < SAMPLES) {
+        const row0 = i * cols;
+        const row1 = (i + 1) * cols;
+        for (let c = 0; c < slices; c++) {
+          const a = row0 + c;
+          const b = row0 + c + 1;
+          const d = row1 + c;
+          const e = row1 + c + 1;
+          indices.push(a, b, d, b, e, d);
+        }
+      }
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    const uvAttr = new THREE.BufferAttribute(uvs, 2);
+    geo.setAttribute('uv', uvAttr);
+    geo.setAttribute('uv1', uvAttr);
+    geo.setAttribute('aRoadMeta', new THREE.BufferAttribute(roadMeta, 2));
+    geo.setIndex(indices);
+
+    const roadMesh = new THREE.Mesh(geo, this.asphaltMat);
+    roadMesh.receiveShadow = true;
+    this.group.add(roadMesh);
+  }
+
+  // Genuine recessed 3D FIA gravel traps outside corners on non-street circuits
+  _buildRecessedGravelTraps() {
+    const theme = this.trackDef.theme;
+    if (theme === 'MONACO' || theme === 'VEGAS') return;
+
+    const positions = [];
+    const normals = [];
+    const uvs = [];
+    const indices = [];
+
+    const innerOff = ROAD_HALF_WIDTH + CURB_WIDTH * 0.92;
+    const outerOff = ROAD_HALF_WIDTH + 5.75;
+    const bedWidth = outerOff - innerOff;
+    const dsReal = this.realLengthM / SAMPLES;
+
+    // Identify contiguous outside corner runs where |realCurvature| > 0.0062 (~R < 160m)
+    const trapSide = new Int8Array(SAMPLES);
+    for (let i = 0; i < SAMPLES; i++) {
+      const smp = this.samples[i];
+      if (this.trackDef.overpassRangeS && smp.pos.y > 5.2) continue;
+      if (Math.abs(smp.realCurvature) > 0.0062) {
+        const outSign = smp.realCurvature > 0 ? -1 : 1;
+        if (outSign > 0 && (smp.s >= 900 || smp.s <= 126)) continue;
+        trapSide[i] = outSign;
+      }
+    }
+    // Expand each gravel bed by +-8 samples (~14m entry/exit taper) for natural FIA trap geometry
+    const expandedSide = new Int8Array(SAMPLES);
+    for (let i = 0; i < SAMPLES; i++) {
+      if (trapSide[i] !== 0) {
+        for (let k = -8; k <= 8; k++) {
+          const j = (i + k + SAMPLES) % SAMPLES;
+          const sj = this.samples[j];
+          if (trapSide[i] > 0 && (sj.s >= 900 || sj.s <= 126)) continue;
+          if (this.trackDef.overpassRangeS && sj.pos.y > 5.2) continue;
+          expandedSide[j] = trapSide[i];
+        }
+      }
+    }
+
+    let vertBase = 0;
+    let runLen = 0;
+    let prevSide = 0;
+
+    for (let i = 0; i <= SAMPLES; i++) {
+      const idx = i % SAMPLES;
+      const side = i < SAMPLES ? expandedSide[idx] : 0;
+      if (side === 0 || side !== prevSide) {
+        runLen = 0;
+      }
+      if (side !== 0) {
+        const smp = this.samples[idx];
+        const vMeters = (runLen * dsReal) / 3.4;
+        // 4 cross-section points across gravel bed: inner lip -> recessed trough -> outer trough -> outer lip
+        const profU = [0.0, 0.22, 0.78, 1.0];
+        const profY = [0.004, -0.048, -0.045, 0.002];
+        for (let c = 0; c < 4; c++) {
+          const lat = side * (innerOff + profU[c] * bedWidth);
+          positions.push(
+            smp.pos.x + smp.right.x * lat,
+            smp.pos.y + profY[c],
+            smp.pos.z + smp.right.z * lat
+          );
+          normals.push(smp.normal.x, smp.normal.y, smp.normal.z);
+          uvs.push((profU[c] * bedWidth) / 3.4, vMeters);
+        }
+        if (runLen > 0) {
+          const r0 = vertBase - 4;
+          const r1 = vertBase;
+          for (let c = 0; c < 3; c++) {
+            if (side > 0) {
+              indices.push(r0 + c, r0 + c + 1, r1 + c, r0 + c + 1, r1 + c + 1, r1 + c);
+            } else {
+              indices.push(r0 + c, r1 + c, r0 + c + 1, r0 + c + 1, r1 + c, r1 + c + 1);
+            }
+          }
+        }
+        vertBase += 4;
+        runLen++;
+      }
+      prevSide = side;
+    }
+
+    if (!indices.length) return;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+    const uvAttr = new THREE.Float32BufferAttribute(uvs, 2);
+    geo.setAttribute('uv', uvAttr);
+    geo.setAttribute('uv1', uvAttr);
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+
+    const gravelMesh = new THREE.Mesh(geo, this.gravelMat);
+    gravelMesh.receiveShadow = true;
+    this.group.add(gravelMesh);
   }
 
   _buildRibbonMesh(halfW, yLift, material) {
@@ -1051,7 +1594,9 @@ export class FujiTrack {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    const uvAttr = new THREE.Float32BufferAttribute(uvs, 2);
+    geo.setAttribute('uv', uvAttr);
+    geo.setAttribute('uv1', uvAttr);
     geo.setIndex(indices);
     const ribbonMesh = new THREE.Mesh(geo, material);
     ribbonMesh.receiveShadow = true;
@@ -1059,16 +1604,21 @@ export class FujiTrack {
   }
 
   // --------------------------------------------------------------------------
-  // 4. SERRATED 3D RUMBLE KERBS, BLENDER .GLB STEEL ARMCO & FIA TIRE BARRIERS
+  // 4. 3D SAWTOOTH FIA KERBS, BLENDER .GLB STEEL ARMCO & FIA TIRE BARRIERS
   // --------------------------------------------------------------------------
   _buildCurbsAndArmcoBarriers() {
     const envCache = FujiTrack._envGlbCache;
 
-    // 2-Step Beveled & Serrated 3D FIA Rumble Kerb Geometry
-    const curbBase = new THREE.BoxGeometry(2.38, 0.11, CURB_WIDTH);
-    const curbRidge = new THREE.BoxGeometry(1.78, 0.062, CURB_WIDTH * 0.58);
-    curbRidge.translate(0.18, 0.068, 0);
-    const curbBlockGeo = mergeSubGeometries([curbBase, curbRidge]);
+    // 3D Sawtooth Ramped FIA Rumble Kerb Geometry (beveled concrete base + angled sawtooth tooth)
+    const curbBase = new THREE.BoxGeometry(2.36, 0.088, CURB_WIDTH);
+    const curbTooth = new THREE.BoxGeometry(1.72, 0.056, CURB_WIDTH * 0.68);
+    curbTooth.rotateZ(0.055);
+    curbTooth.translate(0.16, 0.054, 0);
+    const curbBlockGeo = mergeSubGeometries([curbBase, curbTooth]);
+    if (curbBlockGeo.getAttribute('uv')) {
+      curbBlockGeo.setAttribute('uv1', curbBlockGeo.getAttribute('uv'));
+    }
+
     const matBuckets = this.curbMats.map(() => []);
     const armcoMatrices = [];
     const armcoPostMatrices = [];
@@ -1083,14 +1633,14 @@ export class FujiTrack {
     for (let i = 0; i < SAMPLES; i++) {
       const smp = this.samples[i];
       const yaw = Math.atan2(smp.tangent.z, smp.tangent.x);
-      const absK = Math.abs(smp.curvature);
+      const absRealK = Math.abs(smp.realCurvature);
 
-      // Serrated FIA rumble kerbs on ALL corners AND framing the Main Straight / Showroom vista!
+      // 3D Sawtooth FIA kerbs on all real corners (|kappa| > 0.0022 m^-1) & Main Pit Straight borders
       const isMainStraightLeft = smp.s >= 942 || smp.s <= 128;
       const isMainStraightRight = smp.s >= 956 || smp.s <= 66;
-      if (absK > 0.045 || isMainStraightLeft || isMainStraightRight) {
+      if (absRealK > 0.0022 || isMainStraightLeft || isMainStraightRight) {
         for (const side of [-1, 1]) {
-          if (absK <= 0.045) {
+          if (absRealK <= 0.0022) {
             if (side < 0 && !isMainStraightLeft) continue;
             if (side > 0 && !isMainStraightRight) continue;
           } else if (side > 0 && (smp.s >= 902 && smp.s < 956)) {
@@ -1101,15 +1651,15 @@ export class FujiTrack {
           dummy.position
             .copy(smp.pos)
             .addScaledVector(smp.right, side * (ROAD_HALF_WIDTH + CURB_WIDTH * 0.45));
-          dummy.position.y += 0.038;
-          dummy.rotation.set(side * 0.038, -yaw, 0);
+          dummy.position.y += 0.032;
+          dummy.rotation.set(side * 0.042, -yaw, 0);
           dummy.scale.set(1, 1, 1);
           dummy.updateMatrix();
           matBuckets[i % matBuckets.length].push(dummy.matrix.clone());
         }
       }
 
-      // Continuous 3-Wave Steel Armco Guardrails + I-Posts + Bolted FIA Tire Wall Stacks
+      // Continuous 3-Wave Galvanized Steel Armco Guardrails + I-Posts + Bolted FIA Tire Wall Stacks
       if (i % 2 === 0) {
         for (const side of [-1, 1]) {
           if (side > 0 && (smp.s >= 902 || smp.s <= 124)) continue;
@@ -1130,9 +1680,9 @@ export class FujiTrack {
           }
           armcoPostMatrices.push(dummy.matrix.clone());
 
-          // Bolted FIA 3-High Tire Barrier bundles on high-speed corner outsides
-          const outsideSign = -Math.sign(smp.curvature);
-          if (absK > 0.26 && side === outsideSign && (i % 4 === 0)) {
+          // Bolted FIA 3-High Tire Barrier bundles on corner outsides (|kappa| > 0.0082 m^-1)
+          const outsideSign = -Math.sign(smp.realCurvature);
+          if (absRealK > 0.0082 && side === outsideSign && (i % 4 === 0)) {
             dummy.position.copy(smp.pos).addScaledVector(smp.right, side * (barrierDist - 0.92));
             dummy.position.y += useGlbTires ? 0.02 : 0.46;
             dummy.rotation.set(0, faceTrackRotY, 0);
@@ -1171,9 +1721,9 @@ export class FujiTrack {
     this.group.add(postInst);
 
     if (useGlbTires && tireWallMatrices.length > 0) {
-      const redMat = new THREE.MeshStandardMaterial({ color: 0xd91e26, roughness: 0.65 });
-      const whiteMat = new THREE.MeshStandardMaterial({ color: 0xf4f7fc, roughness: 0.65 });
-      const strapMat = new THREE.MeshStandardMaterial({ color: 0x14171d, roughness: 0.82 });
+      const redMat = new THREE.MeshStandardMaterial({ color: 0xc91c24, roughness: 0.72 });
+      const whiteMat = new THREE.MeshStandardMaterial({ color: 0xedf1f7, roughness: 0.72 });
+      const strapMat = new THREE.MeshStandardMaterial({ color: 0x14171d, roughness: 0.84 });
       const rInst = new THREE.InstancedMesh(envCache.tireRedGeo, redMat, tireWallMatrices.length);
       const wInst = new THREE.InstancedMesh(envCache.tireWhiteGeo, whiteMat, tireWallMatrices.length);
       tireWallMatrices.forEach((m, k) => {
@@ -1194,7 +1744,7 @@ export class FujiTrack {
       if (tireRedMatrices.length > 0) {
         const redTireInst = new THREE.InstancedMesh(
           tireGeo,
-          new THREE.MeshStandardMaterial({ color: 0xd91e26, roughness: 0.65 }),
+          new THREE.MeshStandardMaterial({ color: 0xc91c24, roughness: 0.72 }),
           tireRedMatrices.length
         );
         tireRedMatrices.forEach((m, k) => redTireInst.setMatrixAt(k, m));
@@ -1204,7 +1754,7 @@ export class FujiTrack {
       if (tireWhiteMatrices.length > 0) {
         const whiteTireInst = new THREE.InstancedMesh(
           tireGeo,
-          new THREE.MeshStandardMaterial({ color: 0xf4f7fc, roughness: 0.65 }),
+          new THREE.MeshStandardMaterial({ color: 0xedf1f7, roughness: 0.72 }),
           tireWhiteMatrices.length
         );
         tireWhiteMatrices.forEach((m, k) => whiteTireInst.setMatrixAt(k, m));
@@ -1215,7 +1765,7 @@ export class FujiTrack {
   }
 
   // --------------------------------------------------------------------------
-  // 5. ARCHITECTURAL DARK-CARBON 3D OPEN-BAY PIT GARAGES & VIP ROOFTOP CROWD
+  // 5. PIT LANE (CC0 PBR), FIA PIT-WALL TIMING GANTRY & 3D OPEN-BAY GARAGES
   // --------------------------------------------------------------------------
   _buildPitLaneAndGarages() {
     const pitIndices = [];
@@ -1223,6 +1773,7 @@ export class FujiTrack {
     for (let i = 0; i < SAMPLES; i++) if (this.samples[i].s <= 122) pitIndices.push(i);
 
     const pitHalfWidth = 4.8;
+    const dsReal = this.realLengthM / SAMPLES;
     const posArr = [], normArr = [], uvArr = [], idxArr = [];
     for (let k = 0; k < pitIndices.length; k++) {
       const smp = this.samples[pitIndices[k]];
@@ -1230,26 +1781,28 @@ export class FujiTrack {
       const lPt = center.clone().addScaledVector(smp.right, -pitHalfWidth);
       const rPt = center.clone().addScaledVector(smp.right, pitHalfWidth + 4.8);
       lPt.y += 0.020;
-      rPt.y += yLiftPit(k);
+      rPt.y += 0.020;
       posArr.push(lPt.x, lPt.y, lPt.z, rPt.x, rPt.y, rPt.z);
       normArr.push(0, 1, 0, 0, 1, 0);
-      uvArr.push(0, k * 0.08, 1, k * 0.08);
+      const vMeters = (k * dsReal) / 4.4;
+      uvArr.push(0, vMeters, 3.2, vMeters);
       if (k < pitIndices.length - 1) {
         const b = k * 2;
         idxArr.push(b, b + 1, b + 2, b + 1, b + 3, b + 2);
       }
     }
-    function yLiftPit() { return 0.020; }
     const pitGeo = new THREE.BufferGeometry();
     pitGeo.setAttribute('position', new THREE.Float32BufferAttribute(posArr, 3));
     pitGeo.setAttribute('normal', new THREE.Float32BufferAttribute(normArr, 3));
-    pitGeo.setAttribute('uv', new THREE.Float32BufferAttribute(uvArr, 2));
+    const pitUv = new THREE.Float32BufferAttribute(uvArr, 2);
+    pitGeo.setAttribute('uv', pitUv);
+    pitGeo.setAttribute('uv1', pitUv);
     pitGeo.setIndex(idxArr);
     const pitRoadMesh = new THREE.Mesh(pitGeo, this.pitAsphaltMat);
     pitRoadMesh.receiveShadow = true;
     this.group.add(pitRoadMesh);
 
-    // Dark Architectural Concrete Pit Wall + FIA Championship Stripe + Engineer Telemetry Perch
+    // CC0 Brushed Concrete Pit Wall + FIA Debris Catch Fence + Overhanging Timing & Signalling Gantry
     const wallStart = this.sampleAt(954, ROAD_HALF_WIDTH + 1.8).pos;
     const wallEnd = this.sampleAt(68, ROAD_HALF_WIDTH + 1.8).pos;
     const wallLen = Math.max(120, wallEnd.x - wallStart.x);
@@ -1257,40 +1810,48 @@ export class FujiTrack {
     const wallZ = wallStart.z;
     const isVegas = this.trackDef.theme === 'VEGAS';
 
-    const darkPitWallMat = new THREE.MeshStandardMaterial({
-      color: 0x242a36,
-      roughness: 0.62,
-      metalness: 0.18,
-    });
-    const pitWall = new THREE.Mesh(new THREE.BoxGeometry(wallLen, 1.16, 0.48), darkPitWallMat);
-    pitWall.position.set(wallCenterX, 0.58, wallZ);
+    const pitWallGeo = new THREE.BoxGeometry(wallLen, 1.18, 0.50);
+    if (pitWallGeo.getAttribute('uv')) pitWallGeo.setAttribute('uv1', pitWallGeo.getAttribute('uv'));
+    const pitWall = new THREE.Mesh(pitWallGeo, this.pitWallConcreteMat);
+    pitWall.position.set(wallCenterX, 0.59, wallZ);
     pitWall.castShadow = true;
     pitWall.receiveShadow = true;
     this.group.add(pitWall);
 
-    // Pit-wall debris catch glass & FIA accent stripe
     const wallStripe = new THREE.Mesh(
-      new THREE.BoxGeometry(wallLen + 0.1, 0.22, 0.52),
+      new THREE.BoxGeometry(wallLen + 0.1, 0.18, 0.54),
       new THREE.MeshStandardMaterial({
-        color: isVegas ? 0x00f0ff : 0xe41c24,
-        emissive: isVegas ? 0x00f0ff : 0x5c080c,
-        emissiveIntensity: isVegas ? 0.50 : 0.24,
-        roughness: 0.28,
+        color: isVegas ? 0x00c8e6 : 0xc91822,
+        emissive: new THREE.Color(isVegas ? 0x00c8e6 : 0x000000),
+        emissiveIntensity: isVegas ? 0.35 : 0.0,
+        roughness: 0.52,
       })
     );
-    wallStripe.position.set(wallCenterX, 1.06, wallZ);
+    wallStripe.position.set(wallCenterX, 1.09, wallZ);
     this.group.add(wallStripe);
 
-    // Architectural F1 Pit-Wall Team Telemetry Perch
+    // FIA Pit-Wall Debris Catch Glass & Steel Stanchions along Pit Wall
+    const pitGlassMat = new THREE.MeshStandardMaterial({
+      color: 0x9ab4cc,
+      roughness: 0.18,
+      metalness: 0.65,
+      transparent: true,
+      opacity: 0.28,
+    });
+    const pitCatchGlass = new THREE.Mesh(new THREE.BoxGeometry(wallLen - 4.0, 1.35, 0.06), pitGlassMat);
+    pitCatchGlass.position.set(wallCenterX, 1.86, wallZ - 0.16);
+    this.group.add(pitCatchGlass);
+
+    // Realistic FIA Pit-Wall Engineer Prat Perches + Overhanging Trackside Timing Gantry Tower!
     const perchGroup = new THREE.Group();
-    perchGroup.position.set(wallCenterX + 8, 1.16, wallZ);
+    perchGroup.position.set(wallCenterX + 8, 1.18, wallZ);
     const screenTex = this._makeMotorsportBanner(
-      'RACE CONTROL • LIVE TELEMETRY',
-      'FIA TIMING • SECTOR DELTA • WEATHER RADAR',
+      'RACE CONTROL • FIA TELEMETRY',
+      'SECTOR DELTA • TIRE TEMP • WEATHER RADAR',
       '#081d38',
       '#041022',
       '#00f0ff',
-      '#ff2468',
+      '#e51c23',
       'F1',
       512,
       128
@@ -1299,53 +1860,84 @@ export class FujiTrack {
       map: screenTex,
       emissive: new THREE.Color(0x88e5ff),
       emissiveMap: screenTex,
-      emissiveIntensity: 0.55,
-      roughness: 0.2,
+      emissiveIntensity: isVegas ? 0.52 : 0.24,
+      roughness: 0.24,
     });
-    const perchRoof = new THREE.Mesh(
-      new THREE.BoxGeometry(26, 0.26, 2.3),
-      new THREE.MeshStandardMaterial({ color: 0x1e2533, metalness: 0.68, roughness: 0.24 })
-    );
-    perchRoof.position.set(0, 2.55, 0.15);
-    perchGroup.add(perchRoof);
+    const perchMetalMat = new THREE.MeshStandardMaterial({ color: 0x1c2330, metalness: 0.72, roughness: 0.28 });
 
-    const screenBank = new THREE.Mesh(
-      new THREE.BoxGeometry(24, 1.15, 0.36),
-      [this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, screenMat, screenMat]
-    );
-    screenBank.position.set(0, 1.55, 0.1);
-    perchGroup.add(screenBank);
+    // 3 modular team pit-wall Prat perches along the pit wall
+    for (const perchX of [-54, 0, 54]) {
+      const podRoof = new THREE.Mesh(new THREE.BoxGeometry(22.0, 0.22, 2.45), perchMetalMat);
+      podRoof.position.set(perchX, 2.52, 0.32);
+      podRoof.rotation.x = 0.08;
+      podRoof.castShadow = true;
+      perchGroup.add(podRoof);
 
-    for (const px of [-11.5, -3.8, 3.8, 11.5]) {
-      const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 2.55, 8), this.darkFrameMat);
-      strut.position.set(px, 1.28, -0.35);
-      perchGroup.add(strut);
+      const screenBank = new THREE.Mesh(
+        new THREE.BoxGeometry(20.2, 0.96, 0.30),
+        [this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, screenMat, screenMat]
+      );
+      screenBank.position.set(perchX, 1.48, 0.24);
+      perchGroup.add(screenBank);
+
+      const deskCounter = new THREE.Mesh(new THREE.BoxGeometry(20.6, 0.14, 1.15), perchMetalMat);
+      deskCounter.position.set(perchX, 0.96, 0.62);
+      perchGroup.add(deskCounter);
+
+      for (const px of [-9.4, -3.1, 3.1, 9.4]) {
+        const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.09, 2.52, 8), this.darkFrameMat);
+        strut.position.set(perchX + px, 1.26, -0.18);
+        perchGroup.add(strut);
+      }
     }
-    this.group.add(perchGroup);
 
-    // Sleek Dark-Carbon & Smoked-Glass 2-Story F1 Paddock Complex (NO flat pale white boxes!)
+    // Overhanging FIA Vertical LED Timing Pylon & Pit-Board Signalling Cantilever near Start/Finish (x ≈ +14m)
+    const timingTower = new THREE.Group();
+    timingTower.position.set(14.0, 0.0, wallZ + 0.35);
+    const towerMast = new THREE.Mesh(new THREE.BoxGeometry(0.75, 9.8, 0.75), perchMetalMat);
+    towerMast.position.set(0, 4.9, 0);
+    towerMast.castShadow = true;
+    const cantileverArm = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.55, 3.8), perchMetalMat);
+    cantileverArm.position.set(0, 9.45, -1.65);
+    const timingFaceTex = this._makePitTimingTowerTexture();
+    const timingFaceMat = new THREE.MeshStandardMaterial({
+      map: timingFaceTex,
+      emissive: new THREE.Color(0xffffff),
+      emissiveMap: timingFaceTex,
+      emissiveIntensity: isVegas ? 0.72 : 0.38,
+      roughness: 0.22,
+    });
+    const timingBoard = new THREE.Mesh(
+      new THREE.BoxGeometry(0.42, 6.4, 1.85),
+      [timingFaceMat, timingFaceMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat]
+    );
+    timingBoard.position.set(0, 5.95, -2.35);
+    timingBoard.castShadow = true;
+    timingTower.add(towerMast, cantileverArm, timingBoard);
+    this.group.add(perchGroup, timingTower);
+
+    // Sleek Dark-Carbon & Smoked-Glass 2-Story F1 Paddock Complex
     const garX = wallCenterX + 18;
     const garZ = PIT_LANE_CONFIG.lateralOffset + 14.5;
 
     const carbonFasciaMat = new THREE.MeshStandardMaterial({
       color: isVegas ? 0x121828 : 0x181d27,
-      roughness: 0.34,
-      metalness: 0.58,
+      roughness: 0.38,
+      metalness: 0.54,
     });
     const gunmetalTrimMat = new THREE.MeshStandardMaterial({
       color: 0x2c3546,
-      roughness: 0.28,
-      metalness: 0.72,
+      roughness: 0.30,
+      metalness: 0.68,
     });
     const crimsonAccentMat = new THREE.MeshStandardMaterial({
-      color: isVegas ? 0x00f0ff : 0xd91424,
-      roughness: 0.26,
-      metalness: 0.35,
-      emissive: new THREE.Color(isVegas ? 0x00a8c8 : 0x45050b),
-      emissiveIntensity: 0.32,
+      color: isVegas ? 0x00c8e6 : 0xc81622,
+      roughness: 0.34,
+      metalness: 0.28,
+      emissive: new THREE.Color(isVegas ? 0x00a8c8 : 0x000000),
+      emissiveIntensity: isVegas ? 0.32 : 0.0,
     });
 
-    // Upper Paddock Club Dark-Carbon Volume + Cantilevered Titanium Louvered Canopy
     const upperDeck = new THREE.Mesh(new THREE.BoxGeometry(342, 4.6, 14.4), carbonFasciaMat);
     upperDeck.position.set(garX, 7.6, garZ);
     upperDeck.castShadow = true;
@@ -1361,15 +1953,15 @@ export class FujiTrack {
     roofOverhang.castShadow = true;
     this.group.add(roofOverhang);
 
-    // Smoked Reflective Floor-to-Ceiling VIP Paddock Club Glass Curtain Wall
+    // Smoked Reflective VIP Paddock Club Glass Curtain Wall
     const clubTex = this._makePaddockGlassTexture(isVegas);
     const clubGlassMat = new THREE.MeshStandardMaterial({
       map: clubTex,
       emissive: new THREE.Color(0xffffff),
       emissiveMap: clubTex,
-      emissiveIntensity: isVegas ? 0.78 : 0.42,
-      roughness: 0.10,
-      metalness: 0.84,
+      emissiveIntensity: isVegas ? 0.68 : 0.08,
+      roughness: 0.12,
+      metalness: 0.82,
     });
     const clubGlass = new THREE.Mesh(
       new THREE.BoxGeometry(338, 3.2, 14.72),
@@ -1378,7 +1970,6 @@ export class FujiTrack {
     clubGlass.position.set(garX, 7.58, garZ);
     this.group.add(clubGlass);
 
-    // Architectural Vertical Steel Fins framing the VIP Paddock Glass every 17m
     const finGeo = new THREE.BoxGeometry(0.42, 4.7, 0.85);
     const finCount = 21;
     const finInst = new THREE.InstancedMesh(finGeo, gunmetalTrimMat, finCount);
@@ -1391,7 +1982,6 @@ export class FujiTrack {
     finInst.instanceMatrix.needsUpdate = true;
     this.group.add(finInst);
 
-    // Rooftop Championship Signboard + Smoked-Glass VIP Hospitality Terrace Balustrade
     const roofBannerTex = this._makeMotorsportBanner(
       'F1 PADDOCK CLUB',
       `${this.trackDef.name} • WORLD CHAMPIONSHIP GARAGES`,
@@ -1407,8 +1997,8 @@ export class FujiTrack {
       map: roofBannerTex,
       emissive: new THREE.Color(0xffffff),
       emissiveMap: roofBannerTex,
-      emissiveIntensity: isVegas ? 0.52 : 0.26,
-      roughness: 0.26,
+      emissiveIntensity: isVegas ? 0.42 : 0.0,
+      roughness: 0.34,
     });
     const roofSign = new THREE.Mesh(
       new THREE.BoxGeometry(118, 2.15, 0.55),
@@ -1419,17 +2009,16 @@ export class FujiTrack {
 
     const terraceRailMat = new THREE.MeshStandardMaterial({
       color: 0x88c8ff,
-      roughness: 0.12,
-      metalness: 0.75,
+      roughness: 0.14,
+      metalness: 0.72,
       transparent: true,
-      opacity: 0.46,
+      opacity: 0.44,
     });
     const terraceRail = new THREE.Mesh(new THREE.BoxGeometry(336, 1.15, 0.14), terraceRailMat);
     terraceRail.position.set(garX, 11.08, garZ - 8.8);
     this.group.add(terraceRail);
 
-    // Colorful 3D VIP Rooftop Hospitality Parasols & Umbrellas overlooking the Main Straight!
-    const parasolCols = [0xd91424, 0xff8000, 0x00b0ff, 0xffd600, 0xf8fbff];
+    const parasolCols = [0x1e293b, 0x991b1b, 0x0f172a, 0x334155, 0xe2e8f0];
     const parasolPoleGeo = new THREE.CylinderGeometry(0.06, 0.07, 2.7, 8);
     const parasolCanopyGeo = new THREE.ConeGeometry(2.35, 0.72, 10);
     for (let pi = 0; pi < 13; pi++) {
@@ -1439,20 +2028,19 @@ export class FujiTrack {
       pStem.position.set(px, 11.85, pz);
       const pTop = new THREE.Mesh(
         parasolCanopyGeo,
-        new THREE.MeshStandardMaterial({ color: parasolCols[pi % parasolCols.length], roughness: 0.42 })
+        new THREE.MeshStandardMaterial({ color: parasolCols[pi % parasolCols.length], roughness: 0.58 })
       );
       pTop.position.set(px, 13.25, pz);
       this.group.add(pStem, pTop);
     }
 
-    // Recessed Dark Interior Garage Wall + High-Contrast Checkered Epoxy Floor
     const garageIntTex = this._makeGarageInteriorTexture();
     const garageIntMat = new THREE.MeshStandardMaterial({
       map: garageIntTex,
       emissive: new THREE.Color(0xffe8c2),
       emissiveMap: garageIntTex,
-      emissiveIntensity: 0.72,
-      roughness: 0.38,
+      emissiveIntensity: 0.45,
+      roughness: 0.42,
     });
     const backStructure = new THREE.Mesh(
       new THREE.BoxGeometry(340, 5.2, 2.2),
@@ -1464,21 +2052,20 @@ export class FujiTrack {
     const garageFloorTex = this._makeCheckeredFloorTexture();
     const garageFloor = new THREE.Mesh(
       new THREE.PlaneGeometry(340, 13.8),
-      new THREE.MeshStandardMaterial({ map: garageFloorTex, roughness: 0.32, metalness: 0.18 })
+      new THREE.MeshStandardMaterial({ map: garageFloorTex, roughness: 0.36, metalness: 0.14 })
     );
     garageFloor.rotation.x = -Math.PI / 2;
     garageFloor.position.set(garX, 0.032, garZ - 0.2);
     garageFloor.receiveShadow = true;
     this.group.add(garageFloor);
 
-    // Individual Deep 3D Open Garage Bays with 3D Stacked Pirelli Tire Racks, Tool Chests & Overhead Trusses!
     const teamDefs = [
-      { name: 'PHANATIC RACING #1', bg: '#d91424', stripe: '#ffd600' },
-      { name: 'TAKAHASHI MOTORSPORT', bg: '#103468', stripe: '#00f0ff' },
-      { name: 'SCUDERIA VELOCE', bg: '#b80d18', stripe: '#ffffff' },
-      { name: 'GULF HERITAGE GP', bg: '#1e6eb8', stripe: '#ff671f' },
-      { name: 'APEX HYBRID F1', bg: '#0c4f30', stripe: '#ffd600' },
-      { name: 'ATARI FACTORY TEAM', bg: '#2c1654', stripe: '#ff9e1b' },
+      { name: 'PHANATIC RACING #1', bg: '#b91c1c', stripe: '#facc15' },
+      { name: 'TAKAHASHI MOTORSPORT', bg: '#0f2d5c', stripe: '#38bdf8' },
+      { name: 'SCUDERIA VELOCE', bg: '#991b1b', stripe: '#f8fafc' },
+      { name: 'GULF HERITAGE GP', bg: '#1d5fa3', stripe: '#f97316' },
+      { name: 'APEX HYBRID F1', bg: '#0a4429', stripe: '#facc15' },
+      { name: 'ATARI FACTORY TEAM', bg: '#251447', stripe: '#fb923c' },
     ];
     const teamHeaderMats = teamDefs.map((td) => {
       const t = this._makeMotorsportBanner(td.name, 'OFFICIAL PIT GARAGE', td.bg, '#0b101a', '#ffffff', td.stripe, 'F1', 512, 96);
@@ -1486,8 +2073,8 @@ export class FujiTrack {
         map: t,
         emissive: new THREE.Color(0xffffff),
         emissiveMap: t,
-        emissiveIntensity: 0.36,
-        roughness: 0.28,
+        emissiveIntensity: isVegas ? 0.32 : 0.0,
+        roughness: 0.38,
       });
     });
 
@@ -1496,7 +2083,7 @@ export class FujiTrack {
     bayTireGeo.rotateZ(Math.PI * 0.5);
     const bayTireMat = new THREE.MeshStandardMaterial({ color: 0x15171c, roughness: 0.78 });
     const toolCabinetGeo = new THREE.BoxGeometry(2.6, 1.35, 0.95);
-    const toolCabinetMat = new THREE.MeshStandardMaterial({ color: 0xc91622, roughness: 0.34, metalness: 0.38 });
+    const toolCabinetMat = new THREE.MeshStandardMaterial({ color: 0xb91c1c, roughness: 0.38, metalness: 0.34 });
     const bayTrussGeo = new THREE.BoxGeometry(20.5, 0.28, 0.32);
 
     const tireRackMatrices = [];
@@ -1518,19 +2105,16 @@ export class FujiTrack {
         lightPanel.position.set(bx + 12.5, 5.05, garZ - 1.5);
         this.group.add(lightPanel);
 
-        // Overhead 3D garage gantry beam inside each open bay
         bayDummy.position.set(bx + 12.5, 4.45, garZ - 3.2);
         bayDummy.rotation.set(0, 0, 0);
         bayDummy.scale.set(1, 1, 1);
         bayDummy.updateMatrix();
         bayTrussMatrices.push(bayDummy.matrix.clone());
 
-        // 3D Red mechanic tool chest inside bay
         bayDummy.position.set(bx + 5.8, 0.68, garZ + 2.6);
         bayDummy.updateMatrix();
         toolChestMatrices.push(bayDummy.matrix.clone());
 
-        // 2-tier x 4-tire 3D Pirelli tire rack inside bay
         for (let rowT = 0; rowT < 2; rowT++) {
           for (let colT = 0; colT < 4; colT++) {
             bayDummy.position.set(bx + 17.2 + colT * 0.44, 0.46 + rowT * 0.82, garZ + 1.8);
@@ -1569,17 +2153,16 @@ export class FujiTrack {
       this.group.add(btInst);
     }
 
-    // Save VIP rooftop terrace bounds so _buildGrandstands populates it with animated 3D cheering crowds!
     this._paddockTerraceBounds = { centerX: garX, zFront: garZ - 7.8, width: 316, yBase: 10.52 };
 
-    // 80 KM/H Pit Speed Limit Line + Grounded FIA 80 Limit Signpost + High-Vis Pit-Entry Chevron Gore Strip!
+    // Painted Pit-Entry Gore Strip + Pit Entry Signpost + 80 KM/H Pit Speed Limit Sign (ZERO daylight emissive!)
     const chevronCanvas = document.createElement('canvas');
     chevronCanvas.width = 256;
     chevronCanvas.height = 512;
     const cctx = chevronCanvas.getContext('2d');
-    cctx.fillStyle = '#0d1726';
+    cctx.fillStyle = '#141922';
     cctx.fillRect(0, 0, 256, 512);
-    cctx.fillStyle = isVegas ? '#00f0ff' : '#ffd600';
+    cctx.fillStyle = '#f2f5fa';
     for (let y = -128; y < 512; y += 64) {
       cctx.beginPath();
       cctx.moveTo(16, y + 44);
@@ -1591,7 +2174,7 @@ export class FujiTrack {
       cctx.closePath();
       cctx.fill();
     }
-    cctx.fillStyle = '#ffffff';
+    cctx.fillStyle = '#e51c23';
     cctx.fillRect(6, 0, 8, 512);
     cctx.fillRect(242, 0, 8, 512);
     const chevronTex = new THREE.CanvasTexture(chevronCanvas);
@@ -1606,10 +2189,10 @@ export class FujiTrack {
       new THREE.PlaneGeometry(58, 3.2),
       new THREE.MeshStandardMaterial({
         map: chevronTex,
-        roughness: 0.4,
-        emissive: new THREE.Color(0xffffff),
-        emissiveMap: chevronTex,
-        emissiveIntensity: isVegas ? 0.55 : 0.26,
+        roughness: 0.78,
+        metalness: 0.02,
+        emissive: new THREE.Color(0x000000),
+        emissiveIntensity: 0.0,
         polygonOffset: true,
         polygonOffsetFactor: -2,
         polygonOffsetUnits: -2,
@@ -1618,16 +2201,16 @@ export class FujiTrack {
     goreStrip.rotation.x = -Math.PI / 2;
     goreStrip.rotation.z = -goreYaw;
     goreStrip.position.copy(goreFrame.pos).add(new THREE.Vector3(0, 0.031, 0));
+    goreStrip.receiveShadow = true;
     this.group.add(goreStrip);
 
-    // Pit Entry Directional Signpost at s = 914
-    const pitInTex = this._makeMotorsportBanner('PIT ENTRY ❯❯', 'BOX LANE RIGHT', '#ffd600', '#e09e00', '#0b1018', '#d91424', 'IN', 512, 160);
+    const pitInTex = this._makeMotorsportBanner('PIT ENTRY', 'BOX LANE RIGHT', '#f8fafc', '#e2e8f0', '#0f172a', '#d91424', 'IN', 512, 160);
     const pitInMat = new THREE.MeshStandardMaterial({
       map: pitInTex,
       emissive: new THREE.Color(0xffffff),
       emissiveMap: pitInTex,
-      emissiveIntensity: 0.42,
-      roughness: 0.25,
+      emissiveIntensity: isVegas ? 0.35 : 0.0,
+      roughness: 0.56,
     });
     const pitInPos = this.sampleAt(914, ROAD_HALF_WIDTH + 4.4).pos;
     const pitInBoard = new THREE.Mesh(
@@ -1640,10 +2223,10 @@ export class FujiTrack {
     const limFrame = this.sampleAt(PIT_LANE_CONFIG.speedLimitLineS, 0);
     const limPos = limFrame.pos.clone().addScaledVector(limFrame.right, limFrame.pitOffset || 13.0);
     const limLine = new THREE.Mesh(
-      new THREE.BoxGeometry(0.95, 0.04, 9.6),
-      new THREE.MeshBasicMaterial({ color: 0xffd600 })
+      new THREE.BoxGeometry(0.65, 0.03, 9.6),
+      new THREE.MeshStandardMaterial({ color: 0xf4f6fa, roughness: 0.72 })
     );
-    limLine.position.copy(limPos).add(new THREE.Vector3(0, 0.032, 0));
+    limLine.position.copy(limPos).add(new THREE.Vector3(0, 0.030, 0));
     this.group.add(limLine);
 
     const limSignTex = this._makeMotorsportBanner('80', 'PIT LIMIT', '#ffffff', '#e6ecf5', '#111111', '#e51c23', '80', 256, 256);
@@ -1651,8 +2234,8 @@ export class FujiTrack {
       map: limSignTex,
       emissive: new THREE.Color(0xffffff),
       emissiveMap: limSignTex,
-      emissiveIntensity: 0.28,
-      roughness: 0.3,
+      emissiveIntensity: isVegas ? 0.32 : 0.0,
+      roughness: 0.52,
     });
     const limPostPos = this.sampleAt(PIT_LANE_CONFIG.speedLimitLineS, ROAD_HALF_WIDTH + 2.2).pos;
     const limPost = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.09, 2.5, 8), this.darkFrameMat);
@@ -1664,7 +2247,7 @@ export class FujiTrack {
     limBoard.position.copy(limPostPos).add(new THREE.Vector3(0, 2.35, 0));
     this.group.add(limPost, limBoard);
 
-    // 8 Painted Pit Boxes (Player Box at s = 20m)
+    // 8 Painted FIA Pit Boxes (Player Box at s = 20m)
     this.pitBoxes = [];
     const boxStations = [978, 990, 4, PIT_LANE_CONFIG.playerBoxS, 32, 44, 54, 62];
     boxStations.forEach((bs) => {
@@ -1672,10 +2255,11 @@ export class FujiTrack {
       const bf = this.sampleAt(bs, PIT_LANE_CONFIG.lateralOffset + 3.2);
       const boxPad = new THREE.Mesh(
         new THREE.PlaneGeometry(7.6, 3.6),
-        new THREE.MeshBasicMaterial({
-          color: isPlayerBox ? 0x00ff88 : 0xffab00,
+        new THREE.MeshStandardMaterial({
+          color: isPlayerBox ? 0xd91c24 : 0xe2e8f0,
+          roughness: 0.76,
           transparent: true,
-          opacity: isPlayerBox ? 0.72 : 0.36,
+          opacity: isPlayerBox ? 0.62 : 0.34,
           polygonOffset: true,
           polygonOffsetFactor: -1,
           polygonOffsetUnits: -1,
@@ -1686,13 +2270,13 @@ export class FujiTrack {
       this.group.add(boxPad);
 
       if (isPlayerBox) {
-        const signTex = this._makeMotorsportBanner('PIT BOX #1', 'STOP IN GREEN ZONE', '#00c853', '#053b1c', '#ffffff', '#ffd600', 'P1', 512, 192);
+        const signTex = this._makeMotorsportBanner('PIT BOX #1', 'TEAM GANTRY • STOP MARKS', '#111827', '#1e293b', '#ffffff', '#e51c23', 'P1', 512, 192);
         const signMat = new THREE.MeshStandardMaterial({
           map: signTex,
           emissive: new THREE.Color(0xffffff),
           emissiveMap: signTex,
-          emissiveIntensity: 0.45,
-          roughness: 0.25,
+          emissiveIntensity: isVegas ? 0.38 : 0.0,
+          roughness: 0.44,
         });
         const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, 4.4, 10), this.darkFrameMat);
         mast.position.copy(bf.pos).add(new THREE.Vector3(0, 2.2, 2.55));
@@ -1707,6 +2291,50 @@ export class FujiTrack {
       }
       this.pitBoxes.push({ s: bs, isPlayerBox, pos: bf.pos.clone() });
     });
+  }
+
+  _makePitTimingTowerTexture() {
+    const c = document.createElement('canvas');
+    c.width = 256;
+    c.height = 768;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#090d16';
+    ctx.fillRect(0, 0, 256, 768);
+    ctx.fillStyle = '#e51c23';
+    ctx.fillRect(0, 0, 256, 74);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '900 italic 38px "Segoe UI", "Arial Black", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('FIA TIMING', 128, 38);
+
+    const rows = [
+      ['1', 'TAK', '#e51c23'],
+      ['2', 'PRO', '#1d6ff2'],
+      ['3', 'SEN', '#facc15'],
+      ['4', 'LAU', '#dc2626'],
+      ['5', 'VAN', '#eab308'],
+      ['6', 'MAN', '#38bdf8'],
+      ['7', 'HAK', '#94a3b8'],
+      ['8', 'ALO', '#22d3ee'],
+    ];
+    for (let i = 0; i < rows.length; i++) {
+      const y = 96 + i * 80;
+      ctx.fillStyle = '#131b2b';
+      ctx.fillRect(14, y, 228, 66);
+      ctx.fillStyle = rows[i][2];
+      ctx.fillRect(14, y, 10, 66);
+      ctx.fillStyle = '#f8fafc';
+      ctx.font = '900 34px "Segoe UI", Arial, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(rows[i][0], 36, y + 34);
+      ctx.fillStyle = '#e2e8f0';
+      ctx.fillText(rows[i][1], 92, y + 34);
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.anisotropy = 4;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
   }
 
   _makePaddockGlassTexture(isNight) {
@@ -1856,7 +2484,8 @@ export class FujiTrack {
   // --------------------------------------------------------------------------
   _buildStartGantryAndGridBoxes() {
     const envCache = FujiTrack._envGlbCache;
-    const trussMat = new THREE.MeshStandardMaterial({ color: 0xdce4f0, metalness: 0.82, roughness: 0.22 });
+    const isVegas = this.trackDef.theme === 'VEGAS';
+    const trussMat = new THREE.MeshStandardMaterial({ color: 0xdce4f0, metalness: 0.82, roughness: 0.24 });
     const spanZ = ROAD_HALF_WIDTH + 4.3;
 
     if (envCache?.gantryTrussGeo) {
@@ -1908,11 +2537,11 @@ export class FujiTrack {
     );
     const bannerFaceMat = new THREE.MeshStandardMaterial({
       map: bannerTex,
-      roughness: 0.25,
-      metalness: 0.12,
+      roughness: 0.44,
+      metalness: 0.08,
       emissive: new THREE.Color(0xffffff),
       emissiveMap: bannerTex,
-      emissiveIntensity: this.trackDef.theme === 'VEGAS' ? 0.45 : 0.18,
+      emissiveIntensity: isVegas ? 0.42 : 0.0,
     });
     const banner = new THREE.Mesh(
       new THREE.BoxGeometry(1.18, 2.25, spanZ * 1.94),
@@ -1937,8 +2566,8 @@ export class FujiTrack {
       map: timingCrownTex,
       emissive: new THREE.Color(0xffffff),
       emissiveMap: timingCrownTex,
-      emissiveIntensity: 0.55,
-      roughness: 0.22,
+      emissiveIntensity: isVegas ? 0.55 : 0.22,
+      roughness: 0.26,
     });
     const timingCrown = new THREE.Mesh(
       new THREE.BoxGeometry(0.85, 1.05, spanZ * 1.42),
@@ -1954,7 +2583,7 @@ export class FujiTrack {
     const sctx = sfCanvas.getContext('2d');
     for (let r = 0; r < 4; r++) {
       for (let c = 0; c < 16; c++) {
-        sctx.fillStyle = (r + c) % 2 === 0 ? '#ffffff' : '#101318';
+        sctx.fillStyle = (r + c) % 2 === 0 ? '#f4f6fa' : '#12151c';
         sctx.fillRect(c * 32, r * 32, 32, 32);
       }
     }
@@ -1965,24 +2594,25 @@ export class FujiTrack {
       new THREE.PlaneGeometry(3.4, ROAD_HALF_WIDTH * 1.94),
       new THREE.MeshStandardMaterial({
         map: sfTex,
-        roughness: 0.42,
+        roughness: 0.62,
+        metalness: 0.02,
         polygonOffset: true,
         polygonOffsetFactor: -2,
         polygonOffsetUnits: -2,
       })
     );
     sfMesh.rotation.x = -Math.PI / 2;
-    sfMesh.position.set(0, 0.033, 0);
+    sfMesh.position.set(0, 0.044, 0);
     sfMesh.receiveShadow = true;
     this.group.add(sfMesh);
 
-    // Hero Showroom #1 Grid Pad (s = 993.5, lat = -3.0) with Burnout Streaks & Yellow/Red FIA Chevrons!
+    // Hero Showroom #1 Grid Pad (s = 993.5, lat = -3.0) with Burnout Streaks & Yellow/Red FIA Chevrons
     const heroPadTex = this._makeShowroomGridSlotTexture();
     const heroPadMat = new THREE.MeshStandardMaterial({
       map: heroPadTex,
       transparent: true,
-      roughness: 0.68,
-      metalness: 0.04,
+      roughness: 0.72,
+      metalness: 0.03,
       polygonOffset: true,
       polygonOffsetFactor: -2,
       polygonOffsetUnits: -2,
@@ -1990,25 +2620,31 @@ export class FujiTrack {
     const heroFrame = this.sampleAt(993.5, -3.0);
     const heroPad = new THREE.Mesh(new THREE.PlaneGeometry(8.2, 3.6), heroPadMat);
     heroPad.rotation.x = -Math.PI / 2;
-    heroPad.position.set(heroFrame.pos.x - 0.6, 0.031, heroFrame.pos.z);
+    heroPad.position.set(heroFrame.pos.x - 0.6, 0.042, heroFrame.pos.z);
     heroPad.receiveShadow = true;
     this.group.add(heroPad);
 
-    // Full FIA U-Bracket Starting Grid Stalls + Yellow/Red Wheel-Stop Lines for all 16 slots!
-    const stallMat = new THREE.MeshBasicMaterial({
-      color: 0xf4f8ff,
+    // Physically shaded FIA U-Bracket Starting Grid Stalls + Yellow/Red Wheel-Stop Lines for all 16 slots
+    const stallMat = new THREE.MeshStandardMaterial({
+      color: 0xf1f5fa,
+      roughness: 0.72,
+      metalness: 0.02,
       polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
     });
-    const yellowAlignMat = new THREE.MeshBasicMaterial({
-      color: 0xffd600,
+    const yellowAlignMat = new THREE.MeshStandardMaterial({
+      color: 0xe6be00,
+      roughness: 0.68,
+      metalness: 0.02,
       polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
     });
-    const redAlignMat = new THREE.MeshBasicMaterial({
-      color: 0xe41c24,
+    const redAlignMat = new THREE.MeshStandardMaterial({
+      color: 0xd41920,
+      roughness: 0.68,
+      metalness: 0.02,
       polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
@@ -2016,7 +2652,7 @@ export class FujiTrack {
     const burnoutMat = new THREE.MeshBasicMaterial({
       color: 0x090a0d,
       transparent: true,
-      opacity: 0.58,
+      opacity: 0.52,
       polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
@@ -2027,7 +2663,7 @@ export class FujiTrack {
       const lat = slot % 2 === 0 ? -2.8 : 2.8;
       const fr = this.sampleAt(TRACK_GAME_LENGTH - sBack, lat);
       const stallGroup = new THREE.Group();
-      stallGroup.position.set(fr.pos.x, 0.032, fr.pos.z);
+      stallGroup.position.set(fr.pos.x, 0.043, fr.pos.z);
 
       const frontBar = new THREE.Mesh(new THREE.PlaneGeometry(0.24, 2.56), stallMat);
       frontBar.rotation.x = -Math.PI / 2;
@@ -2096,15 +2732,29 @@ export class FujiTrack {
   }
 
   // --------------------------------------------------------------------------
-  // 6B. MID-LAP OVERHEAD SPONSOR BRIDGES, CATCH FENCING & SKY ATMOSPHERE
+  // 6B. MID-LAP OVERHEAD SPONSOR BRIDGES, CATCH FENCING & REALISTIC SKY BROADCAST
   // --------------------------------------------------------------------------
   _buildMidLapGantriesAndSkyAtmosphere() {
+    const isVegas = this.trackDef.theme === 'VEGAS';
+    if (!this._floodAtmosphereMeshes) this._floodAtmosphereMeshes = [];
     const trussMat = new THREE.MeshStandardMaterial({ color: 0xd8e1ee, metalness: 0.78, roughness: 0.24 });
     const bridgeDefs = [
       { s: 332, title: 'PIRELLI ZERO',  sub: 'OFFICIAL TIRE SUPPLIER',   bg1: '#ffd200', bg2: '#e0a200', fg: '#111111', stripe: '#d91424', badge: 'PZ' },
       { s: 604, title: 'TAG CHRONO',    sub: 'PRECISION SECTOR TIMING',  bg1: '#0a5c36', bg2: '#063b22', fg: '#ffffff', stripe: '#eb212e', badge: 'TC' },
       { s: 792, title: 'RACE PHANATIC', sub: 'WORLD CHAMPIONSHIP TOUR',  bg1: '#071a36', bg2: '#0d3266', fg: '#00f0ff', stripe: '#ff2468', badge: 'F1' },
     ];
+
+    const bridgeLampMat = isVegas
+      ? new THREE.MeshBasicMaterial({ color: 0xe6f8ff })
+      : new THREE.MeshStandardMaterial({ color: 0x353e4d, metalness: 0.68, roughness: 0.34 });
+    const bridgeConeMat = new THREE.MeshBasicMaterial({
+      color: isVegas ? 0x80f4ff : 0xfff2d6,
+      transparent: true,
+      opacity: isVegas ? 0.042 : 0.026,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
 
     for (const bd of bridgeDefs) {
       if (this.trackDef.tunnelRangeS && bd.s >= this.trackDef.tunnelRangeS[0] - 10 && bd.s <= this.trackDef.tunnelRangeS[1] + 10) {
@@ -2126,7 +2776,6 @@ export class FujiTrack {
         footing.position.set(0, 0.45, side * span);
         gGroup.add(footing);
 
-        // Twin angled A-frame steel legs
         for (const xLeg of [-0.55, 0.55]) {
           const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 8.9, 8), trussMat);
           leg.position.set(xLeg, 4.5, side * span);
@@ -2139,10 +2788,11 @@ export class FujiTrack {
       const tex = this._makeMotorsportBanner(bd.title, bd.sub, bd.bg1, bd.bg2, bd.fg, bd.stripe, bd.badge, 1024, 192);
       const faceMat = new THREE.MeshStandardMaterial({
         map: tex,
-        roughness: 0.26,
+        roughness: 0.45,
+        metalness: 0.08,
         emissive: new THREE.Color(0xffffff),
         emissiveMap: tex,
-        emissiveIntensity: this.trackDef.theme === 'VEGAS' ? 0.48 : 0.16,
+        emissiveIntensity: isVegas ? 0.42 : 0.0,
       });
       const spanBox = new THREE.Mesh(
         new THREE.BoxGeometry(1.3, 2.35, span * 2.04),
@@ -2152,47 +2802,39 @@ export class FujiTrack {
       spanBox.castShadow = true;
       gGroup.add(spanBox);
 
-      // Top LED floodlight brow + twin underside volumetric downlight cones illuminating the track
-      const bridgeLampMat = new THREE.MeshBasicMaterial({
-        color: this.trackDef.theme === 'VEGAS' ? 0x00f0ff : 0xfff8e6,
-      });
       const topLightBar = new THREE.Mesh(new THREE.BoxGeometry(1.65, 0.16, span * 1.92), bridgeLampMat);
       topLightBar.position.set(0, 9.42, 0);
       gGroup.add(topLightBar);
 
-      const bridgeConeMat = new THREE.MeshBasicMaterial({
-        color: this.trackDef.theme === 'VEGAS' ? 0x80f8ff : 0xfff3d1,
-        transparent: true,
-        opacity: this.trackDef.theme === 'VEGAS' ? 0.085 : 0.045,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-      });
+      // Volumetric underside down-cones enabled ONLY on Vegas night or dark heavy storms!
       for (const zCone of [-3.6, 3.6]) {
         const downCone = new THREE.Mesh(new THREE.ConeGeometry(5.2, 6.9, 14, 1, true), bridgeConeMat);
         downCone.position.set(0, 3.5, zCone);
+        downCone.visible = isVegas;
         gGroup.add(downCone);
+        this._floodAtmosphereMeshes.push(downCone);
       }
 
       this.group.add(gGroup);
     }
 
-    // Trackside Stadium Floodlight Poles + Volumetric Light-Cones & Asphalt Light Pools across all 6 circuits!
-    const isVegas = this.trackDef.theme === 'VEGAS';
+    // Trackside Stadium Floodlight Poles (volumetric cones & pools strictly gated to Night / Dark Storms!)
     const floodPoleMat = new THREE.MeshStandardMaterial({ color: 0xaab6c8, metalness: 0.80, roughness: 0.24 });
-    const floodBulbMat = new THREE.MeshBasicMaterial({ color: isVegas ? 0xe6fcff : 0xfff9e6 });
+    const floodBulbMat = isVegas
+      ? new THREE.MeshBasicMaterial({ color: 0xeafaff })
+      : new THREE.MeshStandardMaterial({ color: 0xc8d3e0, roughness: 0.26, metalness: 0.58 });
     const floodConeMat = new THREE.MeshBasicMaterial({
-      color: isVegas ? 0x70f4ff : 0xfff2cc,
+      color: isVegas ? 0x78f0ff : 0xfff0cf,
       transparent: true,
-      opacity: isVegas ? 0.095 : 0.048,
+      opacity: isVegas ? 0.046 : 0.028,
       side: THREE.DoubleSide,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
     const floodPoolMat = new THREE.MeshBasicMaterial({
-      color: isVegas ? 0x40e8ff : 0xfff0c2,
+      color: isVegas ? 0x48e4ff : 0xffedc4,
       transparent: true,
-      opacity: isVegas ? 0.14 : 0.065,
+      opacity: isVegas ? 0.078 : 0.036,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       polygonOffset: true,
@@ -2204,7 +2846,7 @@ export class FujiTrack {
     const floodPoolGeo = new THREE.CircleGeometry(7.2, 18);
     floodPoolGeo.rotateX(-Math.PI / 2);
 
-    const floodStep = isVegas ? 44 : 62;
+    const floodStep = isVegas ? 44 : 74;
     for (let s = 22; s < 978; s += floodStep) {
       if (this.trackDef.tunnelRangeS && s >= this.trackDef.tunnelRangeS[0] - 8 && s <= this.trackDef.tunnelRangeS[1] + 8) {
         continue;
@@ -2234,10 +2876,13 @@ export class FujiTrack {
       const cone = new THREE.Mesh(floodConeGeo, floodConeMat);
       cone.position.set(0, 6.1, 5.2);
       cone.rotation.x = -0.34;
+      cone.visible = isVegas;
 
       const pool = new THREE.Mesh(floodPoolGeo, floodPoolMat);
-      pool.position.set(0, 0.035, 6.8);
+      pool.position.set(0, 0.044, 6.8);
+      pool.visible = isVegas;
 
+      this._floodAtmosphereMeshes.push(cone, pool);
       rig.add(mast, arm, head, lens, cone, pool);
       this.group.add(rig);
     }
@@ -2289,103 +2934,137 @@ export class FujiTrack {
       this.group.add(fencePanel);
     }
 
-    // Aerial Race-Day Atmosphere: Sweeping Vegas Sky Searchlights OR Broadcast Blimp & Festival Balloons
-    if (this.trackDef.theme === 'VEGAS') {
-      const beamGeo = new THREE.ConeGeometry(20, 380, 18, 1, true);
-      beamGeo.translate(0, 190, 0);
-      const beamColors = [0x00f0ff, 0xff1493, 0xffd600, 0x9d00ff, 0x00ffaa];
-      for (let i = 0; i < 10; i++) {
+    // Aerial Motorsport Atmosphere: Night Strip Searchlights (VEGAS) OR High-Altitude Blimp & FOM TV Helicopter
+    if (isVegas) {
+      const beamGeo = new THREE.ConeGeometry(18, 360, 16, 1, true);
+      beamGeo.translate(0, 180, 0);
+      const beamColors = [0x00e5ff, 0xff1493, 0xffd600, 0x8c52ff, 0xe8f8ff];
+      for (let i = 0; i < 8; i++) {
         const beamMat = new THREE.MeshBasicMaterial({
           color: beamColors[i % beamColors.length],
           transparent: true,
-          opacity: 0.088,
+          opacity: 0.052,
           side: THREE.DoubleSide,
           depthWrite: false,
           blending: THREE.AdditiveBlending,
         });
         const beam = new THREE.Mesh(beamGeo, beamMat);
-        const bx = -210 + i * 115;
-        const bz = i % 2 === 0 ? -155 - (i % 3) * 45 : 495 + (i % 3) * 55;
+        const bx = -210 + i * 135;
+        const bz = i % 2 === 0 ? -165 - (i % 3) * 45 : 505 + (i % 3) * 55;
         beam.position.set(bx, 0, bz);
         this.group.add(beam);
         this.animatedProps.push((t) => {
-          beam.rotation.z = Math.sin(t * 0.72 + i * 1.15) * 0.38;
-          beam.rotation.x = Math.cos(t * 0.54 + i * 0.85) * 0.30;
+          beam.rotation.z = Math.sin(t * 0.52 + i * 1.15) * 0.32;
+          beam.rotation.x = Math.cos(t * 0.40 + i * 0.85) * 0.24;
         });
       }
     } else {
-      // Orbiting Championship Broadcast Blimp
+      // 1. High-Altitude Pirelli / Championship Airship Blimp
       const blimp = new THREE.Group();
       const hull = new THREE.Mesh(
         new THREE.SphereGeometry(14, 24, 16),
-        new THREE.MeshStandardMaterial({ color: 0xf6f9ff, roughness: 0.25, metalness: 0.2 })
+        new THREE.MeshStandardMaterial({ color: 0xf4f7fc, roughness: 0.34, metalness: 0.12 })
       );
       hull.scale.set(2.85, 0.86, 0.86);
       const stripe = new THREE.Mesh(
         new THREE.SphereGeometry(14.18, 24, 12),
-        new THREE.MeshStandardMaterial({ color: 0x0d3b8c, roughness: 0.3 })
+        new THREE.MeshStandardMaterial({ color: 0x0f3578, roughness: 0.38 })
       );
       stripe.scale.set(2.82, 0.24, 0.88);
       const finV = new THREE.Mesh(
         new THREE.BoxGeometry(8.5, 11.5, 0.6),
-        new THREE.MeshStandardMaterial({ color: 0xe41c24, roughness: 0.35 })
+        new THREE.MeshStandardMaterial({ color: 0xd41920, roughness: 0.42 })
       );
       finV.position.set(-32, 2.5, 0);
       const gondola = new THREE.Mesh(
         new THREE.BoxGeometry(9.5, 2.6, 3.0),
-        new THREE.MeshStandardMaterial({ color: 0x1e2532 })
+        new THREE.MeshStandardMaterial({ color: 0x1e2532, roughness: 0.45 })
       );
       gondola.position.set(0, -12.2, 0);
       blimp.add(hull, stripe, finV, gondola);
-      blimp.position.set(220, 185, 240);
+      blimp.position.set(220, 195, 240);
       this.group.add(blimp);
       this.animatedProps.push((t) => {
-        const a = t * 0.045;
-        blimp.position.set(220 + Math.cos(a) * 420, 188 + Math.sin(t * 0.4) * 3, 240 + Math.sin(a) * 320);
+        const a = t * 0.032;
+        blimp.position.set(220 + Math.cos(a) * 460, 195 + Math.sin(t * 0.28) * 2.0, 240 + Math.sin(a) * 350);
         blimp.rotation.y = -a + Math.PI / 2;
       });
 
-      // Colorful Race-Festival Hot-Air Balloons drifting above distant hills
-      const balloonCols = [0xff2a38, 0xffb300, 0x00b0ff, 0x00e676, 0xab47bc];
-      for (let i = 0; i < 5; i++) {
-        const bg = new THREE.Group();
-        const env = new THREE.Mesh(
-          new THREE.SphereGeometry(15, 20, 16),
-          new THREE.MeshStandardMaterial({ color: balloonCols[i], roughness: 0.42 })
-        );
-        env.scale.set(1.0, 1.26, 1.0);
-        const band = new THREE.Mesh(
-          new THREE.CylinderGeometry(14.8, 13.6, 4.2, 20),
-          new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 })
-        );
-        band.position.y = 1.5;
-        const basket = new THREE.Mesh(
-          new THREE.BoxGeometry(3.2, 2.8, 3.2),
-          new THREE.MeshStandardMaterial({ color: 0x6d4c3d })
-        );
-        basket.position.y = -21;
-        bg.add(env, band, basket);
-        const ang = 0.55 + i * 1.15;
-        const baseY = 148 + (i % 3) * 32;
-        bg.position.set(200 + Math.cos(ang) * 980, baseY, 220 + Math.sin(ang) * 880);
-        this.group.add(bg);
-        this.animatedProps.push((t) => {
-          bg.position.y = baseY + Math.sin(t * 0.5 + i * 1.7) * 6.5;
-        });
+      // 2. Realistic FOM TV Broadcast Helicopter with Nose Cineflex Camera Gimbal (replaces toy hot-air balloons!)
+      const heli = new THREE.Group();
+      const heliBodyMat = new THREE.MeshStandardMaterial({ color: 0x1e242e, roughness: 0.32, metalness: 0.58 });
+      const heliAccentMat = new THREE.MeshStandardMaterial({ color: 0xc91822, roughness: 0.38, metalness: 0.28 });
+      const heliGlassMat = new THREE.MeshStandardMaterial({ color: 0x0d1724, roughness: 0.10, metalness: 0.85 });
+      const rotorBlurMat = new THREE.MeshBasicMaterial({
+        color: 0x1b2028,
+        transparent: true,
+        opacity: 0.24,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+
+      const fuselage = new THREE.Mesh(new THREE.SphereGeometry(1.55, 16, 12), heliBodyMat);
+      fuselage.scale.set(2.55, 0.92, 0.88);
+      const canopy = new THREE.Mesh(new THREE.SphereGeometry(1.28, 14, 10), heliGlassMat);
+      canopy.scale.set(1.65, 0.78, 0.82);
+      canopy.position.set(1.35, 0.14, 0);
+      const tailBoom = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.42, 5.8, 8), heliBodyMat);
+      tailBoom.rotation.z = Math.PI / 2;
+      tailBoom.position.set(-4.3, 0.28, 0);
+      const tailFin = new THREE.Mesh(new THREE.BoxGeometry(1.15, 1.95, 0.14), heliAccentMat);
+      tailFin.position.set(-6.9, 0.88, 0);
+      tailFin.rotation.z = -0.28;
+      const cineflexGimbal = new THREE.Mesh(new THREE.SphereGeometry(0.42, 12, 10), this.darkFrameMat);
+      cineflexGimbal.position.set(3.85, -0.62, 0);
+
+      for (const zSkid of [-0.95, 0.95]) {
+        const skid = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 4.4, 6), this.darkFrameMat);
+        skid.rotation.z = Math.PI / 2;
+        skid.position.set(0.2, -1.55, zSkid);
+        const strutF = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.95, 6), this.darkFrameMat);
+        strutF.position.set(1.2, -1.1, zSkid * 0.85);
+        const strutR = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.95, 6), this.darkFrameMat);
+        strutR.position.set(-0.9, -1.1, zSkid * 0.85);
+        heli.add(skid, strutF, strutR);
       }
+
+      const rotorMast = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 0.75, 8), this.darkFrameMat);
+      rotorMast.position.set(0, 1.62, 0);
+      const mainRotorDisc = new THREE.Mesh(new THREE.CircleGeometry(5.6, 24), rotorBlurMat);
+      mainRotorDisc.rotation.x = -Math.PI / 2;
+      mainRotorDisc.position.set(0, 1.96, 0);
+      const mainBladeBar = new THREE.Mesh(new THREE.BoxGeometry(11.0, 0.05, 0.34), this.darkFrameMat);
+      mainBladeBar.position.set(0, 1.97, 0);
+      const tailRotorDisc = new THREE.Mesh(new THREE.CircleGeometry(1.05, 16), rotorBlurMat);
+      tailRotorDisc.position.set(-7.1, 0.95, 0.22);
+
+      heli.add(fuselage, canopy, tailBoom, tailFin, cineflexGimbal, rotorMast, mainRotorDisc, mainBladeBar, tailRotorDisc);
+      heli.position.set(160, 82, 140);
+      this.group.add(heli);
+
+      this.animatedProps.push((t) => {
+        const ha = t * 0.085;
+        const hx = 185 + Math.cos(ha) * 320;
+        const hz = 180 + Math.sin(ha) * 255;
+        heli.position.set(hx, 82 + Math.sin(t * 0.9) * 1.4, hz);
+        heli.rotation.y = -ha - Math.PI * 0.5;
+        heli.rotation.z = -0.06;
+        heli.rotation.x = 0.12;
+        mainBladeBar.rotation.y = t * 28.0;
+      });
     }
   }
 
   // --------------------------------------------------------------------------
-  // 7. BLENDER .GLB FIA 300m/200m/100m/50m BRAKING BOARDS & SPONSOR BILLBOARDS
+  // 7. AUTHENTIC FIA 300m / 200m / 100m BLACK-AND-WHITE METER BOARDS & BILLBOARDS
   // --------------------------------------------------------------------------
   _buildBrakingBoardsAndBillboards() {
     this.billboards = [];
     const envCache = FujiTrack._envGlbCache;
     const isVegas = this.trackDef.theme === 'VEGAS';
-    const strutMat = new THREE.MeshStandardMaterial({ color: 0x647082, metalness: 0.75, roughness: 0.3 });
+    const strutMat = new THREE.MeshStandardMaterial({ color: 0x647082, metalness: 0.75, roughness: 0.32 });
 
-    // A. Grounded FIA 300m / 200m / 100m / 50m Braking Marker Boards + Apex Turn-In Chevrons & Bollards
+    // A. Authentic FIA 300m / 200m / 100m / 50m Matte Black-and-White Meter Boards (ZERO Daylight Emissive!)
     const brakeDistances = [300, 200, 100, 50];
     const brakeMats = new Map();
     for (const distM of brakeDistances) {
@@ -2394,10 +3073,10 @@ export class FujiTrack {
         distM,
         new THREE.MeshStandardMaterial({
           map: tex,
-          roughness: 0.22,
-          emissive: new THREE.Color(0xffffff),
-          emissiveMap: tex,
-          emissiveIntensity: isVegas ? 0.78 : 0.38,
+          roughness: 0.58,
+          metalness: 0.06,
+          emissive: new THREE.Color(0x000000),
+          emissiveIntensity: 0.0,
         })
       );
     }
@@ -2406,30 +3085,37 @@ export class FujiTrack {
     const apexChevronRightTex = this._makeApexChevronTexture(true, isVegas);
     const chevronMatLeft = new THREE.MeshStandardMaterial({
       map: apexChevronLeftTex,
-      roughness: 0.25,
-      emissive: new THREE.Color(0xffffff),
-      emissiveMap: apexChevronLeftTex,
-      emissiveIntensity: isVegas ? 0.68 : 0.30,
+      roughness: 0.56,
+      metalness: 0.06,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     const chevronMatRight = new THREE.MeshStandardMaterial({
       map: apexChevronRightTex,
-      roughness: 0.25,
-      emissive: new THREE.Color(0xffffff),
-      emissiveMap: apexChevronRightTex,
-      emissiveIntensity: isVegas ? 0.68 : 0.30,
+      roughness: 0.56,
+      metalness: 0.06,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     const apexBollardMat = new THREE.MeshStandardMaterial({
-      color: 0xff5500,
-      roughness: 0.3,
-      emissive: new THREE.Color(0xff4400),
-      emissiveIntensity: 0.42,
+      color: 0xe85d04,
+      roughness: 0.48,
+      metalness: 0.04,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
-    const bollardBandMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const markerFloodMat = new THREE.MeshBasicMaterial({ color: isVegas ? 0x00f0ff : 0xfff8e6 });
+    const bollardBandMat = new THREE.MeshStandardMaterial({
+      color: 0xf4f6fa,
+      roughness: 0.42,
+      metalness: 0.04,
+    });
+    const markerFloodMat = isVegas
+      ? new THREE.MeshBasicMaterial({ color: 0xeef8ff })
+      : new THREE.MeshStandardMaterial({ color: 0x2b3340, metalness: 0.65, roughness: 0.36 });
 
     const zones = this.trackDef.brakingZones || [
-      { entryS: 162, side: -1 },
-      { entryS: 610, side: -1 },
+      { entryS: 170, side: -1 },
+      { entryS: 590, side: -1 },
     ];
 
     const glbBrakeFrameMatrices = [];
@@ -2458,6 +3144,7 @@ export class FujiTrack {
           signFace.position.copy(fr.pos);
           signFace.rotation.y = rotY;
           signFace.castShadow = true;
+          signFace.receiveShadow = true;
           this.group.add(signFace);
         } else {
           const markerGroup = new THREE.Group();
@@ -2470,6 +3157,7 @@ export class FujiTrack {
           );
           sign.position.y = 1.62;
           sign.castShadow = true;
+          sign.receiveShadow = true;
           markerGroup.add(sign);
 
           const hood = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.10, 2.02), markerFloodMat);
@@ -2485,10 +3173,10 @@ export class FujiTrack {
         }
       }
 
-      // High-Visibility FIA Turn-In Chevron Boards + Inside Apex Marker Bollard at Corner Entry!
+      // Authentic FIA Black-and-White Turn-In Chevron Boards + Matte Inside Apex Bollard
       const apexS = wrapS(bz.entryS + 14);
       if (!(this.trackDef.tunnelRangeS && apexS >= this.trackDef.tunnelRangeS[0] && apexS <= this.trackDef.tunnelRangeS[1])) {
-        const kApex = this.getPhysicsCurvature(apexS);
+        const kApex = this.getRealCurvature(apexS);
         const turnRight = kApex >= 0;
         const outsideSide = (bz.side > 0 && (apexS >= 898 || apexS <= 126)) ? -1 : bz.side;
         const cMat = turnRight ? chevronMatRight : chevronMatLeft;
@@ -2503,10 +3191,10 @@ export class FujiTrack {
           );
           chev.position.copy(cfr.pos).add(new THREE.Vector3(0, 1.38, 0));
           chev.rotation.y = -cyaw + (outsideSide > 0 ? -0.24 : 0.24);
+          chev.castShadow = true;
           this.group.add(chev);
         }
 
-        // Fluorescent Orange/White FIA Inside Apex Bollard on inner kerb shoulder
         const insideSide = -outsideSide;
         if (!(insideSide > 0 && (apexS >= 900 || apexS <= 124))) {
           const ifr = this.sampleAt(apexS, insideSide * (ROAD_HALF_WIDTH + CURB_WIDTH + 0.65));
@@ -2530,20 +3218,22 @@ export class FujiTrack {
       this.group.add(bfInst);
     }
 
-    // B. Blender .glb Sponsor Billboard Rigs (Steel A-Frame Bracing, Catwalk, Floodlights & Vector Sponsor Banners)
+    // B. Trackside Sponsor Billboard Rigs (Zero Daylight Emissive; Lit Naturally by Sun/IBL!)
     const brandMats = BILLBOARD_BRANDS.map((b) => {
       const tex = this._makeMotorsportBanner(b.title, b.sub, b.bg1, b.bg2, b.fg, b.stripe, b.badge, 1024, 256);
       return new THREE.MeshStandardMaterial({
         map: tex,
-        roughness: 0.28,
-        metalness: 0.12,
+        roughness: 0.48,
+        metalness: 0.08,
         emissive: new THREE.Color(0xffffff),
         emissiveMap: tex,
-        emissiveIntensity: isVegas ? 0.52 : 0.16,
+        emissiveIntensity: isVegas ? 0.36 : 0.0,
       });
     });
 
-    const lightBarMat = new THREE.MeshBasicMaterial({ color: isVegas ? 0x00f0ff : 0xfff8e6 });
+    const lightBarMat = isVegas
+      ? new THREE.MeshBasicMaterial({ color: 0xeef8ff })
+      : new THREE.MeshStandardMaterial({ color: 0x2b3340, metalness: 0.65, roughness: 0.36 });
     let bIdx = 0;
 
     for (let s = 34; s < 956; s += 33) {
@@ -2554,8 +3244,8 @@ export class FujiTrack {
         continue;
       }
 
-      const k = this.getPhysicsCurvature(s);
-      const side = Math.abs(k) > 0.15 ? -Math.sign(k) : (bIdx % 2 === 0 ? -1 : 1);
+      const kReal = this.getRealCurvature(s);
+      const side = Math.abs(kReal) > 0.0022 ? -Math.sign(kReal) : (bIdx % 2 === 0 ? -1 : 1);
       if (side > 0 && (s >= 898 || s <= 128)) continue;
 
       const lat = side * (ROAD_HALF_WIDTH + 7.55);
@@ -2620,15 +3310,16 @@ export class FujiTrack {
     }
   }
 
-  _makeApexChevronTexture(turnRight, isNight) {
+  _makeApexChevronTexture(turnRight) {
     const c = document.createElement('canvas');
     c.width = 512;
     c.height = 256;
     const ctx = c.getContext('2d');
-    ctx.fillStyle = '#0e131d';
+    ctx.fillStyle = '#12151c';
     ctx.fillRect(0, 0, 512, 256);
 
-    ctx.fillStyle = isNight ? '#00f0ff' : '#ffd600';
+    // Authentic FIA black-and-white directional turn-in chevrons
+    ctx.fillStyle = '#f3f6fa';
     const dir = turnRight ? 1 : -1;
     for (let i = -1; i < 4; i++) {
       const cx = 96 + i * 118;
@@ -2642,70 +3333,72 @@ export class FujiTrack {
       ctx.closePath();
       ctx.fill();
     }
-    ctx.strokeStyle = '#ffffff';
+    ctx.strokeStyle = '#e5eaf2';
     ctx.lineWidth = 8;
     ctx.strokeRect(6, 6, 500, 244);
 
     const tex = new THREE.CanvasTexture(c);
-    tex.anisotropy = 4;
+    tex.anisotropy = 8;
     tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
   }
 
-  _makeBrakingBoardTexture(distM, isNight) {
+  _makeBrakingBoardTexture(distM) {
     const c = document.createElement('canvas');
     c.width = 512;
     c.height = 384;
     const ctx = c.getContext('2d');
 
-    // Deep high-contrast backing with luminous outer + inner FIA border
+    // Authentic FIA Grade-1 Matte Black-and-White Meter Board (#111419 matte black + crisp white DIN numerals)
     const bg = ctx.createLinearGradient(0, 0, 0, 384);
-    bg.addColorStop(0.0, isNight ? '#061c36' : '#064e22');
-    bg.addColorStop(1.0, isNight ? '#030e1c' : '#032b12');
+    bg.addColorStop(0.0, '#161a22');
+    bg.addColorStop(1.0, '#0f1218');
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, 512, 384);
 
-    ctx.strokeStyle = '#ffffff';
+    // Subtle painted aluminum panel grain
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.025)';
+    for (let y = 0; y < 384; y += 6) {
+      ctx.fillRect(0, y, 512, 2);
+    }
+
+    // Crisp matte-white outer FIA border frame
+    ctx.strokeStyle = '#f2f5fa';
     ctx.lineWidth = 14;
-    ctx.strokeRect(10, 10, 492, 364);
+    ctx.strokeRect(12, 12, 488, 360);
 
-    ctx.strokeStyle = isNight ? '#00f0ff' : '#ffd600';
-    ctx.lineWidth = 6;
-    ctx.strokeRect(24, 24, 464, 336);
-
-    // FIA Braking Countdown Bars (300m = 3 bars, 200m = 2 bars, 150m = 3 bars, 100m = 1 bar, 50m = twin chevrons)
-    ctx.fillStyle = isNight ? '#ff1493' : '#ffd600';
+    // FIA Braking Distance Reference Bars across top (300m = 3 bars, 200m = 2 bars, 100m = 1 bar, 50m = split bar)
+    ctx.fillStyle = '#f4f7fc';
     if (distM === 50) {
-      ctx.fillRect(42, 44, 428, 36);
+      ctx.fillRect(96, 40, 136, 22);
+      ctx.fillRect(280, 40, 136, 22);
     } else {
-      const bars = distM >= 250 || distM === 150 ? 3 : (distM >= 180 ? 2 : 1);
+      const bars = distM >= 250 ? 3 : (distM >= 180 ? 2 : 1);
+      const barW = 108;
+      const gap = 24;
+      const totalW = bars * barW + (bars - 1) * gap;
+      const x0 = Math.round((512 - totalW) * 0.5);
       for (let i = 0; i < bars; i++) {
-        ctx.fillRect(42 + i * 48, 38, 32, 54);
+        ctx.fillRect(x0 + i * (barW + gap), 38, barW, 24);
       }
     }
 
-    // High-contrast dark numeral badge + ultra-bold outlined distance numerals for 300+ km/h mobile readability
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
-    ctx.fillRect(36, 104, 440, 186);
-
+    // Ultra-crisp FIA white distance numerals (zero neon colors, instant readability at 330 km/h)
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = '900 italic 176px "Segoe UI", "Arial Black", sans-serif';
-    ctx.lineWidth = 16;
-    ctx.strokeStyle = '#05080f';
-    ctx.strokeText(`${distM}`, 256, 202);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(`${distM}`, 256, 202);
+    ctx.fillStyle = '#f6f8fc';
+    ctx.font = '900 202px "Segoe UI", "Arial Black", sans-serif';
+    ctx.fillText(`${distM}`, 256, 214);
 
-    // High-visibility footer ribbon
-    ctx.fillStyle = isNight ? '#00f0ff' : '#ffd600';
-    ctx.fillRect(28, 302, 456, 52);
-    ctx.fillStyle = '#08101c';
-    ctx.font = '900 36px "Segoe UI", "Arial Black", sans-serif';
-    ctx.fillText('BRAKE • METERS', 256, 329);
+    // Subtle lower metric 'm' rule
+    ctx.fillStyle = 'rgba(242, 245, 250, 0.85)';
+    ctx.fillRect(42, 324, 158, 6);
+    ctx.fillRect(312, 324, 158, 6);
+    ctx.font = '800 32px "Segoe UI", Arial, sans-serif';
+    ctx.fillText(`${distM} m`, 256, 326);
 
     const tex = new THREE.CanvasTexture(c);
-    tex.anisotropy = 4;
+    tex.anisotropy = 8;
     tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
   }
@@ -2716,22 +3409,19 @@ export class FujiTrack {
     c.height = h;
     const ctx = c.getContext('2d');
 
-    // Rich directional gradient background
     const grad = ctx.createLinearGradient(0, 0, w, h);
     grad.addColorStop(0, bg1);
     grad.addColorStop(1, bg2);
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, w, h);
 
-    // Subtle brushed diagonal carbon/metallic texture sheen
-    ctx.fillStyle = 'rgba(255,255,255,0.045)';
+    ctx.fillStyle = 'rgba(255,255,255,0.04)';
     ctx.fillRect(0, 0, w, h * 0.36);
     ctx.fillStyle = 'rgba(0,0,0,0.08)';
     for (let x = -h; x < w; x += 28) {
       ctx.fillRect(x, 0, 2, h);
     }
 
-    // Racing diagonal accent chevrons on right end
     ctx.fillStyle = stripe;
     ctx.beginPath();
     ctx.moveTo(w * 0.81, 0);
@@ -2749,7 +3439,6 @@ export class FujiTrack {
     ctx.closePath();
     ctx.fill();
 
-    // Left circular motorsport crest medallion badge
     if (w >= 512) {
       const cx = h * 0.54;
       const cy = h * 0.50;
@@ -2774,12 +3463,10 @@ export class FujiTrack {
       ctx.fillText(badgeTxt, cx, cy + 1);
     }
 
-    // Crisp outer metallic/accent border frame
     ctx.strokeStyle = stripe;
     ctx.lineWidth = Math.max(6, h * 0.045);
     ctx.strokeRect(4, 4, w - 8, h - 8);
 
-    // Drop-shadowed Main Headline & Subtitle (auto-fitted so text never clips!)
     const textX = w >= 512 ? w * 0.455 : w * 0.5;
     const maxTextW = w >= 512 ? w * 0.54 : w * 0.82;
     ctx.textAlign = 'center';
@@ -2804,7 +3491,7 @@ export class FujiTrack {
   }
 
   // --------------------------------------------------------------------------
-  // 8. BLENDER .GLB 3D GRANDSTANDS + LIVING MEXICAN-WAVE CROWDS, 3D FLAGS, SMOKE FLARES & CONFETTI
+  // 8. 3D GRANDSTANDS + NATURAL MOTORSPORT SPECTATOR SEATING & MOTION (ZERO CONFETTI/FLARES!)
   // --------------------------------------------------------------------------
   _makeCameraFlashTexture() {
     const c = document.createElement('canvas');
@@ -2813,33 +3500,15 @@ export class FujiTrack {
     const ctx = c.getContext('2d');
     const g = ctx.createRadialGradient(32, 32, 1, 32, 32, 30);
     g.addColorStop(0.0, 'rgba(255, 255, 255, 1.0)');
-    g.addColorStop(0.28, 'rgba(205, 245, 255, 0.85)');
-    g.addColorStop(0.65, 'rgba(120, 215, 255, 0.22)');
+    g.addColorStop(0.28, 'rgba(225, 245, 255, 0.78)');
+    g.addColorStop(0.65, 'rgba(140, 210, 255, 0.18)');
     g.addColorStop(1.0, 'rgba(0, 0, 0, 0.0)');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, 64, 64);
 
-    // 4-point optical camera starburst rays
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
-    ctx.fillRect(4, 30, 56, 4);
-    ctx.fillRect(30, 4, 4, 56);
-    const tex = new THREE.CanvasTexture(c);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    return tex;
-  }
-
-  _makeFlareSmokeTexture() {
-    const c = document.createElement('canvas');
-    c.width = 128;
-    c.height = 128;
-    const ctx = c.getContext('2d');
-    const g = ctx.createRadialGradient(64, 64, 6, 64, 64, 60);
-    g.addColorStop(0.00, 'rgba(255, 255, 255, 0.62)');
-    g.addColorStop(0.38, 'rgba(245, 248, 255, 0.36)');
-    g.addColorStop(0.72, 'rgba(220, 228, 240, 0.12)');
-    g.addColorStop(1.00, 'rgba(200, 210, 225, 0.0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, 128, 128);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.88)';
+    ctx.fillRect(8, 31, 48, 2);
+    ctx.fillRect(31, 8, 2, 48);
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
@@ -2863,16 +3532,21 @@ export class FujiTrack {
           #ifdef USE_INSTANCING
             vec3 instPos = instanceMatrix[3].xyz;
             float fanSeed = fract(sin(dot(instPos.xz, vec2(12.9898, 78.233))) * 43758.5453);
-            float stadiumWave = pow(max(0.0, sin(uCrowdTime * 4.6 - instPos.x * 0.055 - instPos.z * 0.025)), 6.0);
-            float cheerBounce = abs(sin(uCrowdTime * (5.4 + fanSeed * 2.8) + fanSeed * 6.2831));
-            float jumpAmp = (0.12 + uCrowdExcitement * 0.16) * cheerBounce + (0.42 + uCrowdExcitement * 0.22) * stadiumWave;
-            float upperW = clamp(position.y / 1.45, 0.0, 1.0);
-            transformed.y += jumpAmp * (0.35 + 0.65 * upperW);
-            transformed.x += sin(uCrowdTime * 6.6 + fanSeed * 6.2831) * (0.05 + 0.08 * stadiumWave) * upperW;
+            float fanSeed2 = fract(fanSeed * 17.371);
+            float upperW = clamp(position.y / 1.35, 0.0, 1.0);
+            // Calm baseline human posture micro-sway (~1.2cm); natural applause/rise ONLY on triggerCrowdExcitement!
+            float exciteW = clamp(uCrowdExcitement, 0.0, 1.4);
+            float idleSway = sin(uCrowdTime * (1.05 + fanSeed * 0.85) + fanSeed * 6.2831);
+            float idleTurn = cos(uCrowdTime * (0.78 + fanSeed2 * 0.65) + fanSeed2 * 6.2831);
+            float fanEnthusiasm = smoothstep(0.22, 0.92, fanSeed2);
+            float cheerPulse = 0.5 + 0.5 * sin(uCrowdTime * (3.6 + fanSeed * 1.8) + fanSeed * 6.2831);
+            float riseY = (0.010 * abs(idleSway)) + exciteW * fanEnthusiasm * (0.048 + 0.030 * cheerPulse);
+            transformed.y += riseY * (0.25 + 0.75 * upperW);
+            transformed.x += (idleTurn * 0.016 + sin(uCrowdTime * 4.1 + fanSeed * 6.2831) * 0.024 * exciteW * fanEnthusiasm) * upperW;
           #endif`
         );
     };
-    mat.customProgramCacheKey = () => 'f1_crowd_wave_v2';
+    mat.customProgramCacheKey = () => 'f1_crowd_natural_v3';
     return mat;
   }
 
@@ -2898,46 +3572,52 @@ export class FujiTrack {
             vec3 fInst = instanceMatrix[3].xyz;
             fSeed = fract(sin(dot(fInst.xz, vec2(19.19, 47.73))) * 29143.17) * 6.2831;
           #endif
-          float ripplePhase = uCrowdTime * (7.8 + uCrowdExcitement * 3.4) + fSeed;
-          transformed.z += sin(clothU * 5.6 - ripplePhase) * (0.28 + uCrowdExcitement * 0.15) * clothU;
-          transformed.y += cos(clothU * 3.9 - ripplePhase * 0.84) * 0.09 * clothU;`
+          float ripplePhase = uCrowdTime * (4.6 + clamp(uCrowdExcitement, 0.0, 1.4) * 2.2) + fSeed;
+          transformed.z += sin(clothU * 5.2 - ripplePhase) * (0.18 + clamp(uCrowdExcitement, 0.0, 1.4) * 0.09) * clothU;
+          transformed.y += cos(clothU * 3.6 - ripplePhase * 0.82) * 0.06 * clothU;`
         );
     };
-    mat.customProgramCacheKey = () => `f1_flag_ripple_${spanStr}`;
+    mat.customProgramCacheKey = () => `f1_flag_ripple_v3_${spanStr}`;
     return mat;
   }
 
   _buildGrandstands() {
     const envCache = FujiTrack._envGlbCache;
+    const theme = this.trackDef.theme;
+    const isVegas = theme === 'VEGAS';
+
+    // Authentic ~80% natural spectator attire (charcoal, navy, slate, white, denim) + ~20% team polo accents
+    const shirtColors = theme === 'MONZA'
+      ? ['#232936', '#1b2a47', '#c81922', '#e8edf5', '#3a4556', '#a8131b', '#2d3748', '#d4dbe6', '#c81922', '#475569']
+      : (theme === 'SILVERSTONE'
+        ? ['#1e2633', '#172b4d', '#364152', '#e6ebf2', '#0f4d3a', '#2b3648', '#dd6114', '#4a5568', '#1f3a60', '#cbd5e1']
+        : ['#212734', '#1a2944', '#384354', '#e8ecf4', '#2d3a46', '#c41820', '#465264', '#cfd7e3', '#1e3a5f', '#d96b1b']);
+
+    // Molded stadium seat-tier backing texture (~20% empty seats + natural spectator distribution)
     const c = document.createElement('canvas');
     c.width = 512;
     c.height = 256;
     const ctx = c.getContext('2d');
-    ctx.fillStyle = '#485364';
+    ctx.fillStyle = '#252d3a';
     ctx.fillRect(0, 0, 512, 256);
-
-    const theme = this.trackDef.theme;
-    const shirtColors = theme === 'MONZA'
-      ? ['#e41c24', '#ff2a2a', '#ffffff', '#009246', '#ffd600', '#ff6d00', '#d90429']
-      : (theme === 'VEGAS'
-        ? ['#ff1493', '#00f0ff', '#ffd600', '#ffffff', '#b388ff', '#00e676', '#ff6d00']
-        : (theme === 'SILVERSTONE'
-          ? ['#ff6d00', '#00f0ff', '#0038a8', '#ce1126', '#ffffff', '#ffd600', '#009246']
-          : ['#e41c24', '#ff6d00', '#00d2be', '#ffd600', '#ffffff', '#1e41ff', '#00e676']));
 
     for (let row = 0; row < 16; row++) {
       const y = row * 16;
-      ctx.fillStyle = '#6c7a8e';
-      ctx.fillRect(0, y, 512, 5);
-      ctx.fillStyle = '#323b4a';
+      ctx.fillStyle = '#394557';
+      ctx.fillRect(0, y, 512, 4);
+      ctx.fillStyle = '#171d26';
       ctx.fillRect(0, y + 14, 512, 2);
       for (let col = 4; col < 508; col += 7) {
         const h = fastHash2D(col, row, 401);
-        if (h < 0.88) {
+        if (h < 0.78) {
           ctx.fillStyle = shirtColors[Math.floor(h * 97) % shirtColors.length];
           ctx.fillRect(col, y + 5, 5, 9);
-          ctx.fillStyle = h < 0.3 ? '#ffffff' : '#f1c27d';
+          ctx.fillStyle = h < 0.24 ? '#dce3ed' : '#d8ae82';
           ctx.fillRect(col + 1, y + 3, 3, 3);
+        } else {
+          // Visible empty molded dark-slate stadium seat shell
+          ctx.fillStyle = '#2d3748';
+          ctx.fillRect(col, y + 5, 5, 8);
         }
       }
     }
@@ -2949,25 +3629,25 @@ export class FujiTrack {
 
     const crowdMat = new THREE.MeshStandardMaterial({
       map: crowdTex,
-      roughness: 0.64,
-      emissive: new THREE.Color(0xffffff),
-      emissiveMap: crowdTex,
-      emissiveIntensity: theme === 'VEGAS' ? 0.50 : 0.26,
+      roughness: 0.78,
+      metalness: 0.02,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
 
-    // Architectural dark gunmetal/ribbed exterior cladding texture
+    // Architectural dark gunmetal/ribbed exterior grandstand cladding
     const extC = document.createElement('canvas');
     extC.width = 256;
     extC.height = 128;
     const ectx = extC.getContext('2d');
-    ectx.fillStyle = theme === 'VEGAS' ? '#182236' : '#2b3444';
+    ectx.fillStyle = isVegas ? '#182236' : '#2b3444';
     ectx.fillRect(0, 0, 256, 128);
-    ectx.fillStyle = theme === 'VEGAS' ? '#00f0ff' : '#4a586e';
+    ectx.fillStyle = isVegas ? '#28527a' : '#435066';
     for (let x = 0; x < 256; x += 16) {
       ectx.fillRect(x, 0, 3, 128);
     }
-    ectx.fillStyle = this.trackDef.accentColor || '#e41c24';
-    ectx.fillRect(0, 14, 256, 14);
+    ectx.fillStyle = this.trackDef.accentColor || '#c91822';
+    ectx.fillRect(0, 14, 256, 12);
     const extTex = new THREE.CanvasTexture(extC);
     extTex.wrapS = THREE.RepeatWrapping;
     extTex.wrapT = THREE.RepeatWrapping;
@@ -2976,20 +3656,20 @@ export class FujiTrack {
 
     const structMat = new THREE.MeshStandardMaterial({
       map: extTex,
-      roughness: 0.44,
-      metalness: 0.32,
-      emissive: new THREE.Color(theme === 'VEGAS' ? 0x152238 : 0x0d121a),
-      emissiveIntensity: 0.22,
+      roughness: 0.52,
+      metalness: 0.28,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     const canopyMat = new THREE.MeshStandardMaterial({
-      color: 0xf4f8ff,
-      roughness: 0.28,
-      metalness: 0.24,
+      color: 0xeef3f9,
+      roughness: 0.34,
+      metalness: 0.22,
       side: THREE.DoubleSide,
     });
-    const underLightMat = new THREE.MeshBasicMaterial({
-      color: theme === 'VEGAS' ? 0xdff8ff : 0xfff7e2,
-    });
+    const underLightMat = isVegas
+      ? new THREE.MeshBasicMaterial({ color: 0xeaf6ff })
+      : new THREE.MeshStandardMaterial({ color: 0x384252, roughness: 0.40, metalness: 0.52 });
 
     const fasciaTitle = theme === 'MONZA'
       ? 'AUTODROMO MONZA • FORZA TIFOSI'
@@ -3001,85 +3681,88 @@ export class FujiTrack {
     const fasciaTex = this._makeMotorsportBanner(
       fasciaTitle,
       `${this.trackDef.country} • GRANDSTAND TRIBUNE`,
-      theme === 'MONZA' ? '#b80d18' : (theme === 'SILVERSTONE' ? '#002b7f' : '#0b2244'),
-      theme === 'MONZA' ? '#7a060e' : (theme === 'SILVERSTONE' ? '#081b4b' : '#133a70'),
+      theme === 'MONZA' ? '#a31018' : (theme === 'SILVERSTONE' ? '#0a2668' : '#0b2244'),
+      theme === 'MONZA' ? '#6e080f' : (theme === 'SILVERSTONE' ? '#071842' : '#133463'),
       '#ffffff',
-      theme === 'VEGAS' ? '#00f0ff' : (theme === 'SILVERSTONE' ? '#ce1126' : '#ffd600'),
+      isVegas ? '#00d8f0' : (theme === 'SILVERSTONE' ? '#ce1126' : '#e6be00'),
       'GP',
       1024,
       128
     );
     const fasciaMat = new THREE.MeshStandardMaterial({
       map: fasciaTex,
-      roughness: 0.30,
+      roughness: 0.44,
+      metalness: 0.08,
       emissive: new THREE.Color(0xffffff),
       emissiveMap: fasciaTex,
-      emissiveIntensity: theme === 'VEGAS' ? 0.48 : 0.20,
+      emissiveIntensity: isVegas ? 0.38 : 0.0,
     });
 
-    // Articulated 3D Spectator & 3D Flag-Waver Geometries (Blender .glb or rich procedural fallback)
+    // Articulated 3D Seated/Standing Spectator & Supporter Flag Geometries
     let spectatorGeo = envCache?.spectatorGeo;
     if (!spectatorGeo) {
-      const torsoG = new THREE.BoxGeometry(0.56, 0.76, 0.34);
-      torsoG.translate(0, 0.48, 0);
-      const headG = new THREE.SphereGeometry(0.20, 8, 6);
-      headG.translate(0, 1.06, 0);
-      const armLG = new THREE.BoxGeometry(0.14, 0.58, 0.14);
-      armLG.rotateZ(0.38);
-      armLG.translate(-0.36, 0.98, 0.05);
-      const armRG = new THREE.BoxGeometry(0.14, 0.58, 0.14);
-      armRG.rotateZ(-0.38);
-      armRG.translate(0.36, 0.98, 0.05);
+      const torsoG = new THREE.BoxGeometry(0.54, 0.74, 0.32);
+      torsoG.translate(0, 0.46, 0);
+      const headG = new THREE.SphereGeometry(0.19, 8, 6);
+      headG.translate(0, 1.02, 0);
+      const armLG = new THREE.BoxGeometry(0.13, 0.50, 0.13);
+      armLG.rotateZ(0.16);
+      armLG.translate(-0.33, 0.58, 0.06);
+      const armRG = new THREE.BoxGeometry(0.13, 0.50, 0.13);
+      armRG.rotateZ(-0.16);
+      armRG.translate(0.33, 0.58, 0.06);
       spectatorGeo = mergeSubGeometries([torsoG, headG, armLG, armRG]);
     }
 
     let flagWaverBodyGeo = envCache?.flagWaverBodyGeo;
     if (!flagWaverBodyGeo) {
-      const poleG = new THREE.CylinderGeometry(0.035, 0.045, 2.85, 6);
-      poleG.translate(0, 2.27, 0.34);
+      const poleG = new THREE.CylinderGeometry(0.032, 0.042, 2.75, 6);
+      poleG.translate(0, 2.18, 0.32);
       flagWaverBodyGeo = mergeSubGeometries([spectatorGeo.clone(), poleG]);
     }
 
     let flagWaverClothGeo = envCache?.flagWaverClothGeo;
     if (!flagWaverClothGeo) {
-      const fg = new THREE.PlaneGeometry(2.25, 1.28, 8, 3);
-      fg.translate(1.125, 2.98, 0.34);
+      const fg = new THREE.PlaneGeometry(2.15, 1.22, 8, 3);
+      fg.translate(1.075, 2.88, 0.32);
       flagWaverClothGeo = fg;
     }
 
     const crowdInstMat = this._applyCrowdWaveShader(
       new THREE.MeshStandardMaterial({
         color: 0xffffff,
-        roughness: 0.56,
-        metalness: 0.04,
-        emissive: new THREE.Color(theme === 'VEGAS' ? 0x222838 : 0x141820),
-        emissiveIntensity: theme === 'VEGAS' ? 0.38 : 0.16,
+        roughness: 0.76,
+        metalness: 0.02,
+        emissive: new THREE.Color(0x000000),
+        emissiveIntensity: 0.0,
       })
     );
     const flagBodyMat = this._applyCrowdWaveShader(
       new THREE.MeshStandardMaterial({
         color: 0xffffff,
-        roughness: 0.52,
+        roughness: 0.74,
+        metalness: 0.02,
+        emissive: new THREE.Color(0x000000),
+        emissiveIntensity: 0.0,
       })
     );
     const flagClothMat = this._applyFlagRippleShader(
       new THREE.MeshStandardMaterial({
         color: 0xffffff,
-        roughness: 0.38,
+        roughness: 0.58,
+        metalness: 0.02,
         side: THREE.DoubleSide,
-        emissive: new THREE.Color(0x222222),
-        emissiveIntensity: theme === 'VEGAS' ? 0.45 : 0.20,
+        emissive: new THREE.Color(0x000000),
+        emissiveIntensity: 0.0,
       }),
-      2.25
+      2.15
     );
 
     const supporterFlagCols = theme === 'MONZA'
-      ? [0xe41c24, 0x009246, 0xffffff, 0xffd600]
+      ? [0xc81922, 0x00803c, 0xf2f5fa, 0xe0b400]
       : (theme === 'SILVERSTONE'
-        ? [0xff6d00, 0x00f0ff, 0x0038a8, 0xce1126]
-        : (theme === 'VEGAS'
-          ? [0xff1493, 0x00f0ff, 0xffd600, 0x00e676]
-          : [0xe51c23, 0xff6d00, 0x00e5ff, 0xffd600, 0xffffff]));
+        ? [0xdd6114, 0x0f4d3a, 0x0a2e8c, 0xc81922]
+        : [0xc81922, 0xdd6114, 0x1a4488, 0xf2f5fa]);
     const shirtPaletteCols = shirtColors.map((hex) => new THREE.Color(hex));
     const flagPaletteCols = supporterFlagCols.map((hex) => new THREE.Color(hex));
 
@@ -3091,12 +3774,11 @@ export class FujiTrack {
       depthWrite: false,
       side: THREE.DoubleSide,
     });
-    const flashGeo = new THREE.PlaneGeometry(1.85, 1.85);
+    const flashGeo = new THREE.PlaneGeometry(1.15, 1.15);
 
     const allFanInstances = [];
     const allFlagInstances = [];
     const allCameraFlashes = [];
-    const allFlareSources = [];
     const glbStructMatrices = [];
     const glbRoofMatrices = [];
     let standSeed = 0;
@@ -3129,10 +3811,10 @@ export class FujiTrack {
           glbStructMatrices.push(worldDummy.matrix.clone());
           glbRoofMatrices.push(worldDummy.matrix.clone());
         }
-        // Subtle populated step backing plane so zero sky gaps ever peek between seats
         const tier = new THREE.Mesh(new THREE.PlaneGeometry(spanW - 2.2, 17.6), crowdMat);
         tier.position.set(0, 8.5, 0.1);
         tier.rotation.x = -0.64;
+        tier.receiveShadow = true;
         standGroup.add(tier);
       } else {
         const base = new THREE.Mesh(new THREE.BoxGeometry(spanW, 3.4, 19.5), structMat);
@@ -3155,6 +3837,7 @@ export class FujiTrack {
         const tier = new THREE.Mesh(new THREE.PlaneGeometry(spanW - 2.4, 19.8), crowdMat);
         tier.position.set(0, 9.3, 1.3);
         tier.rotation.x = -0.62;
+        tier.receiveShadow = true;
         standGroup.add(tier);
 
         const roof = new THREE.Mesh(new THREE.BoxGeometry(spanW + 3.0, 0.82, 23.0), canopyMat);
@@ -3171,7 +3854,6 @@ export class FujiTrack {
         }
       }
 
-      // Framed Front Sponsor Fascia Wall & Under-Canopy Broadcast Spotlights
       const fascia = new THREE.Mesh(
         new THREE.BoxGeometry(spanW + 0.4, 2.25, 0.65),
         [this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, this.darkFrameMat, fasciaMat, this.darkFrameMat]
@@ -3183,7 +3865,7 @@ export class FujiTrack {
       lightStrip.position.set(0, 16.55, 9.8);
       standGroup.add(lightStrip);
 
-      // Populate Dense 3D Cheering Fans across 8 Stepped Stadium Rows!
+      // Populate Natural Motorsport Spectators across 8 Stepped Stadium Rows (~80% occupancy)
       const usableW = spanW - 5.0;
       const cols = Math.max(18, Math.floor(usableW / 3.1));
       const rowCount = 8;
@@ -3192,31 +3874,31 @@ export class FujiTrack {
         const rowZ = useGlbTribune ? (6.55 - r * 1.65) : (5.20 - r * 1.12);
         for (let cIdx = 0; cIdx < cols; cIdx++) {
           const h = fastHash2D(cIdx, r, mySeed * 31 + 17);
-          if (h > 0.84) continue;
-          const fx = -usableW * 0.5 + (cIdx + 0.5) * (usableW / cols) + (h - 0.42) * 0.75;
+          if (h > 0.80) continue;
+          const fx = -usableW * 0.5 + (cIdx + 0.5) * (usableW / cols) + (h - 0.40) * 0.62;
           localPos.set(fx, rowY, rowZ).applyQuaternion(standQuat).add(worldPos);
-          fanQuat.setFromAxisAngle(yAxis, worldYawRad + (h - 0.5) * 0.36);
-          const sc = 0.94 + h * 0.26;
+          fanQuat.setFromAxisAngle(yAxis, worldYawRad + (h - 0.5) * 0.28);
+          const sc = 0.94 + h * 0.18;
           worldDummy.position.copy(localPos);
           worldDummy.quaternion.copy(fanQuat);
           worldDummy.scale.setScalar(sc);
           worldDummy.updateMatrix();
-          const shirtCol = shirtPaletteCols[(cIdx * 5 + r * 3 + mySeed) % shirtPaletteCols.length];
+          const shirtCol = shirtPaletteCols[(cIdx * 7 + r * 3 + mySeed) % shirtPaletteCols.length];
           allFanInstances.push({ matrix: worldDummy.matrix.clone(), color: shirtCol });
         }
       }
 
-      // Populate 3D Flag-Waving Ultras across Lower, Mid & Upper Rows!
-      const flagCount = Math.max(6, Math.floor(spanW / 18));
+      // Tasteful Supporter Flags in Mid/Upper Rows
+      const flagCount = Math.max(2, Math.floor(spanW / 40));
       for (let fi = 0; fi < flagCount; fi++) {
-        const rSlot = (fi * 3 + mySeed) % rowCount;
+        const rSlot = 3 + ((fi * 2 + mySeed) % (rowCount - 3));
         const fy = useGlbTribune ? (3.96 + rSlot * 1.24) : (3.90 + rSlot * 1.48);
         const fz = (useGlbTribune ? (6.55 - rSlot * 1.65) : (5.20 - rSlot * 1.12)) + 0.18;
-        const fx = -usableW * 0.45 + (fi / Math.max(1, flagCount - 1)) * (usableW * 0.90);
+        const fx = -usableW * 0.42 + (fi / Math.max(1, flagCount - 1)) * (usableW * 0.84);
         localPos.set(fx, fy, fz).applyQuaternion(standQuat).add(worldPos);
         worldDummy.position.copy(localPos);
         worldDummy.rotation.set(0, worldYawRad, 0);
-        worldDummy.scale.setScalar(1.02);
+        worldDummy.scale.setScalar(0.98);
         worldDummy.updateMatrix();
         allFlagInstances.push({
           matrix: worldDummy.matrix.clone(),
@@ -3225,33 +3907,15 @@ export class FujiTrack {
         });
       }
 
-      // Team-Colored Motorsport Smoke Flare Ultra-Sections!
-      const flareCount = isMainStraight ? 2 : 1;
-      const flarePalette = theme === 'MONZA'
-        ? [0xff1744, 0x00e676, 0xffffff, 0xffd600]
-        : [0xff6d00, 0xff1744, 0x00e5ff, 0xffd600];
-      for (let fl = 0; fl < flareCount; fl++) {
-        const frac = flareCount === 1 ? 0.5 : (0.28 + fl * 0.44);
-        const fx = -usableW * 0.42 + frac * usableW * 0.84;
-        const fy = (useGlbTribune ? 6.45 : 6.85) + (fl % 2) * 2.2;
-        const fz = (useGlbTribune ? 3.25 : 2.95) - (fl % 2) * 1.8;
-        localPos.set(fx, fy, fz).applyQuaternion(standQuat).add(worldPos);
-        allFlareSources.push({
-          pos: localPos.clone(),
-          color: new THREE.Color(flarePalette[(mySeed + fl) % flarePalette.length]),
-          seed: mySeed * 2.3 + fl * 3.1,
-        });
-      }
-
-      // Strobing HDR Camera Flashes across the crowd bowl
-      const flashCount = isMainStraight ? 22 : Math.max(10, Math.floor(spanW / 12));
+      // Subtle Rare Photographer Camera Flashes (active mainly on Vegas Night or High Excitement)
+      const flashCount = isMainStraight ? 12 : Math.max(5, Math.floor(spanW / 24));
       for (let k = 0; k < flashCount; k++) {
         const h1 = fastHash2D(k, 1, mySeed * 53 + 9);
         const h2 = fastHash2D(k, 2, mySeed * 53 + 9);
         const rF = h2 * (rowCount - 1);
         const fx = (h1 - 0.5) * usableW;
-        const fy = (useGlbTribune ? (3.96 + rF * 1.24) : (3.90 + rF * 1.48)) + 1.15;
-        const fz = (useGlbTribune ? (6.55 - rF * 1.65) : (5.20 - rF * 1.12)) + 0.45;
+        const fy = (useGlbTribune ? (3.96 + rF * 1.24) : (3.90 + rF * 1.48)) + 1.05;
+        const fz = (useGlbTribune ? (6.55 - rF * 1.65) : (5.20 - rF * 1.12)) + 0.42;
         const flashMesh = new THREE.Mesh(flashGeo, flashMat);
         flashMesh.position.set(fx, fy, fz);
         flashMesh.visible = false;
@@ -3283,35 +3947,23 @@ export class FujiTrack {
       spawnStandAndCrowd(cs.span || 115, fr.pos, standYaw, false);
     }
 
-    // 3. Populate VIP Paddock Club Rooftop Terrace (facing -Z toward Pit Lane & Main Straight!)
+    // 3. Populate VIP Paddock Club Rooftop Terrace (facing -Z toward Pit Lane & Main Straight)
     if (this._paddockTerraceBounds) {
       const tb = this._paddockTerraceBounds;
-      const vipCount = 96;
+      const vipCount = 88;
       for (let i = 0; i < vipCount; i++) {
         const h1 = fastHash2D(i, 1, 887);
         const h2 = fastHash2D(i, 2, 887);
         const vx = tb.centerX - tb.width * 0.47 + (i / vipCount) * (tb.width * 0.94) + (h1 - 0.5) * 1.6;
         const vz = tb.zFront + 0.85 + h2 * 3.8;
         worldDummy.position.set(vx, tb.yBase, vz);
-        worldDummy.rotation.set(0, Math.PI + (h1 - 0.5) * 0.45, 0);
-        worldDummy.scale.setScalar(0.96 + h2 * 0.18);
+        worldDummy.rotation.set(0, Math.PI + (h1 - 0.5) * 0.35, 0);
+        worldDummy.scale.setScalar(0.95 + h2 * 0.14);
         worldDummy.updateMatrix();
         allFanInstances.push({
           matrix: worldDummy.matrix.clone(),
           color: shirtPaletteCols[i % shirtPaletteCols.length],
         });
-
-        if (i % 12 === 4) {
-          worldDummy.position.set(vx, tb.yBase, vz - 0.25);
-          worldDummy.rotation.set(0, Math.PI, 0);
-          worldDummy.scale.setScalar(0.95);
-          worldDummy.updateMatrix();
-          allFlagInstances.push({
-            matrix: worldDummy.matrix.clone(),
-            bodyCol: shirtPaletteCols[(i + 2) % shirtPaletteCols.length],
-            flagCol: flagPaletteCols[(i >> 2) % flagPaletteCols.length],
-          });
-        }
       }
     }
 
@@ -3331,7 +3983,7 @@ export class FujiTrack {
       this.group.add(gsStructInst, gsRoofInst);
     }
 
-    // Single GPU-Instanced Cheering Stadium Crowd (Mexican Wave + Individual Jumping!)
+    // Single GPU-Instanced Natural Motorsport Crowd
     if (allFanInstances.length) {
       const fanInst = new THREE.InstancedMesh(spectatorGeo, crowdInstMat, allFanInstances.length);
       allFanInstances.forEach((item, i) => {
@@ -3343,7 +3995,7 @@ export class FujiTrack {
       this.group.add(fanInst);
     }
 
-    // Single GPU-Instanced 3D Flag-Waving Supporters (Rippling 3D Team Banners!)
+    // Single GPU-Instanced 3D Flag Supporters
     if (allFlagInstances.length) {
       const fwBodyInst = new THREE.InstancedMesh(flagWaverBodyGeo, flagBodyMat, allFlagInstances.length);
       const fwClothInst = new THREE.InstancedMesh(flagWaverClothGeo, flagClothMat, allFlagInstances.length);
@@ -3360,128 +4012,19 @@ export class FujiTrack {
       this.group.add(fwBodyInst, fwClothInst);
     }
 
-    // 4. Billowing Team-Colored Motorsport Smoke Flares above Grandstands!
-    let smokeInst = null;
-    const puffsPerFlare = 14;
-    if (allFlareSources.length) {
-      const smokeTex = this._makeFlareSmokeTexture();
-      const p1 = new THREE.PlaneGeometry(1.0, 1.0);
-      const p2 = new THREE.PlaneGeometry(1.0, 1.0);
-      p2.rotateY(Math.PI * 0.5);
-      const smokePuffGeo = mergeSubGeometries([p1, p2]);
-      const smokeMat = new THREE.MeshBasicMaterial({
-        map: smokeTex,
-        color: 0xffffff,
-        transparent: true,
-        opacity: 0.42,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      });
-      smokeInst = new THREE.InstancedMesh(smokePuffGeo, smokeMat, allFlareSources.length * puffsPerFlare);
-      smokeInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-
-      const sparkGeo = new THREE.SphereGeometry(0.24, 8, 6);
-      for (let sIdx = 0; sIdx < allFlareSources.length; sIdx++) {
-        const src = allFlareSources[sIdx];
-        const spark = new THREE.Mesh(sparkGeo, new THREE.MeshBasicMaterial({ color: src.color }));
-        spark.position.copy(src.pos).add(new THREE.Vector3(0, 1.25, 0));
-        this.group.add(spark);
-        for (let p = 0; p < puffsPerFlare; p++) {
-          smokeInst.setColorAt(sIdx * puffsPerFlare + p, src.color);
-        }
-      }
-      if (smokeInst.instanceColor) smokeInst.instanceColor.needsUpdate = true;
-      this.group.add(smokeInst);
-    }
-
-    // 5. Celebratory Stadium Confetti & Foil Streamer Cascades (Start/Finish & VIP Terrace!)
-    const confettiCount = 240;
-    const confettiGeo = new THREE.PlaneGeometry(0.28, 0.15);
-    const confettiMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      side: THREE.DoubleSide,
-    });
-    const confettiInst = new THREE.InstancedMesh(confettiGeo, confettiMat, confettiCount);
-    confettiInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    const confettiPalette = [
-      new THREE.Color(0xffd600),
-      new THREE.Color(0xff1744),
-      new THREE.Color(0x00e5ff),
-      new THREE.Color(0xffffff),
-      new THREE.Color(0xff6d00),
-      new THREE.Color(0x00e676),
-    ];
-    const confettiSeeds = [];
-    for (let i = 0; i < confettiCount; i++) {
-      const h1 = fastHash2D(i, 1, 941);
-      const h2 = fastHash2D(i, 2, 941);
-      const h3 = fastHash2D(i, 3, 941);
-      const onPaddockSide = i % 3 === 0;
-      const baseX = -115 + h1 * 285; // Spans Showroom #1 Grid Slot (-27.6m) through Start Gantry (0m) & T1 approach!
-      const baseZ = onPaddockSide
-        ? (PIT_LANE_CONFIG.lateralOffset + 4.5 + h2 * 5.0)
-        : -(ROAD_HALF_WIDTH + 15.5 + h2 * 11.0);
-      const baseY = onPaddockSide ? 14.5 : 16.2;
-      confettiSeeds.push({ baseX, baseY, baseZ, phase: h3, drift: (h1 - 0.5) * 4.5, spin: 2.5 + h2 * 5.5 });
-      confettiInst.setColorAt(i, confettiPalette[i % confettiPalette.length]);
-    }
-    if (confettiInst.instanceColor) confettiInst.instanceColor.needsUpdate = true;
-    this.group.add(confettiInst);
-
-    const animDummy = new THREE.Object3D();
+    // Restrained Photographer Camera Flashes (zero confetti, zero stadium smoke flares!)
     this.animatedProps.push((t) => {
-      const excite = this.crowdExcitement || 0.22;
-
-      // Update rising & swirling motorsport flare smoke plumes
-      if (smokeInst) {
-        let idx = 0;
-        for (let sIdx = 0; sIdx < allFlareSources.length; sIdx++) {
-          const src = allFlareSources[sIdx];
-          for (let p = 0; p < puffsPerFlare; p++) {
-            const age = (t * (0.30 + excite * 0.12) + p / puffsPerFlare + src.seed * 0.17) % 1.0;
-            const liftY = 1.35 + age * (10.5 + excite * 3.5);
-            const driftX = age * age * 6.8 + Math.sin(t * 1.9 + p + src.seed) * (0.45 + age * 0.9);
-            const driftZ = Math.cos(t * 1.5 + p * 0.7 + src.seed) * (0.35 + age * 0.8);
-            const sc = (1.15 + age * 4.8) * Math.sin(Math.min(1.0, age * 4.2) * Math.PI * 0.5) * (1.0 - age * 0.55);
-            animDummy.position.set(src.pos.x + driftX, src.pos.y + liftY, src.pos.z + driftZ);
-            animDummy.rotation.set(0, t * 0.65 + p * 0.8, Math.sin(t + p) * 0.25);
-            animDummy.scale.setScalar(Math.max(0.05, sc));
-            animDummy.updateMatrix();
-            smokeInst.setMatrixAt(idx++, animDummy.matrix);
-          }
-        }
-        smokeInst.instanceMatrix.needsUpdate = true;
-      }
-
-      // Update tumbling celebratory stadium confetti
-      const confettiScale = 0.72 + Math.min(1.2, excite * 0.55);
-      for (let i = 0; i < confettiCount; i++) {
-        const cs = confettiSeeds[i];
-        const fall = (t * (0.24 + excite * 0.12) + cs.phase) % 1.0;
-        const y = cs.baseY - fall * 13.8;
-        const x = cs.baseX + Math.sin(t * 2.1 + cs.phase * 12.0) * 1.35 + fall * cs.drift;
-        const z = cs.baseZ + Math.cos(t * 1.8 + cs.phase * 9.0) * 0.95;
-        animDummy.position.set(x, y, z);
-        animDummy.rotation.set(t * cs.spin + i, t * (cs.spin * 0.8) + cs.phase * 6.0, t * 2.2);
-        animDummy.scale.setScalar(confettiScale);
-        animDummy.updateMatrix();
-        confettiInst.setMatrixAt(i, animDummy.matrix);
-      }
-      confettiInst.instanceMatrix.needsUpdate = true;
-
-      // Update strobing HDR camera flashes
+      const excite = this.crowdExcitement || 0.0;
+      const baseThresh = isVegas ? 0.82 : 0.94;
+      const threshold = baseThresh - Math.min(0.14, excite * 0.11);
       for (let i = 0; i < allCameraFlashes.length; i++) {
         const cf = allCameraFlashes[i];
-        const straightWave = cf.isMainStraight
-          ? Math.max(0, Math.sin(t * 7.2 - cf.standIdx * 1.15)) * (0.14 + excite * 0.08)
-          : 0.0;
-        const pulse = Math.sin(t * 5.2 + cf.seed) * Math.sin(t * 14.1 + cf.seed * 1.9) + straightWave;
-        const threshold = (cf.isMainStraight ? 0.70 : 0.80) - Math.min(0.18, excite * 0.10);
+        const pulse = Math.sin(t * 4.6 + cf.seed) * Math.sin(t * 13.3 + cf.seed * 1.9);
         if (pulse > threshold) {
           cf.mesh.visible = true;
-          const s = 0.85 + (pulse - threshold) * 8.5;
+          const s = 0.72 + (pulse - threshold) * 5.5;
           cf.mesh.scale.setScalar(s);
-          cf.mesh.rotation.z = t * 2.8 + cf.seed;
+          cf.mesh.rotation.z = t * 2.1 + cf.seed;
         } else {
           cf.mesh.visible = false;
         }
@@ -3559,34 +4102,34 @@ export class FujiTrack {
   }
 
   _buildFujiBiome() {
-    // 1. Majestic 3-Strata Mount Fuji aligned down the Main Straight Showroom Vista (>200m clear of Turn 1, fog-immune alpine clarity!)
+    // 1. Majestic 3-Strata Mount Fuji down the Main Straight Vista (fog: true + zero fake emissive for true atmospheric depth!)
     const fujiPos = new THREE.Vector3(1680, -10, -135);
     const slopeTex = this._makeFujiVolcanicSlopeTexture();
     const snowTex = this._makeFujiSnowCrownTexture();
 
     const forestBaseMat = new THREE.MeshStandardMaterial({
       color: 0x1e4a2b,
-      roughness: 0.88,
+      roughness: 0.90,
       metalness: 0.02,
-      emissive: new THREE.Color(0x0c2415),
-      emissiveIntensity: 0.18,
-      fog: false,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
+      fog: true,
     });
     const slopeMat = new THREE.MeshStandardMaterial({
       map: slopeTex,
-      roughness: 0.82,
-      metalness: 0.05,
-      emissive: new THREE.Color(0x16294a),
-      emissiveIntensity: 0.22,
-      fog: false,
+      roughness: 0.86,
+      metalness: 0.04,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
+      fog: true,
     });
     const snowMat = new THREE.MeshStandardMaterial({
       map: snowTex,
-      roughness: 0.34,
-      metalness: 0.04,
-      emissive: new THREE.Color(0xe6f2ff),
-      emissiveIntensity: 0.26,
-      fog: false,
+      roughness: 0.42,
+      metalness: 0.03,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
+      fog: true,
     });
 
     let fuji;
@@ -3605,7 +4148,6 @@ export class FujiTrack {
           ch.material = slopeMat;
         }
       });
-      // Normalize GLB bounds to 1420m base diameter x 615m height so the snow crown towers above the Start Gantry!
       fuji.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(fuji);
       const sz = new THREE.Vector3();
@@ -3628,7 +4170,6 @@ export class FujiTrack {
     fuji.position.copy(fujiPos);
     this.group.add(fuji);
 
-    // Ensure lush cedar-forested Shizuoka foothill ridge ring hugs Mount Fuji's base
     if (!hasForestMesh) {
       const foothillSkirt = new THREE.Mesh(
         new THREE.CylinderGeometry(500, 730, 120, 48, 1, true),
@@ -3638,7 +4179,7 @@ export class FujiTrack {
       this.group.add(foothillSkirt);
     }
 
-    // Flanking Shizuoka Alpine Foothill Ridges framing the Main Straight horizon left & right of Mount Fuji
+    // Flanking Shizuoka Alpine Foothill Ridges framing Mount Fuji naturally in atmospheric fog
     const ridgeSpecs = [
       { x: 1240, z: -435, rTop: 95, rBot: 310, h: 148 },
       { x: 1090, z: -620, rTop: 75, rBot: 265, h: 118 },
@@ -3651,13 +4192,17 @@ export class FujiTrack {
       this.group.add(ridge);
     }
 
-    // Sculpted Atmospheric Mist & Lenticular Cloud Collar around Mount Fuji's mid-flanks
-    const cloudMat = new THREE.MeshBasicMaterial({
-      color: 0xf4f9ff,
+    // Soft Lenticular Cloud Collar with atmospheric fog enabled
+    const cloudMat = new THREE.MeshStandardMaterial({
+      color: 0xf4f8fc,
+      roughness: 0.95,
+      metalness: 0.0,
       transparent: true,
-      opacity: 0.54,
+      opacity: 0.42,
       depthWrite: false,
-      fog: false,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
+      fog: true,
     });
     for (let i = 0; i < 18; i++) {
       const ang = (Math.PI * 2 * i) / 18;
@@ -3674,14 +4219,15 @@ export class FujiTrack {
     // 2. Iconic Vermilion Shinto Torii Gates (Turn 1 Vista Knoll + 100R Sakura Shrine)
     const buildShintoTorii = (scale = 1.0) => {
       const vermilionMat = new THREE.MeshStandardMaterial({
-        color: 0xd91b1b,
-        roughness: 0.32,
-        metalness: 0.12,
-        emissive: new THREE.Color(0x3a0505),
-        emissiveIntensity: 0.2,
+        color: 0xc81e1e,
+        roughness: 0.42,
+        metalness: 0.08,
+        emissive: new THREE.Color(0x000000),
+        emissiveIntensity: 0.0,
       });
-      const lacquerMat = new THREE.MeshStandardMaterial({ color: 0x181a22, roughness: 0.35, metalness: 0.25 });
-      const goldMat = new THREE.MeshStandardMaterial({ color: 0xf5c438, metalness: 0.75, roughness: 0.25 });
+      const lacquerMat = new THREE.MeshStandardMaterial({ color: 0x181a22, roughness: 0.38, metalness: 0.22 });
+      const goldMat = new THREE.MeshStandardMaterial({ color: 0xe6b830, metalness: 0.72, roughness: 0.28 });
+      const shojiMat = new THREE.MeshStandardMaterial({ color: 0xf3ead8, roughness: 0.72, metalness: 0.02 });
 
       const tg = new THREE.Group();
       for (const x of [-6.8, 6.8]) {
@@ -3693,7 +4239,6 @@ export class FujiTrack {
         hashira.castShadow = true;
         tg.add(pedestal, hashira);
       }
-      // Curved Kasagi upper lintel + upturned wing tips + Shimaki + Nuki crossbeam + Gakuzuka tablet
       const kasagi = new THREE.Mesh(new THREE.BoxGeometry(20.4, 1.05, 1.65), lacquerMat);
       kasagi.position.set(0, 16.0, 0);
       for (const xTip of [-9.8, 9.8]) {
@@ -3709,16 +4254,12 @@ export class FujiTrack {
       const gakuzuka = new THREE.Mesh(new THREE.BoxGeometry(1.5, 3.2, 1.05), goldMat);
       gakuzuka.position.set(0, 13.5, 0);
 
-      // Stone Toro Lanterns flanking the Torii
       for (const lx of [-10.8, 10.8]) {
         const lantern = new THREE.Group();
         lantern.position.set(lx, 0, 2.2);
         const lBase = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.65, 2.2, 8), this.concreteMat);
         lBase.position.y = 1.1;
-        const lBox = new THREE.Mesh(
-          new THREE.BoxGeometry(0.85, 0.85, 0.85),
-          new THREE.MeshBasicMaterial({ color: 0xffe8a3 })
-        );
+        const lBox = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.85, 0.85), shojiMat);
         lBox.position.y = 2.55;
         const lCap = new THREE.Mesh(new THREE.ConeGeometry(0.95, 0.75, 4), this.concreteMat);
         lCap.position.y = 3.3;
@@ -3732,25 +4273,25 @@ export class FujiTrack {
       return tg;
     };
 
-    const t1Frame = this.sampleAt(146, -(ROAD_HALF_WIDTH + 19.5));
+    const t1Frame = this.sampleAt(156, -(ROAD_HALF_WIDTH + 19.5));
     const torii1 = buildShintoTorii(1.05);
     torii1.position.copy(t1Frame.pos);
     torii1.rotation.y = -0.45;
     this.group.add(torii1);
 
-    const t2Frame = this.sampleAt(585, -(ROAD_HALF_WIDTH + 21.0));
+    const t2Frame = this.sampleAt(565, -(ROAD_HALF_WIDTH + 21.0));
     const torii2 = buildShintoTorii(0.92);
     torii2.position.copy(t2Frame.pos);
     torii2.rotation.y = 0.85;
     this.group.add(torii2);
 
-    // 3. 4-Tier Japanese Pagoda Race Control Tower near Paddock (visible in Showroom Hero Orbit!)
+    // 3. 4-Tier Japanese Pagoda Observation Tower near Paddock
     const pagoda = new THREE.Group();
     pagoda.position.set(-138, 0, PIT_LANE_CONFIG.lateralOffset + 29);
-    const wallM = new THREE.MeshStandardMaterial({ color: 0xf7f9fc, roughness: 0.36 });
-    const roofM = new THREE.MeshStandardMaterial({ color: 0x222936, roughness: 0.42, metalness: 0.32 });
-    const redRailM = new THREE.MeshStandardMaterial({ color: 0xd91b1b, roughness: 0.35 });
-    const warmWinM = new THREE.MeshBasicMaterial({ color: 0xffe8a8 });
+    const wallM = new THREE.MeshStandardMaterial({ color: 0xf4f6fa, roughness: 0.48 });
+    const roofM = new THREE.MeshStandardMaterial({ color: 0x222936, roughness: 0.44, metalness: 0.28 });
+    const redRailM = new THREE.MeshStandardMaterial({ color: 0xc81e1e, roughness: 0.42 });
+    const glassWinM = new THREE.MeshStandardMaterial({ color: 0x2b4560, roughness: 0.14, metalness: 0.75 });
 
     for (let lvl = 0; lvl < 4; lvl++) {
       const w = 13.5 - lvl * 2.1;
@@ -3758,7 +4299,7 @@ export class FujiTrack {
       const core = new THREE.Mesh(new THREE.BoxGeometry(w, 5.5, w), wallM);
       core.position.y = y + 2.75;
       core.castShadow = true;
-      const winBand = new THREE.Mesh(new THREE.BoxGeometry(w + 0.14, 1.5, w + 0.14), warmWinM);
+      const winBand = new THREE.Mesh(new THREE.BoxGeometry(w + 0.14, 1.5, w + 0.14), glassWinM);
       winBand.position.y = y + 3.4;
       const rail = new THREE.Mesh(new THREE.BoxGeometry(w + 1.4, 0.42, w + 1.4), redRailM);
       rail.position.y = y + 0.4;
@@ -3772,44 +4313,43 @@ export class FujiTrack {
     pagoda.add(spire);
     this.group.add(pagoda);
 
-    // 4. Lush Pink Sakura Cherry Blossom Groves + Alpine Japanese Cedar Pines
+    // 4. Lush Pink Sakura Cherry Blossom Groves + Alpine Japanese Cedar Pines (CC0 Bark PBR)
     this._scatterForestTrees({
       count: 340,
-      foliageColors: [0xff9ec6, 0xffb7d5, 0xffd1e6, 0x1d5932, 0x276e3f],
+      foliageColors: [0xf4a6c6, 0xf7bdd4, 0xfad2e2, 0x1d5932, 0x276e3f],
       spruceRatio: 0.42,
       blossomPetals: true,
     });
   }
 
   _buildMonacoBiome() {
-    // Procedural Shimmering Turquoise Mediterranean Water Texture (animated UV drift!)
+    // Shimmering Mediterranean Water reflecting Real Poly Haven Sky IBL (zero fake emissive!)
     const waterTex = this._makeMediterraneanWaterTexture();
     const seaMat = new THREE.MeshStandardMaterial({
       map: waterTex,
-      color: 0x14a8d8,
-      roughness: 0.08,
-      metalness: 0.78,
-      emissive: new THREE.Color(0x004d73),
-      emissiveIntensity: 0.42,
+      color: 0x0f86b2,
+      roughness: 0.12,
+      metalness: 0.68,
+      envMapIntensity: 1.15,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     this.animatedProps.push((t) => {
-      waterTex.offset.x = (t * 0.014) % 1;
-      waterTex.offset.y = Math.sin(t * 0.35) * 0.025;
+      waterTex.offset.x = (t * 0.012) % 1;
+      waterTex.offset.y = Math.sin(t * 0.32) * 0.020;
     });
 
-    // 1A. Outer Mediterranean Harbor along Tunnel Exit & Nouvelle Harbor Chicane (z >= 474 — zero overlap with road!)
+    // 1A. Outer Mediterranean Harbor along Tunnel Exit & Nouvelle Harbor Chicane (z >= 474)
     const outerSea = new THREE.Mesh(new THREE.PlaneGeometry(3600, 2200), seaMat);
     outerSea.rotation.x = -Math.PI / 2;
     outerSea.position.set(100, -0.18, 1574);
     this.group.add(outerSea);
 
-    // Crisp Stone Quay Wall + White Promenade Railing along Outer Harbor Edge (z = 473)
     const quayOuter = new THREE.Mesh(new THREE.BoxGeometry(1500, 1.2, 2.4), this.concreteMat);
     quayOuter.position.set(40, 0.05, 473.2);
     this.group.add(quayOuter);
 
-    // 1B. Port Hercule Inner Marina Basin tucked cleanly behind Pit Building (x in [-185..+215], z in [58..212])
-    //     Completely clear of all track splines and visible from Showroom Start Screen & Main Straight!
+    // 1B. Port Hercule Inner Marina Basin tucked behind Pit Building (z in [59..211], >=58m clear of road)
     const basinW = 400;
     const basinD = 152;
     const basinCx = 15;
@@ -3820,8 +4360,7 @@ export class FujiTrack {
     innerBasin.position.set(basinCx, -0.14, basinCz);
     this.group.add(innerBasin);
 
-    // Stone Marina Quay Coping Framing Port Hercule Inner Basin
-    const quayMat = new THREE.MeshStandardMaterial({ color: 0xd8dee8, roughness: 0.55 });
+    const quayMat = new THREE.MeshStandardMaterial({ color: 0xd8dee8, roughness: 0.58 });
     const qNorth = new THREE.Mesh(new THREE.BoxGeometry(basinW + 4, 0.85, 2.6), quayMat);
     qNorth.position.set(basinCx, 0.08, basinCz - basinD * 0.5);
     const qSouth = new THREE.Mesh(new THREE.BoxGeometry(basinW + 4, 0.85, 2.6), quayMat);
@@ -3832,8 +4371,9 @@ export class FujiTrack {
     qEast.position.set(basinCx + basinW * 0.5, 0.08, basinCz);
     this.group.add(qNorth, qSouth, qWest, qEast);
 
-    // Floating White Timber/Concrete Yacht Pontoons & Moored 3D Luxury Superyachts!
-    const pontoonMat = new THREE.MeshStandardMaterial({ color: 0xeef3f9, roughness: 0.45 });
+    // Floating White Yacht Pontoons & Moored 3D Superyachts with Smoked Marine Glass
+    const pontoonMat = new THREE.MeshStandardMaterial({ color: 0xeef3f9, roughness: 0.48 });
+    const marineGlassMat = new THREE.MeshStandardMaterial({ color: 0x13263a, roughness: 0.10, metalness: 0.85 });
     const placeSuperyacht = (x, z, yaw, scale = 1.25) => {
       const yg = new THREE.Group();
       if (this.assets?.templates?.yacht) {
@@ -3843,30 +4383,28 @@ export class FujiTrack {
       } else {
         const hull = new THREE.Mesh(
           new THREE.BoxGeometry(6.8 * scale, 4.2 * scale, 26 * scale),
-          new THREE.MeshStandardMaterial({ color: 0xf8fbff, roughness: 0.18, metalness: 0.2 })
+          new THREE.MeshStandardMaterial({ color: 0xf6f9fc, roughness: 0.22, metalness: 0.16 })
         );
         hull.position.y = 2.0 * scale;
         yg.add(hull);
       }
-      // Warm illuminated salon deck ribbon + underwater turquoise transom LED glow!
-      const salonGlow = new THREE.Mesh(
-        new THREE.BoxGeometry(4.4 * scale, 0.55 * scale, 14 * scale),
-        new THREE.MeshBasicMaterial({ color: 0xffe6a3 })
+      const salonGlass = new THREE.Mesh(
+        new THREE.BoxGeometry(4.4 * scale, 0.65 * scale, 14 * scale),
+        marineGlassMat
       );
-      salonGlow.position.set(0, 3.8 * scale, 1.5 * scale);
+      salonGlass.position.set(0, 3.8 * scale, 1.5 * scale);
       const radarMast = new THREE.Mesh(
         new THREE.CylinderGeometry(0.12, 0.22, 4.5 * scale, 8),
         pontoonMat
       );
       radarMast.position.set(0, 8.5 * scale, 1.0 * scale);
-      yg.add(salonGlow, radarMast);
+      yg.add(salonGlass, radarMast);
 
       yg.position.set(x, -0.12, z);
       yg.rotation.y = yaw;
       this.group.add(yg);
     };
 
-    // 5 Superyachts moored in Port Hercule Inner Basin (visible across Paddock & Showroom!)
     for (let i = 0; i < 5; i++) {
       const px = -125 + i * 72;
       const pier = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.35, 52), pontoonMat);
@@ -3875,7 +4413,6 @@ export class FujiTrack {
       placeSuperyacht(px, 108 + (i % 2) * 28, Math.PI * 0.5 + (i % 2 === 0 ? 0.08 : -0.08), 1.18 + (i % 3) * 0.16);
     }
 
-    // 8 Mega-Yachts moored along Outer Mediterranean Harbor beside Nouvelle Chicane & Tunnel Exit!
     for (let i = 0; i < 8; i++) {
       const yx = -360 + i * 86;
       if (i % 2 === 0) {
@@ -3886,17 +4423,20 @@ export class FujiTrack {
       placeSuperyacht(yx, 514 + (i % 2) * 44, 0.22 + (i % 3) * 0.18, 1.28 + (i % 3) * 0.22);
     }
 
-    // 3. Illuminated Seafront Tunnel (s = 430..565) with Entrance/Exit Portals & Ceiling LED Strips
+    // 3. Enclosed Seafront Tunnel Louis II (s = 510..620) with Warm Interior Sodium/LED Strips
     const [tStart, tEnd] = this.trackDef.tunnelRangeS;
     const tunnelWallMat = new THREE.MeshStandardMaterial({
       color: 0x566173,
-      roughness: 0.58,
-      metalness: 0.12,
-      emissive: new THREE.Color(0x1e2430),
-      emissiveIntensity: 0.32,
+      map: this.concreteMat.map,
+      normalMap: this.concreteMat.normalMap,
+      roughnessMap: this.concreteMat.roughnessMap,
+      roughness: 0.68,
+      metalness: 0.08,
+      emissive: new THREE.Color(0x1b2029),
+      emissiveIntensity: 0.22,
       side: THREE.DoubleSide,
     });
-    const lightStripMat = new THREE.MeshBasicMaterial({ color: 0xffe094 });
+    const lightStripMat = new THREE.MeshBasicMaterial({ color: 0xffe4a3 });
     const reflectorMat = new THREE.MeshBasicMaterial({ color: 0xff9100 });
 
     for (let s = tStart; s <= tEnd; s += 3.5) {
@@ -3914,7 +4454,6 @@ export class FujiTrack {
       const innerWall = new THREE.Mesh(new THREE.BoxGeometry(8.4, 7.6, 0.95), tunnelWallMat);
       innerWall.position.set(0, 3.8, -spanHalf);
 
-      // Twin continuous ceiling LED light strips
       const ledL = new THREE.Mesh(new THREE.BoxGeometry(8.45, 0.20, 0.62), lightStripMat);
       ledL.position.set(0, 6.96, -4.1);
       const ledR = new THREE.Mesh(new THREE.BoxGeometry(8.45, 0.20, 0.62), lightStripMat);
@@ -3922,7 +4461,6 @@ export class FujiTrack {
 
       arch.add(roof, innerWall, ledL, ledR);
 
-      // Seaward open colonnade pillars + amber wall safety reflectors
       if (Math.round(s * 2) % 14 === 0) {
         const col = new THREE.Mesh(new THREE.BoxGeometry(2.35, 7.6, 1.05), tunnelWallMat);
         col.position.set(0, 3.8, spanHalf);
@@ -3934,24 +4472,23 @@ export class FujiTrack {
       this.group.add(arch);
     }
 
-    // Tunnel Entrance & Exit Architectural Fascia Portals ("TUNNEL LOUIS II • MONTE CARLO")
+    // Tunnel Entrance & Exit Architectural Portals (zero fake exterior daylight emissive!)
     const portalTex = this._makeMotorsportBanner(
       'TUNNEL LOUIS II',
       'PRINCIPAUTÉ DE MONACO • MONTE CARLO',
-      '#d91e2a',
-      '#8f0d16',
+      '#c81922',
+      '#7f0d14',
       '#ffffff',
-      '#ffd600',
+      '#e6be00',
       'MC',
       1024,
       160
     );
     const portalMat = new THREE.MeshStandardMaterial({
       map: portalTex,
-      emissive: new THREE.Color(0xffffff),
-      emissiveMap: portalTex,
-      emissiveIntensity: 0.28,
-      roughness: 0.3,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
+      roughness: 0.44,
     });
     for (const ps of [tStart, tEnd]) {
       const pf = this.sampleAt(ps, 0);
@@ -3965,21 +4502,20 @@ export class FujiTrack {
       this.group.add(portal);
     }
 
-    // 4. Warm Terracotta / Cream Riviera Hillside Apartments + Belle Époque Casino Rotunda!
-    const facadePalette = ['#f6ead7', '#f0cfa8', '#f2d3c4', '#edf2f8', '#e5c49f'];
+    // 4. Sunlit Terracotta / Cream Riviera Hillside Apartments + Belle Époque Casino de Monte-Carlo!
+    const facadePalette = ['#f4e8d6', '#edd0ab', '#efd3c5', '#ebf0f6', '#e3c39e'];
     const rivieraMats = facadePalette.map((stuccoHex, idx) => {
       const tex = this._makeRivieraFacadeTexture(stuccoHex, idx);
       return new THREE.MeshStandardMaterial({
         map: tex,
-        emissive: new THREE.Color(0xffffff),
-        emissiveMap: tex,
-        emissiveIntensity: 0.22,
-        roughness: 0.54,
-        metalness: 0.08,
+        emissive: new THREE.Color(0x000000),
+        emissiveIntensity: 0.0,
+        roughness: 0.64,
+        metalness: 0.04,
       });
     });
-    const terracottaRoofMat = new THREE.MeshStandardMaterial({ color: 0xb84a32, roughness: 0.72 });
-    const verdigrisDomeMat = new THREE.MeshStandardMaterial({ color: 0x3b8c7a, roughness: 0.38, metalness: 0.35 });
+    const terracottaRoofMat = new THREE.MeshStandardMaterial({ color: 0xb04832, roughness: 0.76 });
+    const verdigrisDomeMat = new THREE.MeshStandardMaterial({ color: 0x3b8574, roughness: 0.42, metalness: 0.30 });
 
     const placeRivieraBuilding = (cx, cz, w, h, d, yaw, matIdx, baseY = 0) => {
       if (this._minDistToTrack(cx, cz) < Math.max(w, d) * 0.65 + ROAD_HALF_WIDTH + 10) return;
@@ -3999,7 +4535,6 @@ export class FujiTrack {
       this.group.add(crown);
     };
 
-    // Terraced Riviera Backdrop right behind the Main Straight Grandstands (gorgeous in Showroom!)
     for (let i = 0; i < 12; i++) {
       const bx = -210 + i * 64;
       const bz = -78 - (i % 2) * 26;
@@ -4007,7 +4542,6 @@ export class FujiTrack {
       placeRivieraBuilding(bx, bz, 46, bh, 34, 0, i);
     }
 
-    // Surrounding Monte Carlo Amphitheater Ring (leaving Mediterranean oceanfront z > 440 wide open!)
     for (let i = 0; i < 34; i++) {
       const ang = (Math.PI * 2 * i) / 34;
       if (Math.sin(ang) > 0.40) continue;
@@ -4018,8 +4552,8 @@ export class FujiTrack {
       placeRivieraBuilding(cx, cz, 48, h, 38, -ang + Math.PI * 0.5, i);
     }
 
-    // Iconic Belle Époque Casino de Monte-Carlo Twin-Domed Palace above Casino Square (s = 265)
-    const casFr = this.sampleAt(265, -(ROAD_HALF_WIDTH + 38));
+    // Iconic Belle Époque Casino de Monte-Carlo Twin-Domed Palace above Casino Square (s = 305)
+    const casFr = this.sampleAt(305, -(ROAD_HALF_WIDTH + 38));
     if (this._minDistToTrack(casFr.pos.x, casFr.pos.z) > 28) {
       const casino = new THREE.Group();
       casino.position.set(casFr.pos.x, casFr.pos.y, casFr.pos.z);
@@ -4045,7 +4579,7 @@ export class FujiTrack {
     c.width = 256;
     c.height = 256;
     const ctx = c.getContext('2d');
-    ctx.fillStyle = '#0884b8';
+    ctx.fillStyle = '#0977a6';
     ctx.fillRect(0, 0, 256, 256);
 
     for (let y = 0; y < 256; y += 4) {
@@ -4053,11 +4587,11 @@ export class FujiTrack {
         const w1 = Math.sin((x / 256) * Math.PI * 6 + Math.sin((y / 256) * Math.PI * 4) * 1.5);
         const w2 = Math.cos((y / 256) * Math.PI * 8 + (x / 256) * Math.PI * 2);
         const glint = (w1 + w2) * 0.5;
-        if (glint > 0.35) {
-          ctx.fillStyle = glint > 0.72 ? 'rgba(210, 252, 255, 0.55)' : 'rgba(56, 212, 245, 0.35)';
+        if (glint > 0.38) {
+          ctx.fillStyle = glint > 0.74 ? 'rgba(215, 248, 255, 0.44)' : 'rgba(56, 198, 232, 0.28)';
           ctx.fillRect(x, y, 5, 3);
         } else if (glint < -0.4) {
-          ctx.fillStyle = 'rgba(2, 64, 98, 0.35)';
+          ctx.fillStyle = 'rgba(4, 54, 84, 0.34)';
           ctx.fillRect(x, y, 4, 4);
         }
       }
@@ -4078,15 +4612,14 @@ export class FujiTrack {
     ctx.fillStyle = stuccoHex;
     ctx.fillRect(0, 0, 256, 512);
 
-    // Classical stone cornice bands + warm Riviera balconies, louvered shutters & striped awnings
+    // Classical stone cornice bands + sunlit Riviera balconies, louvered shutters & Monaco awnings
     for (let fl = 0; fl < 8; fl++) {
       const y = fl * 64;
-      ctx.fillStyle = 'rgba(0,0,0,0.16)';
+      ctx.fillStyle = 'rgba(0,0,0,0.14)';
       ctx.fillRect(0, y + 52, 256, 5);
-      ctx.fillStyle = '#ffffff';
+      ctx.fillStyle = '#f7f9fc';
       ctx.fillRect(0, y + 47, 256, 5);
 
-      // Wrought-iron balcony railing verticals
       ctx.fillStyle = '#2d3748';
       ctx.fillRect(6, y + 38, 244, 2);
       for (let rx = 10; rx < 248; rx += 8) {
@@ -4095,17 +4628,16 @@ export class FujiTrack {
 
       for (let col = 0; col < 4; col++) {
         const x = 14 + col * 60;
-        // French louvered shutters
         ctx.fillStyle = seed % 2 === 0 ? '#4e7385' : '#4d6b57';
         ctx.fillRect(x - 5, y + 10, 42, 37);
-        // Warm illuminated or sunlit glass panes (zero pitch-black holes!)
         const h = fastHash2D(col, fl, seed + 17);
-        ctx.fillStyle = h > 0.42 ? '#ffe59e' : '#4a6b8a';
+        ctx.fillStyle = h > 0.55 ? '#5c7c99' : '#35506b';
         ctx.fillRect(x + 3, y + 12, 26, 35);
+        ctx.fillStyle = 'rgba(235, 244, 252, 0.25)';
+        ctx.fillRect(x + 5, y + 14, 8, 31);
 
-        // Ground & 1st floor Monaco red/white striped sun awnings
         if (fl >= 6 || (fl + col) % 4 === 0) {
-          ctx.fillStyle = '#d91e2a';
+          ctx.fillStyle = '#c91d28';
           ctx.fillRect(x - 4, y + 8, 40, 8);
           ctx.fillStyle = '#ffffff';
           ctx.fillRect(x + 4, y + 8, 8, 8);
@@ -4126,7 +4658,6 @@ export class FujiTrack {
     c.height = 1024;
     const ctx = c.getContext('2d');
 
-    // Deep sapphire glass curtain-wall reflection gradient (NEVER pitch-black!)
     const bgGrad = ctx.createLinearGradient(0, 0, 512, 1024);
     bgGrad.addColorStop(0.0, '#101d38');
     bgGrad.addColorStop(0.5, '#16284c');
@@ -4146,18 +4677,15 @@ export class FujiTrack {
           ctx.fillStyle = accentStr;
           ctx.fillRect(x, y + 3, 20, 10);
         } else if (r > 0.24) {
-          // 76% lit luxury hotel rooms: warm champagne gold, cyan glass, magenta suites
           ctx.fillStyle = r > 0.86 ? accentStr : (r > 0.48 ? '#ffe7a0' : '#7ae2ff');
           ctx.fillRect(x, y + 2, 19, 13);
         } else {
-          // Moonlit reflective glass pane (never unlit black!)
           ctx.fillStyle = '#243b66';
           ctx.fillRect(x, y + 2, 19, 13);
         }
       }
     }
 
-    // Metallic curtain-wall mullions + bright street-level illuminated casino atrium band at bottom!
     ctx.fillStyle = accentStr;
     ctx.fillRect(0, 0, 512, 22);
     ctx.fillRect(0, 984, 512, 40);
@@ -4175,24 +4703,23 @@ export class FujiTrack {
   }
 
   _buildVegasBiome() {
-    // 1. Giant Animated Geodesic LED Sphere Landmark + Outer Neon Halo & Plaza Ring!
+    // 1. Las Vegas Geodesic LED Exosphere Landmark + Night Strip Skyline
     const sphereCanvas = document.createElement('canvas');
     sphereCanvas.width = 1024;
     sphereCanvas.height = 512;
     const sctx = sphereCanvas.getContext('2d');
 
     const sGrad = sctx.createLinearGradient(0, 0, 1024, 512);
-    sGrad.addColorStop(0.00, '#ff007f');
-    sGrad.addColorStop(0.32, '#7a00ff');
-    sGrad.addColorStop(0.66, '#00c8ff');
-    sGrad.addColorStop(1.00, '#ff1493');
+    sGrad.addColorStop(0.00, '#e60073');
+    sGrad.addColorStop(0.32, '#5e00d6');
+    sGrad.addColorStop(0.66, '#00b8eb');
+    sGrad.addColorStop(1.00, '#e61482');
     sctx.fillStyle = sGrad;
     sctx.fillRect(0, 0, 1024, 512);
 
-    // Glowing plasma equator waves & F1 pulse bands
     for (let band = 0; band < 5; band++) {
-      sctx.strokeStyle = band % 2 === 0 ? '#ffd600' : '#00ffcc';
-      sctx.lineWidth = 8;
+      sctx.strokeStyle = band % 2 === 0 ? '#ffd600' : '#00e6b8';
+      sctx.lineWidth = 7;
       sctx.beginPath();
       for (let x = 0; x <= 1024; x += 16) {
         const y = 110 + band * 72 + Math.sin((x / 1024) * Math.PI * 6 + band) * 26;
@@ -4202,8 +4729,7 @@ export class FujiTrack {
       sctx.stroke();
     }
 
-    // Crisp geodesic triangulated exoskeleton lattice
-    sctx.strokeStyle = 'rgba(255, 255, 255, 0.42)';
+    sctx.strokeStyle = 'rgba(255, 255, 255, 0.36)';
     sctx.lineWidth = 2.5;
     for (let x = -512; x < 1536; x += 48) {
       sctx.beginPath(); sctx.moveTo(x, 0); sctx.lineTo(x + 256, 512); sctx.stroke();
@@ -4226,13 +4752,12 @@ export class FujiTrack {
     vegasSphere.position.copy(spherePos);
     this.group.add(vegasSphere);
 
-    // Subtle additive atmospheric neon corona around the LED Sphere
     const sphereHalo = new THREE.Mesh(
-      new THREE.SphereGeometry(102, 32, 24),
+      new THREE.SphereGeometry(101, 32, 24),
       new THREE.MeshBasicMaterial({
         color: 0xff1493,
         transparent: true,
-        opacity: 0.16,
+        opacity: 0.09,
         side: THREE.BackSide,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
@@ -4241,22 +4766,21 @@ export class FujiTrack {
     sphereHalo.position.copy(spherePos);
     this.group.add(sphereHalo);
 
-    // Illuminated Sphere Arena Ground Ring
     const arenaRing = new THREE.Mesh(
-      new THREE.TorusGeometry(98, 2.2, 12, 64),
-      new THREE.MeshBasicMaterial({ color: 0x00f0ff })
+      new THREE.TorusGeometry(98, 2.0, 12, 64),
+      new THREE.MeshBasicMaterial({ color: 0x00d8f0 })
     );
     arenaRing.rotation.x = Math.PI / 2;
     arenaRing.position.set(spherePos.x, 1.8, spherePos.z);
     this.group.add(arenaRing);
 
     this.animatedProps.push((t) => {
-      vegasSphere.rotation.y = t * 0.24;
-      sphereTex.offset.x = (t * 0.035) % 1;
-      sphereHalo.material.color.setHSL(((t * 0.08) % 1), 1.0, 0.58);
+      vegasSphere.rotation.y = t * 0.20;
+      sphereTex.offset.x = (t * 0.028) % 1;
+      sphereHalo.material.color.setHSL(((t * 0.06) % 1), 0.95, 0.56);
     });
 
-    // 2. Iconic Neon Strip Boulevard Portal Arches + Diamond "WELCOME TO LAS VEGAS GP" Landmark!
+    // 2. Las Vegas Strip Boulevard Portal Arches
     const buildNeonStripArch = (sStation, headline, subline) => {
       const fr = this.sampleAt(sStation, 0);
       const yaw = Math.atan2(fr.tangent.z, fr.tangent.x);
@@ -4266,7 +4790,7 @@ export class FujiTrack {
       archG.rotation.y = -yaw;
 
       const pinkTube = new THREE.MeshBasicMaterial({ color: 0xff1493 });
-      const cyanTube = new THREE.MeshBasicMaterial({ color: 0x00f0ff });
+      const cyanTube = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
       const goldTube = new THREE.MeshBasicMaterial({ color: 0xffd600 });
 
       for (const side of [-1, 1]) {
@@ -4282,8 +4806,8 @@ export class FujiTrack {
         map: signTex,
         emissive: new THREE.Color(0xffffff),
         emissiveMap: signTex,
-        emissiveIntensity: 0.82,
-        roughness: 0.2,
+        emissiveIntensity: 0.68,
+        roughness: 0.24,
       });
       const beam = new THREE.Mesh(
         new THREE.BoxGeometry(1.4, 2.5, span * 2.04),
@@ -4292,7 +4816,6 @@ export class FujiTrack {
       beam.position.set(0, 9.4, 0);
       archG.add(beam);
 
-      // Glowing neon crown tubes + diamond starburst crest on top
       const topNeon = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.25, span * 2.08), cyanTube);
       topNeon.position.set(0, 10.8, 0);
       const botNeon = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.25, span * 2.08), pinkTube);
@@ -4308,7 +4831,6 @@ export class FujiTrack {
     buildNeonStripArch(112, 'FABULOUS LAS VEGAS', 'NEON STRIP NIGHT GRAND PRIX');
     buildNeonStripArch(608, 'CASINO BOULEVARD', 'RACE PHANATIC WORLD TOUR');
 
-    // Classic Diamond Vegas Neon Welcome Sign near Start/Showroom (-116, 0, -18) so Showroom sparkles!
     const welcomeGroup = new THREE.Group();
     welcomeGroup.position.set(-116, 0, -(ROAD_HALF_WIDTH + 9.2));
     welcomeGroup.rotation.y = 0.35;
@@ -4322,8 +4844,8 @@ export class FujiTrack {
       map: wTex,
       emissive: new THREE.Color(0xffffff),
       emissiveMap: wTex,
-      emissiveIntensity: 0.9,
-      roughness: 0.2,
+      emissiveIntensity: 0.72,
+      roughness: 0.24,
     });
     const wBoard = new THREE.Mesh(
       new THREE.BoxGeometry(0.45, 4.2, 8.2),
@@ -4333,8 +4855,8 @@ export class FujiTrack {
     welcomeGroup.add(wBoard);
     this.group.add(welcomeGroup);
 
-    // 3. Illuminated High-Rise Glass Curtain-Wall Casino Resort Towers (ZERO Pitch-Black Boxes!)
-    const neonColors = [0xff1493, 0x00f0ff, 0xffd600, 0xb517ff, 0x00ff9d];
+    // 3. Illuminated High-Rise Glass Curtain-Wall Casino Resort Towers
+    const neonColors = [0xff1493, 0x00e5ff, 0xffd600, 0x9b51e0, 0x00e699];
     const casinoNames = ['BELLAGIO GP', 'MIRAGE NEON', 'APEX PALACE', 'FLAMINGO STRIP', 'ROYALE CASINO'];
     const towerMats = neonColors.map((nc, idx) => {
       const winTex = this._makeVegasSkyscraperTexture(nc, idx + 1);
@@ -4342,9 +4864,9 @@ export class FujiTrack {
         map: winTex,
         emissive: new THREE.Color(0xffffff),
         emissiveMap: winTex,
-        emissiveIntensity: 0.96,
+        emissiveIntensity: 0.82,
         metalness: 0.72,
-        roughness: 0.16,
+        roughness: 0.18,
       });
     });
 
@@ -4361,7 +4883,6 @@ export class FujiTrack {
       tower.position.set(cx, h * 0.5, cz);
       this.group.add(tower);
 
-      // Illuminated street-level resort marquee podium canopy (eliminates dark building bases!)
       const podium = new THREE.Mesh(
         new THREE.BoxGeometry(w + 8, 6.5, d + 8),
         towerMats[(idx + 1) % towerMats.length]
@@ -4376,7 +4897,6 @@ export class FujiTrack {
       podiumRim.position.set(cx, 6.65, cz);
       this.group.add(podiumRim);
 
-      // Rooftop neon crown cornice + vertical corner neon fins + resort sign
       const neonTrim = new THREE.Mesh(
         new THREE.BoxGeometry(w + 1.4, 3.2, d + 1.4),
         new THREE.MeshBasicMaterial({ color: neonColors[idx % neonColors.length] })
@@ -4399,14 +4919,12 @@ export class FujiTrack {
       this.group.add(crownSign);
     };
 
-    // Close-up Las Vegas Strip Boulevard Resort Corridor flanking Main Straight & Showroom!
     for (let i = 0; i < 9; i++) {
       const bx = -205 + i * 86;
       placeCasinoTower(bx, -92 - (i % 2) * 24, 42, 92 + (i % 4) * 28, 38, i);
       placeCasinoTower(bx + 32, 88 + (i % 2) * 26, 40, 86 + ((i + 2) % 4) * 26, 36, i + 2);
     }
 
-    // Outer Las Vegas Skyline Ring around the entire circuit
     for (let i = 0; i < 36; i++) {
       const ang = (Math.PI * 2 * i) / 36;
       const dist = 565 + (i % 4) * 95;
@@ -4441,15 +4959,22 @@ export class FujiTrack {
   }
 
   _buildMonzaBiome() {
-    // 1. Historic Monza High-Speed Concrete Banking ("Sopraelevata" 1955 Oval) on Concrete Trestle Piers!
-    //    Sweeps outside the North / Rettifilo vista (z = -74..-110) so it's iconic in Showroom & down Rettifilo!
-    const bankConcreteTex = this._makeVintageConcreteTexture();
+    // 1. Historic Monza 1955 Concrete Banking ("Sopraelevata") with Real CC0 Brushed Concrete PBR!
+    const bankPbrSet = FujiTrack._getPbrSet('brushed_concrete', 3.0, 32.0);
+    this._collectProtectedAssetResources();
     const bankMat = new THREE.MeshStandardMaterial({
-      map: bankConcreteTex,
-      roughness: 0.84,
-      metalness: 0.05,
+      color: 0xb6bec8,
+      map: bankPbrSet.diff,
+      normalMap: bankPbrSet.nor,
+      normalScale: new THREE.Vector2(1.05, 1.05),
+      roughnessMap: bankPbrSet.rough,
+      aoMap: bankPbrSet.arm,
+      aoMapIntensity: 0.78,
+      roughness: 0.86,
+      metalness: 0.03,
+      side: THREE.DoubleSide,
     });
-    const whiteRailMat = new THREE.MeshStandardMaterial({ color: 0xf2f5fa, roughness: 0.45 });
+    const whiteRailMat = new THREE.MeshStandardMaterial({ color: 0xf0f4f8, roughness: 0.52 });
 
     const bankGroup = new THREE.Group();
     const bankPos = [];
@@ -4460,24 +4985,21 @@ export class FujiTrack {
 
     for (let i = 0; i <= segs; i++) {
       const u = i / segs;
-      // Gentle sweeping curve from x = -340 to x = +720 behind the Main Straight grandstands
       const bx = -340 + u * 1060;
       const curveBow = Math.pow(Math.abs(u - 0.45) * 2.0, 2.2) * 48;
       const bz = -78 - curveBow;
-      // Classic 30-degree concave Monza banking cross-section: low inner edge -> steep high outer rim!
       const pLow = new THREE.Vector3(bx, 4.5, bz + 8.5);
       const pHigh = new THREE.Vector3(bx, 14.8, bz - 9.5);
 
       bankPos.push(pLow.x, pLow.y, pLow.z, pHigh.x, pHigh.y, pHigh.z);
       bankNorm.push(0, 0.85, 0.52, 0, 0.62, 0.78);
-      bankUv.push(0, u * 28, 1, u * 28);
+      bankUv.push(0, u, 1, u);
 
       if (i < segs) {
         const b = i * 2;
         bankIdx.push(b, b + 2, b + 1, b + 1, b + 2, b + 3);
       }
 
-      // Concrete trestle support piers beneath the Sopraelevata banking every 2nd segment
       if (i % 2 === 0) {
         const pier = new THREE.Mesh(new THREE.BoxGeometry(2.4, 14.2, 16.5), this.concreteMat);
         pier.position.set(bx, 7.1, bz - 0.5);
@@ -4492,21 +5014,22 @@ export class FujiTrack {
     const bankGeo = new THREE.BufferGeometry();
     bankGeo.setAttribute('position', new THREE.Float32BufferAttribute(bankPos, 3));
     bankGeo.setAttribute('normal', new THREE.Float32BufferAttribute(bankNorm, 3));
-    bankGeo.setAttribute('uv', new THREE.Float32BufferAttribute(bankUv, 2));
+    const bankUvAttr = new THREE.Float32BufferAttribute(bankUv, 2);
+    bankGeo.setAttribute('uv', bankUvAttr);
+    bankGeo.setAttribute('uv1', bankUvAttr);
     bankGeo.setIndex(bankIdx);
     bankGeo.computeVertexNormals();
     const bankMesh = new THREE.Mesh(bankGeo, bankMat);
-    bankMesh.material.side = THREE.DoubleSide;
     bankMesh.castShadow = true;
     bankMesh.receiveShadow = true;
     bankGroup.add(bankMesh);
     this.group.add(bankGroup);
 
-    // 2. Historic Serraglio Red-Brick & Limestone Arch Overpass Bridge at s = 500
-    const brFrame = this.sampleAt(500, 0);
+    // 2. Historic Serraglio Red-Brick & Limestone Arch Overpass Bridge at s = 515
+    const brFrame = this.sampleAt(515, 0);
     const yaw = Math.atan2(brFrame.tangent.z, brFrame.tangent.x);
-    const brickMat = new THREE.MeshStandardMaterial({ color: 0x9c3828, roughness: 0.78 });
-    const stoneTrimMat = new THREE.MeshStandardMaterial({ color: 0xe6dfd3, roughness: 0.62 });
+    const brickMat = new THREE.MeshStandardMaterial({ color: 0x9c3828, roughness: 0.80 });
+    const stoneTrimMat = new THREE.MeshStandardMaterial({ color: 0xe6dfd3, roughness: 0.65 });
 
     const bridge = new THREE.Group();
     bridge.position.copy(brFrame.pos);
@@ -4531,15 +5054,15 @@ export class FujiTrack {
     const monzaBrTex = this._makeMotorsportBanner(
       'TEMPIO DELLA VELOCITÀ',
       'AUTODROMO NAZIONALE MONZA • 1922',
-      '#009246',
-      '#006830',
+      '#00853e',
+      '#005e2b',
       '#ffffff',
       '#ce2b37',
       'IT',
       1024,
       160
     );
-    const monzaBrMat = new THREE.MeshStandardMaterial({ map: monzaBrTex, roughness: 0.32 });
+    const monzaBrMat = new THREE.MeshStandardMaterial({ map: monzaBrTex, roughness: 0.44 });
     const brBanner = new THREE.Mesh(
       new THREE.BoxGeometry(9.05, 1.65, ROAD_HALF_WIDTH * 1.85),
       [monzaBrMat, monzaBrMat, stoneTrimMat, stoneTrimMat, stoneTrimMat, stoneTrimMat]
@@ -4548,15 +5071,14 @@ export class FujiTrack {
     bridge.add(brBanner);
     this.group.add(bridge);
 
-    // 3. Waving Italian Tricolor & Scarlet Tifosi Flagpoles along Main Straight & Parabolica!
+    // 3. Waving Italian Tricolor Flagpoles (zero fake daylight emissive!)
     const tricolorTex = this._makeItalianTricolorFlagTexture();
     const flagMat = new THREE.MeshStandardMaterial({
       map: tricolorTex,
-      roughness: 0.45,
+      roughness: 0.56,
       side: THREE.DoubleSide,
-      emissive: new THREE.Color(0xffffff),
-      emissiveMap: tricolorTex,
-      emissiveIntensity: 0.18,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     const flagMeshes = [];
     for (let i = 0; i < 18; i++) {
@@ -4571,44 +5093,17 @@ export class FujiTrack {
     }
     this.animatedProps.push((t) => {
       for (let i = 0; i < flagMeshes.length; i++) {
-        flagMeshes[i].rotation.y = Math.sin(t * 4.5 + i * 0.8) * 0.26;
+        flagMeshes[i].rotation.y = Math.sin(t * 4.2 + i * 0.8) * 0.22;
       }
     });
 
-    // 4. Dense Royal Park of Monza Autumn Gold/Crimson/Emerald Canopy + Stately Italian Cypress Avenues
+    // 4. Dense Royal Park of Monza Autumn Canopy + Italian Cypress Avenues (CC0 Bark PBR)
     this._scatterForestTrees({
       count: 460,
-      foliageColors: [0xd97706, 0xeab308, 0xdc2626, 0xb45309, 0x246334, 0x1b4d28],
+      foliageColors: [0xc26a0c, 0xd4a017, 0xb82525, 0x9e4b10, 0x246334, 0x1b4d28],
       spruceRatio: 0.36,
       blossomPetals: false,
     });
-  }
-
-  _makeVintageConcreteTexture() {
-    const c = document.createElement('canvas');
-    c.width = 256;
-    c.height = 256;
-    const ctx = c.getContext('2d');
-    ctx.fillStyle = '#aeb6c2';
-    ctx.fillRect(0, 0, 256, 256);
-
-    // Concrete slab expansion joints + weathered banking tire patina
-    ctx.fillStyle = 'rgba(30, 36, 46, 0.26)';
-    ctx.fillRect(72, 0, 84, 256);
-    ctx.strokeStyle = 'rgba(40, 46, 56, 0.45)';
-    ctx.lineWidth = 3;
-    for (let y = 0; y < 256; y += 64) {
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(256, y); ctx.stroke();
-    }
-    for (let i = 0; i < 2000; i++) {
-      ctx.fillStyle = (i & 1) === 0 ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
-      ctx.fillRect(fastHash2D(i, 1, 303) * 254, fastHash2D(i, 2, 303) * 254, 2, 2);
-    }
-    const tex = new THREE.CanvasTexture(c);
-    tex.wrapS = THREE.RepeatWrapping;
-    tex.wrapT = THREE.RepeatWrapping;
-    tex.colorSpace = THREE.SRGBColorSpace;
-    return tex;
   }
 
   _makeItalianTricolorFlagTexture() {
@@ -4635,7 +5130,6 @@ export class FujiTrack {
     ctx.fillStyle = '#00247d';
     ctx.fillRect(0, 0, 192, 128);
 
-    // Crisp Union diagonal saltires + St George cross
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 24;
     ctx.beginPath();
@@ -4664,9 +5158,9 @@ export class FujiTrack {
   }
 
   _buildSuzukaBiome() {
-    // 1. Structural 3D Figure-8 Overpass Box-Girder Deck, Flank Bridge Piers & Fascia Banner!
-    const girderMat = new THREE.MeshStandardMaterial({ color: 0xd4dde8, roughness: 0.48, metalness: 0.28 });
-    const darkSteelMat = new THREE.MeshStandardMaterial({ color: 0x263244, roughness: 0.36, metalness: 0.68 });
+    // 1. Structural 3D Figure-8 Overpass Box-Girder Deck, Concrete Bridge Piers & Fascia Banner!
+    const girderMat = new THREE.MeshStandardMaterial({ color: 0xd4dde8, roughness: 0.52, metalness: 0.24 });
+    const darkSteelMat = new THREE.MeshStandardMaterial({ color: 0x263244, roughness: 0.38, metalness: 0.65 });
     const lowerSamples = this.samples.filter((smp) => smp.pos.y < 3.8);
 
     const deckMatrices = [];
@@ -4694,7 +5188,6 @@ export class FujiTrack {
         railMatrices.push(dummy.matrix.clone());
       }
 
-      // Grounded concrete bridge piers every 16 samples ONLY where clear of lower underpass road!
       if (i % 16 === 0 && smp.pos.y > 4.2) {
         for (const side of [-1, 1]) {
           const pierPos = smp.pos.clone().addScaledVector(smp.right, side * (ROAD_HALF_WIDTH + 4.8));
@@ -4737,25 +5230,24 @@ export class FujiTrack {
       this.group.add(railInst);
     }
 
-    // Iconic Overpass Bridge Fascia Signboard directly above the Figure-8 Crossover!
+    // Overpass Bridge Fascia Signboard above the Figure-8 Crossover (zero fake daylight emissive!)
     if (peakSample && peakSample.pos.y > 8.0) {
       const overTex = this._makeMotorsportBanner(
         'SUZUKA CIRCUIT',
         'FIGURE-8 OVERPASS • 130R APPROACH',
-        '#e60026',
+        '#c8102e',
         '#111827',
         '#ffffff',
-        '#ffd600',
+        '#e6be00',
         'JP',
         1024,
         160
       );
       const overMat = new THREE.MeshStandardMaterial({
         map: overTex,
-        roughness: 0.28,
-        emissive: new THREE.Color(0xffffff),
-        emissiveMap: overTex,
-        emissiveIntensity: 0.24,
+        roughness: 0.44,
+        emissive: new THREE.Color(0x000000),
+        emissiveIntensity: 0.0,
       });
       const pyaw = Math.atan2(peakSample.tangent.z, peakSample.tangent.x);
       const fasciaBeam = new THREE.Mesh(
@@ -4767,18 +5259,17 @@ export class FujiTrack {
       this.group.add(fasciaBeam);
     }
 
-    // 2. Iconic Giant Rotating Illuminated Suzuka Circuit Ferris Wheel (96m tall!)
+    // 2. Iconic Giant Rotating Suzuka Circuit Ferris Wheel (daytime structural steel & glass, zero neon glow!)
     const ferrisRoot = new THREE.Group();
     ferrisRoot.position.set(-195, 0, 175);
     ferrisRoot.rotation.y = 0.42;
 
-    const whiteSteelMat = new THREE.MeshStandardMaterial({ color: 0xf4f8ff, metalness: 0.48, roughness: 0.26 });
-    const ledEmeraldMat = new THREE.MeshBasicMaterial({ color: 0x00ff9d });
-    const ledGoldMat = new THREE.MeshBasicMaterial({ color: 0xffe066 });
+    const whiteSteelMat = new THREE.MeshStandardMaterial({ color: 0xf0f5fc, metalness: 0.46, roughness: 0.30 });
+    const greenTrimMat = new THREE.MeshStandardMaterial({ color: 0x0f8a5f, metalness: 0.35, roughness: 0.36 });
+    const goldTrimMat = new THREE.MeshStandardMaterial({ color: 0xd9a426, metalness: 0.45, roughness: 0.34 });
     const hubY = 52.0;
     const wheelR = 44.0;
 
-    // Twin Heavy A-Frame Steel Support Towers anchored on concrete plinths
     for (const zSide of [-5.2, 5.2]) {
       for (const xSpread of [-22.0, 22.0]) {
         const legLen = Math.hypot(xSpread, hubY);
@@ -4811,41 +5302,39 @@ export class FujiTrack {
       wheelRotor.add(outerRim, innerRim);
     }
 
-    const neonRingOuter = new THREE.Mesh(new THREE.TorusGeometry(wheelR - 0.9, 0.34, 8, 48), ledEmeraldMat);
-    const neonRingInner = new THREE.Mesh(new THREE.TorusGeometry(wheelR * 0.46, 0.30, 8, 36), ledGoldMat);
-    wheelRotor.add(neonRingOuter, neonRingInner);
+    const trimRingOuter = new THREE.Mesh(new THREE.TorusGeometry(wheelR - 0.9, 0.32, 8, 48), greenTrimMat);
+    const trimRingInner = new THREE.Mesh(new THREE.TorusGeometry(wheelR * 0.46, 0.28, 8, 36), goldTrimMat);
+    wheelRotor.add(trimRingOuter, trimRingInner);
 
-    const gondolaColors = [0xe60026, 0x00b0ff, 0xffb300, 0x00e676, 0xff4081, 0xffffff];
+    const gondolaColors = [0xc81922, 0x1b6ca8, 0xd99b16, 0x167a4e, 0x3b4859, 0xedf2f7];
     const gondolaMats = gondolaColors.map(
       (hex) => new THREE.MeshStandardMaterial({
         color: hex,
-        roughness: 0.28,
-        metalness: 0.2,
-        emissive: new THREE.Color(hex),
-        emissiveIntensity: 0.22,
+        roughness: 0.36,
+        metalness: 0.16,
+        emissive: new THREE.Color(0x000000),
+        emissiveIntensity: 0.0,
       })
     );
-    const cabinWinMat = new THREE.MeshBasicMaterial({ color: 0xfff5cc });
+    const cabinWinMat = new THREE.MeshStandardMaterial({ color: 0x22384d, roughness: 0.12, metalness: 0.82 });
     const gondolaPivots = [];
 
     for (let i = 0; i < 16; i++) {
       const ang = (Math.PI * 2 * i) / 16;
-      // Twin radial spokes + illuminated LED light bar
       for (const zSpoke of [-2.6, 2.6]) {
         const spoke = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, wheelR, 6), whiteSteelMat);
         spoke.position.set(Math.cos(ang) * wheelR * 0.5, Math.sin(ang) * wheelR * 0.5, zSpoke);
         spoke.rotation.z = ang - Math.PI * 0.5;
         wheelRotor.add(spoke);
       }
-      const ledRay = new THREE.Mesh(
-        new THREE.BoxGeometry(0.26, wheelR * 0.88, 0.26),
-        i % 2 === 0 ? ledEmeraldMat : ledGoldMat
+      const trussRay = new THREE.Mesh(
+        new THREE.BoxGeometry(0.22, wheelR * 0.88, 0.22),
+        i % 2 === 0 ? greenTrimMat : whiteSteelMat
       );
-      ledRay.position.set(Math.cos(ang) * wheelR * 0.46, Math.sin(ang) * wheelR * 0.46, 0);
-      ledRay.rotation.z = ang - Math.PI * 0.5;
-      wheelRotor.add(ledRay);
+      trussRay.position.set(Math.cos(ang) * wheelR * 0.46, Math.sin(ang) * wheelR * 0.46, 0);
+      trussRay.rotation.z = ang - Math.PI * 0.5;
+      wheelRotor.add(trussRay);
 
-      // Gravity-stabilized 3D passenger gondola cabin at rim
       const pivot = new THREE.Group();
       pivot.position.set(Math.cos(ang) * wheelR, Math.sin(ang) * wheelR, 0);
       const hanger = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.10, 2.2, 6), whiteSteelMat);
@@ -4861,20 +5350,20 @@ export class FujiTrack {
 
     this.group.add(ferrisRoot);
     this.animatedProps.push((t) => {
-      const rot = t * 0.18;
+      const rot = t * 0.14;
       wheelRotor.rotation.z = rot;
       for (let i = 0; i < gondolaPivots.length; i++) {
         gondolaPivots[i].rotation.z = -rot;
       }
     });
 
-    // 3. Waving Suzuka Crimson & White Circuit Flags along Main Straight & Esses
+    // 3. Waving Suzuka Crimson Circuit Flags (zero fake daylight emissive!)
     const jpFlagMat = new THREE.MeshStandardMaterial({
-      color: 0xe60026,
-      roughness: 0.42,
+      color: 0xc8102e,
+      roughness: 0.56,
       side: THREE.DoubleSide,
-      emissive: new THREE.Color(0xe60026),
-      emissiveIntensity: 0.16,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     const flagClothG = new THREE.PlaneGeometry(3.0, 1.8);
     flagClothG.translate(1.5, 0, 0);
@@ -4891,30 +5380,30 @@ export class FujiTrack {
     }
     this.animatedProps.push((t) => {
       for (let i = 0; i < suzukaFlags.length; i++) {
-        suzukaFlags[i].rotation.y = Math.sin(t * 4.8 + i * 0.9) * 0.28;
+        suzukaFlags[i].rotation.y = Math.sin(t * 4.2 + i * 0.9) * 0.22;
       }
     });
 
-    // 4. Multi-Cluster Japanese Momiji Crimson/Amber Autumn Maples & Cedar Pines
+    // 4. Multi-Cluster Japanese Momiji Crimson/Amber Autumn Maples & Cedar Pines (CC0 Bark PBR)
     this._scatterForestTrees({
       count: 410,
-      foliageColors: [0xdc2626, 0xea580c, 0xf59e0b, 0x1e5631, 0x266b3c],
+      foliageColors: [0xc42525, 0xd45512, 0xd99212, 0x1e5631, 0x266b3c],
       spruceRatio: 0.38,
       blossomPetals: false,
     });
   }
 
   _buildSilverstoneBiome() {
-    // 1. Iconic Futuristic "Silverstone Wing" Cantilevered Aerodynamic Paddock Blades!
+    // 1. Iconic "Silverstone Wing" Cantilevered Aerodynamic Paddock Blades
     const wingGroup = new THREE.Group();
     const garZ = PIT_LANE_CONFIG.lateralOffset + 14.5;
     const silverBladeMat = new THREE.MeshStandardMaterial({
-      color: 0xf2f6fc,
-      metalness: 0.56,
-      roughness: 0.22,
+      color: 0xf0f4fa,
+      metalness: 0.52,
+      roughness: 0.26,
     });
-    const unionBlueTrim = new THREE.MeshBasicMaterial({ color: 0x0038a8 });
-    const unionRedTrim = new THREE.MeshBasicMaterial({ color: 0xce1126 });
+    const unionBlueTrim = new THREE.MeshStandardMaterial({ color: 0x0038a8, roughness: 0.38, metalness: 0.18 });
+    const unionRedTrim = new THREE.MeshStandardMaterial({ color: 0xce1126, roughness: 0.38, metalness: 0.18 });
 
     for (let i = 0; i < 4; i++) {
       const bx = -48 + i * 82;
@@ -4932,7 +5421,6 @@ export class FujiTrack {
       leadingEdge.position.set(0, 0.12, -11.1);
       blade.add(mainFin, leadingEdge);
 
-      // Angled tubular steel V-struts anchoring the cantilevered wing down to the Paddock roof
       for (const sx of [-26, 4, 34]) {
         const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.30, 7.5, 8), this.darkFrameMat);
         strut.position.set(sx, -3.5, 1.2);
@@ -4943,19 +5431,19 @@ export class FujiTrack {
     }
     this.group.add(wingGroup);
 
-    // 2. Historic WWII RAF Silverstone Airfield Control Tower & Curved Steel Hangar!
+    // 2. Historic WWII RAF Silverstone Airfield Control Tower & Curved Steel Hangar
     const rafGroup = new THREE.Group();
     rafGroup.position.set(-168, 0, PIT_LANE_CONFIG.lateralOffset + 34);
     rafGroup.rotation.y = 0.25;
 
-    const brickMat = new THREE.MeshStandardMaterial({ color: 0x9e4737, roughness: 0.78 });
-    const whitewashMat = new THREE.MeshStandardMaterial({ color: 0xedf2f7, roughness: 0.48 });
+    const brickMat = new THREE.MeshStandardMaterial({ color: 0x9e4737, roughness: 0.80 });
+    const whitewashMat = new THREE.MeshStandardMaterial({ color: 0xedf2f7, roughness: 0.52 });
     const cabGlassMat = new THREE.MeshStandardMaterial({
-      color: 0x7be0d6,
-      roughness: 0.15,
-      metalness: 0.65,
-      emissive: new THREE.Color(0x1f6e66),
-      emissiveIntensity: 0.35,
+      color: 0x3b6d75,
+      roughness: 0.12,
+      metalness: 0.78,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
 
     const towerBase = new THREE.Mesh(new THREE.BoxGeometry(14.5, 9.2, 12.5), brickMat);
@@ -4972,11 +5460,10 @@ export class FujiTrack {
     radarSpin.position.y = 17.6;
     rafGroup.add(towerBase, watchDeck, glassCab, cabRoof, radarSpin);
     this.animatedProps.push((t) => {
-      radarSpin.rotation.y = t * 1.8;
+      radarSpin.rotation.y = t * 1.4;
     });
 
-    // Historic Curved Corrugated-Steel RAF Hangar beside Watch Tower
-    const hangarMat = new THREE.MeshStandardMaterial({ color: 0x5c6878, metalness: 0.52, roughness: 0.44 });
+    const hangarMat = new THREE.MeshStandardMaterial({ color: 0x5c6878, metalness: 0.52, roughness: 0.46 });
     const hangarVault = new THREE.Mesh(
       new THREE.CylinderGeometry(14.5, 14.5, 44, 20, 1, false, 0, Math.PI),
       hangarMat
@@ -5000,14 +5487,14 @@ export class FujiTrack {
     );
     const rafBanner = new THREE.Mesh(
       new THREE.BoxGeometry(24, 2.4, 0.5),
-      new THREE.MeshStandardMaterial({ map: rafBannerTex, roughness: 0.3 })
+      new THREE.MeshStandardMaterial({ map: rafBannerTex, roughness: 0.44 })
     );
     rafBanner.position.set(-32, 8.2, -18.2);
     rafGroup.add(rafBanner);
     this.group.add(rafGroup);
 
-    // 3. Spinning Northamptonshire Horizon Wind Turbines (4 Sleek 76m 3-Bladed Turbines!)
-    const turbineMat = new THREE.MeshStandardMaterial({ color: 0xf5f9ff, roughness: 0.26, metalness: 0.22 });
+    // 3. Spinning Northamptonshire Horizon Wind Turbines
+    const turbineMat = new THREE.MeshStandardMaterial({ color: 0xf2f6fc, roughness: 0.32, metalness: 0.18 });
     const turbineSites = [
       [710, -155],
       [980, 415],
@@ -5050,19 +5537,18 @@ export class FujiTrack {
     }
     this.animatedProps.push((t) => {
       for (let i = 0; i < turbineRotors.length; i++) {
-        turbineRotors[i].rotor.rotation.z = -(t * 1.15 + turbineRotors[i].phase);
+        turbineRotors[i].rotor.rotation.z = -(t * 1.05 + turbineRotors[i].phase);
       }
     });
 
-    // 4. Waving British GP Union Flags along Hamilton/Main Straight, Abbey & Maggotts-Becketts
+    // 4. Waving British GP Union Flags (zero fake daylight emissive!)
     const ukTex = this._makeBritishGPFlagTexture();
     const ukFlagMat = new THREE.MeshStandardMaterial({
       map: ukTex,
-      roughness: 0.44,
+      roughness: 0.56,
       side: THREE.DoubleSide,
-      emissive: new THREE.Color(0xffffff),
-      emissiveMap: ukTex,
-      emissiveIntensity: 0.16,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     const ukFlagGeo = new THREE.PlaneGeometry(3.2, 1.9);
     ukFlagGeo.translate(1.6, 0, 0);
@@ -5079,11 +5565,11 @@ export class FujiTrack {
     }
     this.animatedProps.push((t) => {
       for (let i = 0; i < ukFlags.length; i++) {
-        ukFlags[i].rotation.y = Math.sin(t * 5.1 + i * 0.85) * 0.28;
+        ukFlags[i].rotation.y = Math.sin(t * 4.4 + i * 0.85) * 0.22;
       }
     });
 
-    // 5. Lush Multi-Cluster English Countryside Oaks & Scots Pines
+    // 5. Lush English Countryside Oaks & Scots Pines (CC0 Bark PBR)
     this._scatterForestTrees({
       count: 390,
       foliageColors: [0x1f6332, 0x29753e, 0x358244, 0x184d27, 0x4d7c2b],
@@ -5104,6 +5590,12 @@ export class FujiTrack {
           uniform float uWindTime;`
         )
         .replace(
+          '#include <beginnormal_vertex>',
+          `#include <beginnormal_vertex>
+          // Soft 32% skyward canopy normal blend so tree crowns shade naturally without fake emissive!
+          objectNormal = normalize(mix(objectNormal, vec3(0.0, 1.0, 0.0), 0.32));`
+        )
+        .replace(
           '#include <begin_vertex>',
           `#include <begin_vertex>
           float hFrac = clamp(position.y / ${hStr}, 0.0, 1.0);
@@ -5113,11 +5605,11 @@ export class FujiTrack {
             vec3 tInst = instanceMatrix[3].xyz;
             tSeed = fract(sin(dot(tInst.xz, vec2(14.37, 61.91))) * 35713.11) * 6.2831;
           #endif
-          transformed.x += sin(uWindTime * 1.65 + tSeed + position.y * 0.35) * 0.24 * swayWeight;
-          transformed.z += cos(uWindTime * 1.28 + tSeed * 1.3 + position.x * 0.4) * 0.18 * swayWeight;`
+          transformed.x += sin(uWindTime * 1.45 + tSeed + position.y * 0.35) * 0.20 * swayWeight;
+          transformed.z += cos(uWindTime * 1.15 + tSeed * 1.3 + position.x * 0.4) * 0.15 * swayWeight;`
         );
     };
-    mat.customProgramCacheKey = () => `f1_tree_wind_${hStr}`;
+    mat.customProgramCacheKey = () => `f1_tree_wind_v2_${hStr}`;
     return mat;
   }
 
@@ -5139,11 +5631,19 @@ export class FujiTrack {
       limbB.rotateX(0.52); limbB.translate(0.06, 4.05, 0.56);
       decTrunkGeo = mergeSubGeometries([mainStem, limbL, limbR, limbB]);
     }
+    if (decTrunkGeo && decTrunkGeo.getAttribute('uv') && !decTrunkGeo.getAttribute('uv1')) {
+      decTrunkGeo.setAttribute('uv1', decTrunkGeo.getAttribute('uv'));
+    }
+
     if (!pineTrunkGeo) {
       const pStem = new THREE.CylinderGeometry(0.18, 0.46, 7.2, 8);
       pStem.translate(0, 3.6, 0);
       pineTrunkGeo = pStem;
     }
+    if (pineTrunkGeo && pineTrunkGeo.getAttribute('uv') && !pineTrunkGeo.getAttribute('uv1')) {
+      pineTrunkGeo.setAttribute('uv1', pineTrunkGeo.getAttribute('uv'));
+    }
+
     if (!decCrownGeo) {
       const bough1 = new THREE.DodecahedronGeometry(2.55, 1);
       bough1.scale(1.24, 0.74, 1.14); bough1.translate(-1.68, 4.95, 0.42);
@@ -5164,10 +5664,21 @@ export class FujiTrack {
       pineCrownGeo = mergeSubGeometries([pineT1, pineT2, pineT3]);
     }
 
+    // Real CC0 Poly Haven bark_brown_02 1K PBR Texture Set on Tree Trunks!
+    const barkSet = FujiTrack._getPbrSet('bark_brown_02', 1.5, 3.2);
+    this._collectProtectedAssetResources();
     const trunkMat = new THREE.MeshStandardMaterial({
-      color: envCache?.barkMap ? 0xd8c6b4 : 0x4a3423,
-      map: envCache?.barkMap || null,
+      color: 0xb8a38e,
+      map: barkSet.diff,
+      normalMap: barkSet.nor,
+      normalScale: new THREE.Vector2(1.08, 1.08),
+      roughnessMap: barkSet.rough,
+      aoMap: barkSet.arm,
+      aoMapIntensity: 0.72,
       roughness: 0.90,
+      metalness: 0.02,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     return { envCache, decTrunkGeo, decCrownGeo, pineTrunkGeo, pineCrownGeo, trunkMat };
   }
@@ -5230,24 +5741,26 @@ export class FujiTrack {
       const dtInst = new THREE.InstancedMesh(decTrunkGeo, trunkMat, decTrunks.length);
       decTrunks.forEach((m, k) => dtInst.setMatrixAt(k, m));
       dtInst.instanceMatrix.needsUpdate = true;
+      dtInst.castShadow = true;
       this.group.add(dtInst);
     }
     if (pineTrunks.length) {
       const ptInst = new THREE.InstancedMesh(pineTrunkGeo, trunkMat, pineTrunks.length);
       pineTrunks.forEach((m, k) => ptInst.setMatrixAt(k, m));
       ptInst.instanceMatrix.needsUpdate = true;
+      ptInst.castShadow = true;
       this.group.add(ptInst);
     }
 
     foliageColors.forEach((col, idx) => {
-      const isSakura = blossomPetals && idx <= 2;
       const mat = this._applyTreeWindShader(
         new THREE.MeshStandardMaterial({
           color: col,
           map: envCache?.foliageMap || null,
-          roughness: 0.72,
-          emissive: new THREE.Color(col),
-          emissiveIntensity: isSakura ? 0.15 : 0.05,
+          roughness: 0.78,
+          metalness: 0.02,
+          emissive: new THREE.Color(0x000000),
+          emissiveIntensity: 0.0,
         }),
         9.5
       );
@@ -5256,6 +5769,7 @@ export class FujiTrack {
         roundBuckets[idx].forEach((m, k) => inst.setMatrixAt(k, m));
         inst.instanceMatrix.needsUpdate = true;
         inst.castShadow = true;
+        inst.receiveShadow = true;
         this.group.add(inst);
       }
       if (pineBuckets[idx].length) {
@@ -5263,16 +5777,19 @@ export class FujiTrack {
         pineBuckets[idx].forEach((m, k) => inst.setMatrixAt(k, m));
         inst.instanceMatrix.needsUpdate = true;
         inst.castShadow = true;
+        inst.receiveShadow = true;
         this.group.add(inst);
       }
     });
 
     if (petalRings.length) {
       const petalGeo = new THREE.CircleGeometry(1.0, 12);
-      const petalMat = new THREE.MeshBasicMaterial({
-        color: 0xffb7d5,
+      const petalMat = new THREE.MeshStandardMaterial({
+        color: 0xf4b6cf,
+        roughness: 0.86,
+        metalness: 0.0,
         transparent: true,
-        opacity: 0.48,
+        opacity: 0.44,
         depthWrite: false,
       });
       const pInst = new THREE.InstancedMesh(petalGeo, petalMat, petalRings.length);
@@ -5296,6 +5813,9 @@ export class FujiTrack {
       seg3.rotateZ(-0.14); seg3.translate(0.68, 8.38, 0);
       trunkGeo = mergeSubGeometries([seg1, seg2, seg3]);
     }
+    if (trunkGeo && trunkGeo.getAttribute('uv') && !trunkGeo.getAttribute('uv1')) {
+      trunkGeo.setAttribute('uv1', trunkGeo.getAttribute('uv'));
+    }
 
     if (!frondGeo) {
       const frondParts = [];
@@ -5316,18 +5836,30 @@ export class FujiTrack {
       frondGeo = mergeSubGeometries(frondParts);
     }
 
+    // Real CC0 Poly Haven bark_brown_02 1K PBR on Palm Trunks!
+    const palmBarkSet = FujiTrack._getPbrSet('bark_brown_02', 1.4, 4.2);
+    this._collectProtectedAssetResources();
     const trunkMat = new THREE.MeshStandardMaterial({
-      color: envCache?.barkMap ? 0xd9c2a8 : 0x735338,
-      map: envCache?.barkMap || null,
-      roughness: 0.86,
+      color: 0xc2ab92,
+      map: palmBarkSet.diff,
+      normalMap: palmBarkSet.nor,
+      normalScale: new THREE.Vector2(1.0, 1.0),
+      roughnessMap: palmBarkSet.rough,
+      aoMap: palmBarkSet.arm,
+      aoMapIntensity: 0.70,
+      roughness: 0.88,
+      metalness: 0.02,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     const frondMat = this._applyTreeWindShader(
       new THREE.MeshStandardMaterial({
-        color: this.trackDef.theme === 'VEGAS' ? 0x1e824c : 0x278042,
+        color: this.trackDef.theme === 'VEGAS' ? 0x1e7a46 : 0x26783e,
         map: envCache?.foliageMap || null,
-        roughness: 0.66,
-        emissive: new THREE.Color(this.trackDef.theme === 'VEGAS' ? 0x0a3822 : 0x061f10),
-        emissiveIntensity: 0.22,
+        roughness: 0.74,
+        metalness: 0.02,
+        emissive: new THREE.Color(0x000000),
+        emissiveIntensity: 0.0,
       }),
       11.5
     );
@@ -5374,17 +5906,17 @@ export class FujiTrack {
       });
       tInst.instanceMatrix.needsUpdate = true;
       fInst.instanceMatrix.needsUpdate = true;
+      tInst.castShadow = true;
       fInst.castShadow = true;
       this.group.add(tInst, fInst);
     }
   }
 
-  // Dedicated 3D Blender Scenic Vista Groves along the Main Straight & Showroom Horizon!
+  // Dedicated 3D Scenic Vista Groves along the Main Straight & Showroom Horizon (CC0 Bark PBR + Zero Daylight Emissive)
   _buildMainStraightScenicVistaTrees() {
     const theme = this.trackDef.theme;
     const spots = [];
 
-    // 1. Courtyard Groves in the open plazas between Main Straight Grandstand Blocks (X in [22..68] & [276..322])!
     for (const gapCenterX of [45, 299]) {
       for (let k = 0; k < 10; k++) {
         const h1 = fastHash2D(k, 1, gapCenterX);
@@ -5398,7 +5930,6 @@ export class FujiTrack {
       }
     }
 
-    // 2. Tall Horizon Parkland Groves rising behind the Main Straight Grandstands & framing Turn 1!
     for (let i = 0; i < 68; i++) {
       const h1 = fastHash2D(i, 1, 512);
       const h2 = fastHash2D(i, 2, 512);
@@ -5407,7 +5938,6 @@ export class FujiTrack {
       spots.push({ x, z, scale: 1.15 + h2 * 0.62, rotY: h1 * Math.PI * 2 });
     }
 
-    // 3. Paddock Parkland & Turn 1 Right-Side Vista Groves behind the Pit Garages!
     for (let i = 0; i < 46; i++) {
       const h1 = fastHash2D(i, 1, 733);
       const h2 = fastHash2D(i, 2, 733);
@@ -5422,11 +5952,11 @@ export class FujiTrack {
     }
 
     const palette = theme === 'FUJI'
-      ? { cols: [0xff9ec6, 0xffb7d5, 0x1d5932, 0x276e3f], spruce: 0.46 }
+      ? { cols: [0xf4a6c6, 0xf7bdd4, 0x1d5932, 0x276e3f], spruce: 0.46 }
       : (theme === 'MONZA'
-        ? { cols: [0xd97706, 0xdc2626, 0xeab308, 0x1e5631], spruce: 0.36 }
+        ? { cols: [0xc26a0c, 0xb82525, 0xd4a017, 0x1e5631], spruce: 0.36 }
         : (theme === 'SUZUKA'
-          ? { cols: [0xdc2626, 0xea580c, 0xf59e0b, 0x1e5631], spruce: 0.40 }
+          ? { cols: [0xc42525, 0xd45512, 0xd99212, 0x1e5631], spruce: 0.40 }
           : { cols: [0x1f6332, 0x29753e, 0x358244, 0x4d7c2b], spruce: 0.32 }));
 
     const { envCache, decTrunkGeo, decCrownGeo, pineTrunkGeo, pineCrownGeo, trunkMat } = this._getTreeGeometriesAndMaterials();
@@ -5460,24 +5990,26 @@ export class FujiTrack {
       const inst = new THREE.InstancedMesh(decTrunkGeo, trunkMat, decTrunks.length);
       decTrunks.forEach((m, k) => inst.setMatrixAt(k, m));
       inst.instanceMatrix.needsUpdate = true;
+      inst.castShadow = true;
       this.group.add(inst);
     }
     if (pineTrunks.length) {
       const inst = new THREE.InstancedMesh(pineTrunkGeo, trunkMat, pineTrunks.length);
       pineTrunks.forEach((m, k) => inst.setMatrixAt(k, m));
       inst.instanceMatrix.needsUpdate = true;
+      inst.castShadow = true;
       this.group.add(inst);
     }
 
     palette.cols.forEach((col, idx) => {
-      const isSakura = theme === 'FUJI' && idx <= 1;
       const mat = this._applyTreeWindShader(
         new THREE.MeshStandardMaterial({
           color: col,
           map: envCache?.foliageMap || null,
-          roughness: 0.72,
-          emissive: new THREE.Color(col),
-          emissiveIntensity: isSakura ? 0.16 : 0.05,
+          roughness: 0.78,
+          metalness: 0.02,
+          emissive: new THREE.Color(0x000000),
+          emissiveIntensity: 0.0,
         }),
         9.5
       );
@@ -5486,6 +6018,7 @@ export class FujiTrack {
         decCrowns[idx].forEach((m, k) => inst.setMatrixAt(k, m));
         inst.instanceMatrix.needsUpdate = true;
         inst.castShadow = true;
+        inst.receiveShadow = true;
         this.group.add(inst);
       }
       if (pineCrowns[idx].length) {
@@ -5493,13 +6026,14 @@ export class FujiTrack {
         pineCrowns[idx].forEach((m, k) => inst.setMatrixAt(k, m));
         inst.instanceMatrix.needsUpdate = true;
         inst.castShadow = true;
+        inst.receiveShadow = true;
         this.group.add(inst);
       }
     });
   }
 
   // --------------------------------------------------------------------------
-  // 10. FIA MARSHAL BOOTHS + 3D ANIMATED TRACKSIDE FLAG MARSHALS, PUDDLES & SKIDMARKS
+  // 10. FIA MARSHAL BOOTHS + 3D TRACKSIDE MARSHALS (ZERO SUIT/CLOTH EMISSIVE!), PUDDLES & SKIDMARKS
   // --------------------------------------------------------------------------
   _makeCheckeredMarshalFlagTexture() {
     const c = document.createElement('canvas');
@@ -5523,13 +6057,14 @@ export class FujiTrack {
   _buildMarshalPosts() {
     this.marshalPosts = [];
     const envCache = FujiTrack._envGlbCache;
-    const poleMat = new THREE.MeshStandardMaterial({ color: 0xd0d8e4, metalness: 0.68, roughness: 0.3 });
-    const boothMat = new THREE.MeshStandardMaterial({ color: 0xf2f6fc, roughness: 0.45 });
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0xd0d8e4, metalness: 0.68, roughness: 0.32 });
+    const boothMat = new THREE.MeshStandardMaterial({ color: 0xf0f4fa, roughness: 0.52 });
     const orangeMat = new THREE.MeshStandardMaterial({
-      color: 0xff6d00,
-      roughness: 0.38,
-      emissive: new THREE.Color(0xff5500),
-      emissiveIntensity: 0.22,
+      color: 0xe85d04,
+      roughness: 0.58,
+      metalness: 0.03,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     const checkeredTex = this._makeCheckeredMarshalFlagTexture();
 
@@ -5558,7 +6093,6 @@ export class FujiTrack {
       mGroup.rotation.y = -yaw;
 
       if (isStartStand) {
-        // Elevated Start/Finish FIA Starter's Rostrum Platform right beside the Start Gantry!
         const rostrum = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.55, 2.0), this.darkFrameMat);
         rostrum.position.set(0, 0.775, -0.35);
         const rail = new THREE.Mesh(new THREE.BoxGeometry(2.48, 0.92, 0.10), orangeMat);
@@ -5574,6 +6108,7 @@ export class FujiTrack {
         mGroup.add(booth, stripe, canopy);
       }
 
+      // Authentic FIA Electronic LED Flag Matrix Panel (true LED source)
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.095, 4.7, 8), poleMat);
       pole.position.set(-0.85, 2.35, 0.25);
       const ledHousing = new THREE.Mesh(new THREE.BoxGeometry(0.24, 1.05, 1.15), this.darkFrameMat);
@@ -5583,7 +6118,6 @@ export class FujiTrack {
       ledScreen.position.set(-0.85, 4.15, 0.88);
       mGroup.add(pole, ledHousing, ledScreen);
 
-      // Articulated 3D Trackside Marshal waving rippled 3D Signal Flag!
       const marshalRig = new THREE.Group();
       marshalRig.position.set(0.45, isStartStand ? 1.55 : 0.0, 0.15);
 
@@ -5591,11 +6125,12 @@ export class FujiTrack {
       mBody.castShadow = true;
       const flagMat = this._applyFlagRippleShader(
         new THREE.MeshStandardMaterial({
-          color: 0x00e676,
-          roughness: 0.38,
+          color: 0x00b85c,
+          roughness: 0.56,
+          metalness: 0.02,
           side: THREE.DoubleSide,
-          emissive: new THREE.Color(0x00a854),
-          emissiveIntensity: 0.28,
+          emissive: new THREE.Color(0x000000),
+          emissiveIntensity: 0.0,
         }),
         1.65
       );
@@ -5616,7 +6151,6 @@ export class FujiTrack {
       });
     };
 
-    // Dedicated Start/Finish Flag Marshal Rostrum at s = 2.4 (visible from Showroom #1 Grid Slot!)
     spawnMarshalStation(2.4, FUJI_SECTORS[0]?.id || 'S1', true);
 
     for (const sec of FUJI_SECTORS) {
@@ -5639,8 +6173,8 @@ export class FujiTrack {
       const isCheckered = Boolean(this._checkeredFlagActive && mp.isStartStand);
 
       mp.flag.visible = true;
-      const swayRate = isYellow || isCheckered ? 9.5 : 4.2;
-      const swayAmp = isYellow || isCheckered ? 0.32 : 0.14;
+      const swayRate = isYellow || isCheckered ? 8.2 : 3.2;
+      const swayAmp = isYellow || isCheckered ? 0.28 : 0.08;
       if (mp.marshalRig) {
         mp.marshalRig.rotation.y = Math.sin(elapsedSec * swayRate + i * 1.3) * swayAmp;
       }
@@ -5651,24 +6185,20 @@ export class FujiTrack {
           mp.flagMat.needsUpdate = true;
         }
         mp.flagMat.color.setHex(0xffffff);
-        mp.flagMat.emissive?.setHex(0x444444);
         if (mp.ledMat) mp.ledMat.color.setHex(flashOn ? 0xffffff : 0x00e676);
       } else if (isYellow) {
         if (mp.flagMat.map !== null) {
           mp.flagMat.map = null;
           mp.flagMat.needsUpdate = true;
         }
-        const col = flashOn ? 0xffea00 : 0xffab00;
-        mp.flagMat.color.setHex(col);
-        mp.flagMat.emissive?.setHex(0x805500);
+        mp.flagMat.color.setHex(0xf5c400);
         if (mp.ledMat) mp.ledMat.color.setHex(flashOn ? 0xffe600 : 0x594300);
       } else {
         if (mp.flagMat.map !== null) {
           mp.flagMat.map = null;
           mp.flagMat.needsUpdate = true;
         }
-        mp.flagMat.color.setHex(0x00e676);
-        mp.flagMat.emissive?.setHex(0x006937);
+        mp.flagMat.color.setHex(0x00b85c);
         if (mp.ledMat) mp.ledMat.color.setHex(0x00c853);
       }
     }
@@ -5700,7 +6230,7 @@ export class FujiTrack {
       geo.rotateX(-Math.PI / 2);
       const mesh = new THREE.Mesh(geo, puddleMat);
       const fr = this.sampleAt(pd.s, pd.lat);
-      mesh.position.copy(fr.pos).add(new THREE.Vector3(0, 0.042, 0));
+      mesh.position.copy(fr.pos).add(new THREE.Vector3(0, 0.046, 0));
       mesh.visible = false;
       this.group.add(mesh);
       return { ...pd, pos: fr.pos.clone(), mesh, forceActive1982: false };
@@ -5737,7 +6267,7 @@ export class FujiTrack {
 
   addSkidmark(worldPos, yawRad) {
     const d = this._skidDummy;
-    d.position.set(worldPos.x, worldPos.y + 0.034, worldPos.z);
+    d.position.set(worldPos.x, worldPos.y + 0.042, worldPos.z);
     d.rotation.set(0, -yawRad, 0);
     d.scale.set(1, 1, 1);
     d.updateMatrix();

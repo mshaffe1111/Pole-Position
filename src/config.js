@@ -38,35 +38,40 @@ export const TRACK_CATALOG = {
     theme: 'FUJI',
     accentColor: '#e51c23',
     gantrySub: 'FUJI GRAND PRIX • SHIZUOKA CIRCUIT',
-    curbColors: ['#e51c23', '#f8fafd'],
-    grassColors: ['#256d2c', '#1e5c24'],
-    runoffColor: '#c9b489',
+    curbColors: ['#d91c23', '#f4f6fa'],
+    grassColors: ['#25632a', '#1e5222'],
+    runoffColor: '#b9a682',
     brakingZones: [
-      { entryS: 162, side: -1 }, // Turn 1 Daiichi Right
-      { entryS: 410, side:  1 }, // 100R Sweeper Entry
-      { entryS: 618, side: -1 }, // Hairpin Approach
-      { entryS: 888, side: -1 }, // Panorama Final Entry
+      { entryS: 219, side: -1 }, // Turn 1 Daiichi Right (R=56m)
+      { entryS: 372, side:  1 }, // 100R Sweeper Entry (R=83m)
+      { entryS: 587, side: -1 }, // Hairpin Complex (R=27m)
+      { entryS: 843, side: -1 }, // Panorama Final Entry
     ],
     cornerTribunes: [
-      { s: 215, side: -1, span: 120 },
-      { s: 645, side:  1, span: 110 },
+      { s: 248, side: -1, span: 120 },
+      { s: 625, side: -1, span: 110 },
     ],
-    // Closed loop control points [x, y, z] (Main straight runs along z=0 from x=-260 to x=+620)
+    // Closed Periodic C2 Cubic Spline control points [x, y, z]
     controlPoints: [
-      [-260, 0,    0],
-      [   0, 0,    0],
-      [ 300, 0,    0],
-      [ 620, 0,    0],   // End of 1.5km Main Straight -> Turn 1 Daiichi Right!
-      [ 830, 2,   95],
-      [ 855, 5,  295],   // Sharp Daiichi Right apex
-      [ 660, 7,  380],   // Short chute heading West
-      [ 460, 9,  330],   // 100R fast sweeping Left/Right S
-      [ 250, 12, 470],
-      [  60, 14, 650],   // Approach to Hairpin
-      [-185, 13, 665],   // Tight Hairpin apex
-      [-370, 10, 480],   // 300R Panorama Curve climb/descent
-      [-485,  5, 240],
-      [-430,  1,  55],   // Panorama Exit & Pit Split onto Main Straight
+      [-260,  0.0,   0],
+      [   0,  0.0,   0],
+      [ 295,  0.0,   0],
+      [ 555,  0.0,   0],   // End of Main Pit Straight -> Turn 1 Daiichi braking!
+      [ 685,  1.5,  22],
+      [ 722,  4.0,  92],   // Sharp Daiichi Right apex
+      [ 665,  5.8, 175],
+      [ 545,  7.0, 248],   // Short chute heading West
+      [ 415,  8.5, 232],   // 100R sweeping S-complex
+      [ 295, 10.5, 325],
+      [ 165, 12.5, 485],   // High-speed climb toward Hairpin
+      [   5, 13.8, 605],
+      [ -98, 13.5, 632],   // Tight Hairpin entry
+      [-155, 12.5, 582],   // Tight 27m Hairpin apex
+      [-138, 11.0, 498],
+      [-285,  9.0, 415],   // 300R Panorama Curve descent
+      [-442,  5.2, 235],
+      [-448,  1.6,  78],
+      [-375,  0.2,  16],   // Panorama Exit & Pit Split onto Main Straight
     ],
   },
 
@@ -78,34 +83,44 @@ export const TRACK_CATALOG = {
     theme: 'MONACO',
     accentColor: '#d91e2a',
     gantrySub: 'CIRCUIT DE MONACO • PORT HERCULE',
-    curbColors: ['#d91e2a', '#ffffff'],
+    curbColors: ['#d91e2a', '#f5f7fa'],
     grassColors: ['#3d4652', '#333b46'], // Riviera paved urban stone surrounds
     runoffColor: '#485260',
-    tunnelRangeS: [430, 565],
+    tunnelRangeS: [510, 620],
     brakingZones: [
-      { entryS: 154, side: -1 }, // Sainte-Devote Right
-      { entryS: 304, side: -1 }, // Casino / Mirabeau Descent
-      { entryS: 582, side: -1 }, // Nouvelle Harbor Chicane (after Tunnel)
-      { entryS: 868, side: -1 }, // Rascasse / Anthony Noghes
+      { entryS: 205, side: -1 }, // Sainte-Devote Right (R=35m)
+      { entryS: 315, side: -1 }, // Casino / Mirabeau / Fairmont Descent (R=33m)
+      { entryS: 648, side: -1 }, // Nouvelle Harbor Chicane after Tunnel (R=15m)
+      { entryS: 832, side: -1 }, // Rascasse / Anthony Noghes
     ],
     cornerTribunes: [
-      { s: 625, side: -1, span: 115 }, // Harbor / Tabac Waterfront Tribune
-      { s: 775, side: -1, span: 105 }, // Swimming Pool Complex Stand
+      { s: 682, side: -1, span: 115 }, // Harbor / Tabac Waterfront Tribune
+      { s: 785, side: -1, span: 105 }, // Swimming Pool Complex Stand
     ],
     controlPoints: [
-      [-250, 0,    0],
-      [   0, 0,    0],
-      [ 280, 0,    0],
-      [ 540, 0,    0],   // Sainte-Devote Right corner
-      [ 720, 6,  110],   // Beau Rivage hill climb!
-      [ 690, 15, 310],   // Casino Square high terrace
-      [ 470, 12, 370],   // Mirabeau / Fairmont Hairpin descent
-      [ 330,  5, 250],
-      [ 160,  1, 390],   // Illuminated Tunnel curving along seafront!
-      [ -90,  0, 450],   // Nouvelle Harbor Chicane right beside Yacht Marina
-      [-290,  0, 340],   // Tabac & Swimming Pool S-curves
-      [-420,  0, 195],
-      [-390,  0,  52],   // Rascasse -> Anthony Noghes onto Main Straight
+      [-250,  0.0,   0],
+      [   0,  0.0,   0],
+      [ 265,  0.0,   0],
+      [ 495,  0.0,   0],   // Sainte-Devote braking zone
+      [ 578,  1.2,  18],   // Sainte-Devote Right apex
+      [ 602,  4.0,  74],   // Beau Rivage hill climb!
+      [ 648,  9.5, 185],
+      [ 632, 14.2, 292],   // Massenet / Casino Square high terrace
+      [ 542, 14.8, 342],
+      [ 458, 11.8, 318],   // Mirabeau Haute
+      [ 422,  8.8, 266],   // Fairmont Hairpin complex
+      [ 368,  6.2, 268],
+      [ 332,  4.2, 326],   // Portier seafront turn
+      [ 238,  1.6, 382],   // Tunnel Louis II entrance
+      [  85,  0.4, 418],   // Illuminated seafront tunnel curve
+      [ -68,  0.0, 426],   // Tunnel exit -> Nouvelle Chicane braking!
+      [-128,  0.0, 388],   // Tight Nouvelle Harbor Chicane
+      [-168,  0.0, 406],
+      [-275,  0.0, 332],   // Tabac & Swimming Pool S-curves
+      [-368,  0.0, 225],
+      [-412,  0.0, 112],   // Rascasse
+      [-396,  0.0,  38],   // Anthony Noghes
+      [-338,  0.0,  13],
     ],
   },
 
@@ -118,32 +133,41 @@ export const TRACK_CATALOG = {
     forceNight: true,
     accentColor: '#ff1493',
     gantrySub: 'LAS VEGAS STRIP CIRCUIT • NIGHT GP',
-    curbColors: ['#ff1493', '#00f0ff'],
+    curbColors: ['#d91424', '#f4f7fc'],
     grassColors: ['#151924', '#10141d'],
     runoffColor: '#1e2433',
     brakingZones: [
-      { entryS: 168, side: -1 }, // Sphere Arena Turn 1
-      { entryS: 445, side:  1 }, // Neon Chicane Complex
-      { entryS: 685, side: -1 }, // Casino Boulevard 90
-      { entryS: 882, side: -1 }, // Final Strip Corner
+      { entryS: 242, side: -1 }, // Sphere Arena Turn 1
+      { entryS: 506, side:  1 }, // Strip Chicane Complex (R=40m)
+      { entryS: 716, side: -1 }, // Casino Boulevard 90 (R=51m)
+      { entryS: 854, side: -1 }, // Final Strip Corner
     ],
     cornerTribunes: [
-      { s: 235, side: -1, span: 125 }, // Sphere Arena Amphitheater Stand
-      { s: 735, side:  1, span: 115 }, // Casino Boulevard Neon Stand
+      { s: 255, side: -1, span: 125 }, // Sphere Arena Amphitheater Stand
+      { s: 730, side: -1, span: 115 }, // Casino Boulevard Stand
     ],
     controlPoints: [
-      [-270, 0,    0],
-      [   0, 0,    0],
-      [ 320, 0,    0],
-      [ 660, 0,    0],   // Blistering Strip Straightaway
-      [ 860, 0,  130],   // Sphere Arena sweeping carousel
-      [ 810, 0,  360],
-      [ 560, 0,  460],
-      [ 260, 0,  420],   // Neon Chicane complex
-      [  40, 0,  540],
-      [-240, 0,  520],
-      [-460, 0,  340],   // Casino Boulevard fast 90-degree sweeping turns
-      [-450, 0,   80],
+      [-270, 0,   0],
+      [   0, 0,   0],
+      [ 295, 0,   0],
+      [ 565, 0,   0],   // Blistering Strip Straightaway
+      [ 748, 0,  16],
+      [ 815, 0,  68],   // Sphere Arena Turn 1 braking & apex
+      [ 822, 0, 175],   // Sweeping around the Sphere Arena
+      [ 772, 0, 345],
+      [ 615, 0, 438],
+      [ 375, 0, 418],
+      [ 262, 0, 392],   // Technical Strip Chicane complex
+      [ 215, 0, 442],
+      [ 155, 0, 508],
+      [ -75, 0, 518],   // Back Strip blast
+      [-285, 0, 504],
+      [-358, 0, 482],   // Heavy braking 90-degree Casino Blvd corner
+      [-388, 0, 418],
+      [-435, 0, 215],
+      [-438, 0,  65],   // Final corner complex onto Pit Straight
+      [-392, 0,  20],
+      [-338, 0,  10],
     ],
   },
 
@@ -155,32 +179,42 @@ export const TRACK_CATALOG = {
     theme: 'MONZA',
     accentColor: '#009246',
     gantrySub: 'AUTODROMO NAZIONALE MONZA • ITALIA',
-    curbColors: ['#009246', '#ffffff', '#ce2b37'], // Italian Tricolor kerbs!
-    grassColors: ['#2e6f28', '#245b1f'],
-    runoffColor: '#bfa57a',
+    curbColors: ['#008c45', '#f4f6fa', '#cd212a'], // Authentic Italian Tricolor FIA kerbs
+    grassColors: ['#2c6626', '#22521d'],
+    runoffColor: '#b89f76',
     brakingZones: [
-      { entryS: 168, side: -1 }, // Variante del Rettifilo
-      { entryS: 376, side: -1 }, // Curva di Lesmo 1
-      { entryS: 598, side:  1 }, // Variante Ascari
-      { entryS: 816, side: -1 }, // Curva Parabolica (Alboreto)
+      { entryS: 218, side: -1 }, // Variante del Rettifilo Chicane (R=22m)
+      { entryS: 390, side: -1 }, // Curva di Lesmo 1 & 2 (R=68m)
+      { entryS: 605, side:  1 }, // Variante Ascari (R=29m)
+      { entryS: 860, side: -1 }, // Curva Parabolica (Alboreto)
     ],
     cornerTribunes: [
-      { s: 195, side: -1, span: 125 }, // Prima Variante Tifosi Stand
-      { s: 845, side: -1, span: 130 }, // Parabolica Tifosi Tribune
+      { s: 228, side: -1, span: 125 }, // Prima Variante Tifosi Stand
+      { s: 862, side: -1, span: 130 }, // Parabolica Tifosi Tribune
     ],
     controlPoints: [
-      [-280, 0,    0],
-      [   0, 0,    0],
-      [ 340, 0,    0],
-      [ 690, 0,    0],   // Rettifilo Tribune ultra-fast straight
-      [ 880, 1,   85],   // Variante del Rettifilo chicane + Curva Grande
-      [ 920, 4,  310],
-      [ 720, 7,  490],   // Curva di Lesmo 1 & 2 in Royal Forest
-      [ 430, 6,  520],
-      [ 120, 3,  430],   // Serraglio fast blast -> Variante Ascari
-      [-180, 2,  460],
-      [-460, 1,  330],   // Famous sweeping Parabolica (Alboreto) Right!
-      [-450, 0,   68],
+      [-280, 0.0,   0],
+      [   0, 0.0,   0],
+      [ 315, 0.0,   0],
+      [ 595, 0.0,   0],   // Rettifilo ultra-fast straight -> heavy 330->85 km/h braking!
+      [ 745, 0.3,  10],
+      [ 778, 0.8,  48],   // Tight Variante del Rettifilo Right-Left chicane!
+      [ 815, 1.5,  62],
+      [ 888, 3.5, 225],   // Flat-out Curva Biassono / Grande
+      [ 828, 5.2, 398],
+      [ 738, 5.8, 468],   // Curva di Lesmo 1
+      [ 642, 5.6, 458],
+      [ 542, 5.2, 495],   // Curva di Lesmo 2
+      [ 315, 4.0, 455],   // Serraglio fast forest blast
+      [ 138, 2.8, 415],
+      [  62, 2.4, 388],   // Variante Ascari entry
+      [   2, 2.1, 438],   // Ascari S-complex
+      [ -78, 1.9, 452],
+      [-298, 1.3, 398],   // Back Straight into Parabolica braking
+      [-428, 0.9, 322],   // Sweeping Curva Parabolica (Alboreto)
+      [-462, 0.5, 168],
+      [-428, 0.1,  48],
+      [-358, 0.0,  14],
     ],
   },
 
@@ -192,39 +226,48 @@ export const TRACK_CATALOG = {
     theme: 'SUZUKA',
     accentColor: '#e60026',
     gantrySub: 'SUZUKA INTERNATIONAL RACING COURSE',
-    curbColors: ['#e60026', '#ffffff'],
-    grassColors: ['#266e2c', '#1e5b24'],
-    runoffColor: '#c7b287',
-    overpassRangeS: [665, 765],
+    curbColors: ['#dc1426', '#f5f7fa'],
+    grassColors: ['#26662b', '#1e5423'],
+    runoffColor: '#bda880',
+    overpassRangeS: [642, 802],
     brakingZones: [
-      { entryS: 152, side: -1 }, // First Curve Right
-      { entryS: 465, side:  1 }, // Suzuka Hairpin
-      { entryS: 585, side: -1 }, // Spoon Curve Entry
-      { entryS: 878, side: -1 }, // Casio Triangle Chicane
+      { entryS: 185, side: -1 }, // First Curve Right into Esses
+      { entryS: 505, side:  1 }, // Suzuka Hairpin (R=38m)
+      { entryS: 612, side:  1 }, // Spoon Curve Entry (R=34m)
+      { entryS: 867, side: -1 }, // Casio Triangle Chicane (R=25m)
     ],
     cornerTribunes: [
-      { s: 192, side: -1, span: 120 }, // First Curve Grandstand
-      { s: 892, side: -1, span: 115 }, // Casio / Ferris Wheel View Stand
+      { s: 215, side: -1, span: 120 }, // First Curve Grandstand
+      { s: 882, side: -1, span: 115 }, // Casio / Ferris Wheel View Stand
     ],
-    // Authentic Figure-8 Topology: P9->P10 passes LOW (y=0) & P13->P14 bridges OVERHEAD (y=13.5)!
+    // Authentic Figure-8 Topology: Underpass passes LOW (y=0) & Overpass bridges OVERHEAD (y=13.6m)!
     controlPoints: [
-      [-260,  0,    0],
-      [   0,  0,    0],
-      [ 290,  0,    0],
-      [ 560,  0,    0],   // Main Pit Straight -> First Curve
-      [ 785,  3,   95],
-      [ 810,  6,  265],   // Turn 2 into Rhythmic Esses S-Curves
-      [ 630,  7,  345],
-      [ 455,  4,  265],
-      [ 280,  1,  330],   // Degner Curve approach
-      [  95,  0,  385],   // Underpass Entry (LOW y=0)
-      [ -75,  0,  515],   // Underpass Exit -> Hairpin approach
-      [  35,  4,  665],   // Hairpin & 200R Southern loop
-      [ 255,  9,  615],   // Sweeping Spoon Curve
-      [ 145, 13.5,485],   // Figure-8 Overpass Bridge Climb (HIGH y=13.5)
-      [ -45, 13.5,335],   // Overpass Bridge Exit -> 130R!
-      [-335,  6,  225],   // Flat-out 130R High-Speed Sweeper
-      [-415,  1,   65],   // Casio Triangle Chicane onto Main Straight
+      [-260,  0.0,   0],
+      [   0,  0.0,   0],
+      [ 275,  0.0,   0],
+      [ 515,  0.0,   0],   // Main Pit Straight -> First Curve
+      [ 655,  1.2,  20],
+      [ 712,  3.0,  98],   // Turn 1-2 tightening right
+      [ 688,  4.2, 198],   // Rhythmic Esses S-Curves (40-50m radii)
+      [ 588,  4.8, 278],
+      [ 485,  4.2, 238],
+      [ 388,  3.2, 298],
+      [ 292,  1.8, 278],   // Dunlop / Degner approach
+      [ 198,  0.6, 332],
+      [  88,  0.0, 378],   // Underpass Entry (LOW y=0)
+      [ -55,  0.0, 488],   // Underpass Exit -> Hairpin braking
+      [ -92,  1.2, 558],   // Tight Suzuka Hairpin
+      [ -38,  2.4, 615],   // 200R Southern sweep
+      [  95,  4.0, 642],
+      [ 228,  5.2, 612],   // Twin-apex Spoon Curve
+      [ 252,  5.8, 548],
+      [ 145, 13.6, 478],   // Figure-8 Overpass Bridge Climb (HIGH y=13.6)
+      [ -45, 13.6, 328],   // Overpass Bridge Exit -> 130R blast!
+      [-258,  5.4, 245],   // Fast 130R High-Speed Sweeper
+      [-368,  2.6, 158],   // Heavy braking into Casio Triangle Chicane!
+      [-405,  1.0,  74],
+      [-365,  0.2,  38],
+      [-332,  0.0,  12],
     ],
   },
 
@@ -236,35 +279,45 @@ export const TRACK_CATALOG = {
     theme: 'SILVERSTONE',
     accentColor: '#0038a8',
     gantrySub: 'SILVERSTONE CIRCUIT • BRITISH GRAND PRIX',
-    curbColors: ['#0038a8', '#ffffff', '#ce1126'], // Red, White & Royal Blue Union Kerbs!
-    grassColors: ['#226b30', '#1b5927'],
-    runoffColor: '#697382', // Modern Silverstone painted/tarmac airfield runoff
+    curbColors: ['#0038a8', '#f5f7fa', '#ce1126'], // Red, White & Royal Blue Union Kerbs
+    grassColors: ['#22642e', '#1b5225'],
+    runoffColor: '#5e6775', // Modern Silverstone tarmac airfield runoff
     brakingZones: [
-      { entryS: 156, side: -1 }, // Abbey / Village Entry
-      { entryS: 382, side:  1 }, // Brooklands / Luffield Braking
-      { entryS: 565, side: -1 }, // Maggotts-Becketts High-Speed Entry
-      { entryS: 785, side: -1 }, // Stowe / Vale Braking Zone
+      { entryS: 196, side: -1 }, // Abbey / Village / The Loop Entry (R=33m)
+      { entryS: 378, side:  1 }, // Brooklands / Luffield Complex (R=20m)
+      { entryS: 558, side:  1 }, // Maggotts-Becketts High-Speed S (R=69m)
+      { entryS: 878, side: -1 }, // Stowe / Vale / Club Braking Zone (R=55m)
     ],
     cornerTribunes: [
-      { s: 205, side: -1, span: 120 }, // Abbey / Farm Stand
-      { s: 615, side: -1, span: 125 }, // Becketts Amphitheater Stand
+      { s: 215, side: -1, span: 120 }, // Abbey / Farm Stand
+      { s: 585, side: -1, span: 125 }, // Becketts Amphitheater Stand
     ],
     controlPoints: [
-      [-260, 0,    0],
-      [   0, 0,    0],
-      [ 295, 0,    0],
-      [ 560, 0,    0],   // Hamilton / Main Straight -> Abbey Fast Right!
-      [ 805, 1,   90],
-      [ 775, 2,  265],   // Village & The Loop Hairpin
-      [ 565, 2,  205],   // Aintree onto Wellington Straight
-      [ 385, 3,  335],   // Brooklands & Luffield Complex
-      [ 545, 4,  495],   // Woodcote & Copse Fast Right
-      [ 320, 5,  595],   // Maggotts Fast Left!
-      [ 120, 5,  505],   // Becketts Fast Right!
-      [ -65, 4,  610],   // Chapel Exit onto Hangar Straight!
-      [-365, 2,  495],   // Stowe Fast Right
-      [-465, 1,  275],   // Vale Chicane Braking
-      [-415, 0,   62],   // Club Corner onto Main Pit Straight
+      [-260, 0.0,   0],
+      [   0, 0.0,   0],
+      [ 280, 0.0,   0],
+      [ 515, 0.0,   0],   // Hamilton / Main Straight -> Abbey Fast Right!
+      [ 665, 0.8,  22],
+      [ 722, 1.6, 108],
+      [ 695, 2.0, 212],   // Village & The Loop tight hairpin
+      [ 622, 2.2, 248],
+      [ 555, 2.0, 196],   // Aintree onto Wellington Straight
+      [ 425, 2.6, 265],
+      [ 355, 3.2, 328],   // Brooklands Left & tight 20m Luffield Right!
+      [ 392, 3.6, 408],
+      [ 498, 4.2, 482],   // Woodcote & Copse Fast Right
+      [ 425, 4.8, 558],
+      [ 295, 5.0, 578],   // Maggotts -> Becketts -> Chapel high-G sequence!
+      [ 192, 5.0, 512],
+      [  88, 4.8, 538],
+      [ -38, 4.2, 596],   // Exit onto Hangar Straight!
+      [-258, 2.8, 528],
+      [-378, 1.8, 462],   // Stowe Fast Right
+      [-438, 1.2, 338],
+      [-452, 0.8, 198],   // Vale & Club Braking Complex
+      [-408, 0.4, 112],
+      [-382, 0.1,  38],
+      [-332, 0.0,  11],
     ],
   },
 };
@@ -482,24 +535,24 @@ export const REPAIR_ORDERS = {
 
 export const AI_ARCHETYPES = {
   APEX_TACTICIAN: {
-    id: 'APEX_TACTICIAN', badge: 'APEX', basePace: 0.992, brakeOffsetM: 0.0, brakeVarianceM: 1.0,
+    id: 'APEX_TACTICIAN', badge: 'APEX', basePace: 1.002, brakeOffsetM: 0.0, brakeVarianceM: 1.0,
     tireWearMult: 0.94, puddleAvoidWeight: 1.65, defensiveRangeM: 12.0, undercutLapsEarly: 1, preferredDryTire: 'MEDIUM',
   },
   LATE_BRAKER: {
-    id: 'LATE_BRAKER', badge: 'LATE', basePace: 0.996, brakeOffsetM: 12.0, brakeVarianceM: 2.5,
-    tireWearMult: 1.20, puddleAvoidWeight: 0.85, defensiveRangeM: 15.0, undercutLapsEarly: 0, preferredDryTire: 'SOFT',
+    id: 'LATE_BRAKER', badge: 'LATE', basePace: 1.004, brakeOffsetM: 10.0, brakeVarianceM: 2.2,
+    tireWearMult: 1.18, puddleAvoidWeight: 0.85, defensiveRangeM: 15.0, undercutLapsEarly: 0, preferredDryTire: 'SOFT',
   },
   TIRE_WHISPERER: {
-    id: 'TIRE_WHISPERER', badge: 'SMOOTH', basePace: 0.986, brakeOffsetM: -3.0, brakeVarianceM: 0.8,
-    tireWearMult: 0.75, puddleAvoidWeight: 1.45, defensiveRangeM: 10.0, undercutLapsEarly: -1, preferredDryTire: 'MEDIUM',
+    id: 'TIRE_WHISPERER', badge: 'SMOOTH', basePace: 0.996, brakeOffsetM: -3.0, brakeVarianceM: 0.8,
+    tireWearMult: 0.76, puddleAvoidWeight: 1.45, defensiveRangeM: 10.0, undercutLapsEarly: -1, preferredDryTire: 'MEDIUM',
   },
   DEFENSIVE_WALL: {
-    id: 'DEFENSIVE_WALL', badge: 'DEFEND', basePace: 0.990, brakeOffsetM: 4.0, brakeVarianceM: 1.5,
+    id: 'DEFENSIVE_WALL', badge: 'DEFEND', basePace: 0.999, brakeOffsetM: 3.5, brakeVarianceM: 1.4,
     tireWearMult: 1.02, puddleAvoidWeight: 1.20, defensiveRangeM: 25.0, undercutLapsEarly: 0, preferredDryTire: 'SOFT',
   },
   ROOKIE_WILDCARD: {
-    id: 'ROOKIE_WILDCARD', badge: 'ROOKIE', basePace: 1.006, brakeOffsetM: 6.0, brakeVarianceM: 7.5,
-    tireWearMult: 1.26, puddleAvoidWeight: 0.35, defensiveRangeM: 14.0, undercutLapsEarly: 0, preferredDryTire: 'SOFT',
+    id: 'ROOKIE_WILDCARD', badge: 'ROOKIE', basePace: 0.994, brakeOffsetM: 5.5, brakeVarianceM: 5.5,
+    tireWearMult: 1.24, puddleAvoidWeight: 0.35, defensiveRangeM: 14.0, undercutLapsEarly: 0, preferredDryTire: 'SOFT',
   },
 };
 

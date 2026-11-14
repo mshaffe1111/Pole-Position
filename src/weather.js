@@ -1,7 +1,7 @@
 // ============================================================================
 // RACE PHANATIC F1 — POLE POSITION 2026: RETRO GRAND PRIX
-// AAA Fixed Per-Race Random Weather, Volumetric FBM Cloud & Corona Sky Shader,
-// 3-Layer Parallax 3D Mountain Vistas, Dynamic HDR EnvMap & Real-Time Shadows
+// Real Poly Haven Equirectangular .hdr Sky & PMREM IBL Environment System,
+// Physical Sun/Sky Ratios, 3D Biome Vistas, Rain & Optical Visor Raindrops
 // ============================================================================
 
 import * as THREE from 'three';
@@ -21,6 +21,15 @@ const RANDOM_POOL_1982 = [
   { id: 'OVERCAST_COOL', weight: 0.15 },
 ];
 
+const POLY_HAVEN_HDRI_MAP = {
+  HOT_SUNNY:     './assets/hdri/syferfontein_18d_clear_puresky_1k.hdr',
+  OVERCAST_COOL: './assets/hdri/kloofendal_48d_partly_cloudy_puresky_1k.hdr',
+  GOLDEN_SUNSET: './assets/hdri/evening_road_01_puresky_1k.hdr',
+  LIGHT_DRIZZLE: './assets/hdri/kloofendal_overcast_puresky_1k.hdr',
+  MONSOON_STORM: './assets/hdri/kloofendal_overcast_puresky_1k.hdr',
+  NEON_NIGHT:    './assets/hdri/qwantani_night_puresky_1k.hdr',
+};
+
 const VISTA_CENTER_X = 210;
 const VISTA_CENTER_Z = 230;
 
@@ -33,6 +42,237 @@ function weightedPick(pool) {
   return pool[0].id;
 }
 
+// ============================================================================
+// ZERO-DEPENDENCY RADIANCE #?RADIANCE (.hdr) RGBE EQUIRECTANGULAR DECODER
+// Applies a smooth hue-preserving solar radiance shoulder (maxRadiance = 24.0)
+// and packs HalfFloatType so mobile WebGL2 GPUs (iOS/Adreno/Mali) get native
+// hardware LinearFilter and PMREMGenerator NEVER overflows FP16 to NaN!
+// ============================================================================
+const _hdrPromiseCache = new Map();
+const _hdrResolvedCache = new Map();
+
+let _placeholderHdrTex = null;
+function getPlaceholderHdrTexture() {
+  if (_placeholderHdrTex) return _placeholderHdrTex;
+  const useHalf = typeof THREE.DataUtils?.toHalfFloat === 'function';
+  if (useHalf) {
+    const h = THREE.DataUtils.toHalfFloat(0.5);
+    const hOne = THREE.DataUtils.toHalfFloat(1.0);
+    const data = new Uint16Array([h, h, h, hOne]);
+    _placeholderHdrTex = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat, THREE.HalfFloatType);
+  } else {
+    const data = new Float32Array([0.5, 0.5, 0.5, 1.0]);
+    _placeholderHdrTex = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat, THREE.FloatType);
+  }
+  _placeholderHdrTex.colorSpace = THREE.LinearSRGBColorSpace;
+  _placeholderHdrTex.needsUpdate = true;
+  return _placeholderHdrTex;
+}
+
+export async function loadPolyHavenHDR(url, maxRadiance = 24.0) {
+  const cacheKey = `${url}|${maxRadiance}`;
+  if (_hdrResolvedCache.has(cacheKey)) {
+    return _hdrResolvedCache.get(cacheKey);
+  }
+  if (_hdrPromiseCache.has(cacheKey)) {
+    return _hdrPromiseCache.get(cacheKey);
+  }
+
+  const loadPromise = (async () => {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      throw new Error(`HDR fetch failed (${resp.status}): ${url}`);
+    }
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+    let pos = 0;
+    let header = '';
+    while (pos < bytes.length) {
+      header += String.fromCharCode(bytes[pos++]);
+      if (header.endsWith('\n\n') || header.endsWith('\r\n\r\n')) break;
+    }
+
+    let resLine = '';
+    while (pos < bytes.length) {
+      const ch = String.fromCharCode(bytes[pos++]);
+      if (ch === '\n') break;
+      if (ch !== '\r') resLine += ch;
+    }
+
+    const m = resLine.match(/-Y\s+(\d+)\s+\+X\s+(\d+)/);
+    if (!m) {
+      throw new Error(`Unsupported HDR resolution header: ${resLine}`);
+    }
+    const height = parseInt(m[1], 10);
+    const width = parseInt(m[2], 10);
+
+    const useHalf = typeof THREE.DataUtils?.toHalfFloat === 'function';
+    const toHalf = useHalf ? THREE.DataUtils.toHalfFloat : null;
+    const rgba = useHalf
+      ? new Uint16Array(width * height * 4)
+      : new Float32Array(width * height * 4);
+    const hZero = useHalf ? toHalf(0.0) : 0.0;
+    const hOne = useHalf ? toHalf(1.0) : 1.0;
+
+    const scanline = new Uint8Array(width * 4);
+    const safeCeiling = Math.max(2.0, Math.min(48.0, Number(maxRadiance) || 24.0));
+    const knee = safeCeiling * 0.55;
+    const shoulderSpan = safeCeiling - knee;
+
+    // Precompute exponent LUT: 2^(e - 128) / 255 for e in [0..255]
+    const expLut = new Float64Array(256);
+    expLut[0] = 0.0;
+    for (let e = 1; e < 256; e++) {
+      expLut[e] = Math.pow(2.0, e - 128.0) / 255.0;
+    }
+
+    // Track upper-hemisphere raw peak luminance to align directional shadow sun 1:1 with HDRI sun!
+    let peakRawLum = -1.0;
+    let bestSunX = Math.floor(width * 0.62);
+    let bestSunY = Math.floor(height * 0.28);
+
+    for (let y = 0; y < height; y++) {
+      if (pos + 4 > bytes.length) {
+        throw new Error(`Unexpected EOF in HDR scanline ${y}`);
+      }
+      const b0 = bytes[pos];
+      const b1 = bytes[pos + 1];
+      const b2 = bytes[pos + 2];
+      const b3 = bytes[pos + 3];
+
+      if (b0 === 2 && b1 === 2 && ((b2 << 8) | b3) === width) {
+        pos += 4;
+        for (let ch = 0; ch < 4; ch++) {
+          let x = 0;
+          const chBase = ch * width;
+          while (x < width) {
+            if (pos >= bytes.length) throw new Error(`Truncated RLE stream at row ${y}`);
+            const code = bytes[pos++];
+            if (code > 128) {
+              const run = code - 128;
+              const val = bytes[pos++];
+              const end = Math.min(width, x + run);
+              while (x < end) scanline[chBase + x++] = val;
+            } else {
+              const end = Math.min(width, x + code);
+              while (x < end) scanline[chBase + x++] = bytes[pos++];
+            }
+          }
+        }
+      } else {
+        // Uncompressed flat RGBE scanline fallback
+        for (let x = 0; x < width; x++) {
+          scanline[x] = bytes[pos++];
+          scanline[width + x] = bytes[pos++];
+          scanline[2 * width + x] = bytes[pos++];
+          scanline[3 * width + x] = bytes[pos++];
+        }
+      }
+
+      // Flip Y so row 0 of Radiance file (zenith) maps to Three.js UV v = 1.0
+      const dstRow = (height - 1 - y) * width * 4;
+      const isUpperSky = y < Math.floor(height * 0.48);
+
+      for (let x = 0; x < width; x++) {
+        const e = scanline[3 * width + x];
+        const out = dstRow + x * 4;
+        if (e === 0) {
+          rgba[out] = hZero;
+          rgba[out + 1] = hZero;
+          rgba[out + 2] = hZero;
+          rgba[out + 3] = hOne;
+        } else {
+          const scale = expLut[e];
+          let r = scanline[x] * scale;
+          let g = scanline[width + x] * scale;
+          let b = scanline[2 * width + x] * scale;
+
+          if (isUpperSky) {
+            const rawLum = r * 0.2126 + g * 0.7152 + b * 0.0722;
+            if (rawLum > peakRawLum) {
+              peakRawLum = rawLum;
+              bestSunX = x;
+              bestSunY = y;
+            }
+          }
+
+          // Smooth C1 hue-preserving FP16 radiance shoulder strictly <= safeCeiling (24.0)
+          const peak = Math.max(r, g, b);
+          if (peak > knee) {
+            const excess = peak - knee;
+            const compressed = Math.min(
+              safeCeiling,
+              knee + (excess * shoulderSpan) / (excess + shoulderSpan)
+            );
+            const k = compressed / peak;
+            r *= k;
+            g *= k;
+            b *= k;
+          }
+
+          const sr = Number.isFinite(r) ? Math.max(0.0, Math.min(safeCeiling, r)) : 0.0;
+          const sg = Number.isFinite(g) ? Math.max(0.0, Math.min(safeCeiling, g)) : 0.0;
+          const sb = Number.isFinite(b) ? Math.max(0.0, Math.min(safeCeiling, b)) : 0.0;
+
+          if (useHalf) {
+            rgba[out] = toHalf(sr);
+            rgba[out + 1] = toHalf(sg);
+            rgba[out + 2] = toHalf(sb);
+            rgba[out + 3] = hOne;
+          } else {
+            rgba[out] = sr;
+            rgba[out + 1] = sg;
+            rgba[out + 2] = sb;
+            rgba[out + 3] = 1.0;
+          }
+        }
+      }
+    }
+
+    // Convert solar peak pixel (bestSunX, bestSunY) into exact Three.js equirectUv 3D direction
+    const uSun = (bestSunX + 0.5) / width;
+    const vSun = (height - 1 - bestSunY + 0.5) / height;
+    const elev = (vSun - 0.5) * Math.PI;
+    const azim = (uSun - 0.5) * Math.PI * 2.0;
+    const cosEl = Math.cos(elev);
+    const sunDir = new THREE.Vector3(
+      cosEl * Math.cos(azim),
+      Math.max(0.18, Math.sin(elev)),
+      cosEl * Math.sin(azim)
+    ).normalize();
+
+    const tex = new THREE.DataTexture(
+      rgba,
+      width,
+      height,
+      THREE.RGBAFormat,
+      useHalf ? THREE.HalfFloatType : THREE.FloatType
+    );
+    tex.mapping = THREE.EquirectangularReflectionMapping;
+    tex.colorSpace = THREE.LinearSRGBColorSpace;
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.magFilter = THREE.LinearFilter;
+    tex.minFilter = THREE.LinearFilter;
+    tex.generateMipmaps = false;
+    tex.flipY = false;
+    tex.userData = {
+      url,
+      sunDir,
+      peakRawLum,
+    };
+    tex.needsUpdate = true;
+
+    _hdrResolvedCache.set(cacheKey, tex);
+    return tex;
+  })().catch((err) => {
+    _hdrPromiseCache.delete(cacheKey);
+    throw err;
+  });
+
+  _hdrPromiseCache.set(cacheKey, loadPromise);
+  return loadPromise;
+}
+
 export class WeatherSystem {
   constructor(scene, renderer = null) {
     this.scene = scene;
@@ -41,7 +281,10 @@ export class WeatherSystem {
     if (this.pmremGenerator) {
       this.pmremGenerator.compileEquirectangularShader();
     }
-    this._currentEnvRT = null;
+    this._currentFallbackEnvRT = null;
+    this._pmremByUrl = new Map();
+    this._envRequestSeq = 0;
+    this.activeHdrTexture = null;
 
     this.currentRegimeId = 'HOT_SUNNY';
     this.activeTheme = 'FUJI';
@@ -53,8 +296,10 @@ export class WeatherSystem {
     this.nextLightningSec = 6.5;
     this.elapsedSkySec = 0.0;
     this._sunOffset = new THREE.Vector3(65, 115, 78);
-    this._baseSunIntensity = 3.40;
-    this._baseAmbientIntensity = 0.62;
+    this._baseSunIntensity = 2.85;
+    this._baseAmbientIntensity = 0.38;
+    this._targetHdrMix = 0.0;
+    this._currentHdrMix = 0.0;
     this._visorAccum = 0.0;
     this._visorTearOffProgress = 1.2;
     this._prevCamYaw = null;
@@ -67,44 +312,48 @@ export class WeatherSystem {
   }
 
   _buildSkyAndLighting() {
-    // High-contrast Hemisphere Sky + Ground bounce (45% lower fill so directional sun shadows pop crisply!)
-    this.ambientLight = new THREE.HemisphereLight(0xdff0ff, 0x2a332a, 0.62);
+    // Physical Hemisphere Sky + Asphalt/Turf bounce calibrated to complement Poly Haven HDRI IBL
+    this.ambientLight = new THREE.HemisphereLight(0xdff0ff, 0x222822, 0.38);
     this.scene.add(this.ambientLight);
 
-    // Primary Golden/Daylight Sun with Tightly Framed 2048x2048 Real-Time Soft Shadows!
-    this.sunLight = new THREE.DirectionalLight(0xfff5e0, 3.40);
+    // Primary Physical Solar Directional Light with Tightly Framed 2048x2048 Soft Shadows
+    this.sunLight = new THREE.DirectionalLight(0xfff6e5, 2.85);
     this.sunLight.position.set(65, 115, 78);
     this.sunLight.castShadow = true;
     this.sunLight.shadow.mapSize.width = 2048;
     this.sunLight.shadow.mapSize.height = 2048;
     this.sunLight.shadow.camera.near = 6;
-    this.sunLight.shadow.camera.far = 245;
-    const d = 35;
+    this.sunLight.shadow.camera.far = 260;
+    const d = 38;
     this.sunLight.shadow.camera.left = -d;
     this.sunLight.shadow.camera.right = d;
     this.sunLight.shadow.camera.top = d;
     this.sunLight.shadow.camera.bottom = -d;
     this.sunLight.shadow.camera.updateProjectionMatrix();
-    this.sunLight.shadow.bias = -0.00024;
-    this.sunLight.shadow.normalBias = 0.016;
-    this.sunLight.shadow.radius = 1.45;
+    this.sunLight.shadow.bias = -0.00022;
+    this.sunLight.shadow.normalBias = 0.015;
+    this.sunLight.shadow.radius = 1.35;
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
 
-    // Subtle Secondary Sky-Bounce Fill Light (45% lower so shadow side retains rich 3D sculpting)
-    this.fillLight = new THREE.DirectionalLight(0xd6e8ff, 0.46);
+    // Subtle Secondary Sky-Bounce Fill Light (preserves crisp dark cast-shadow contrast)
+    this.fillLight = new THREE.DirectionalLight(0xd4e6fc, 0.24);
     this.fillLight.position.set(-340, 360, -310);
     this.scene.add(this.fillLight);
 
-    // Subtle Warm Rim/Cross Fill Light for architectural & bodywork edge definition
-    this.rimLight = new THREE.DirectionalLight(0xffe8cc, 0.24);
+    // Subtle Horizon Cross-Bounce Light
+    this.rimLight = new THREE.DirectionalLight(0xffe8cc, 0.14);
     this.rimLight.position.set(-230, 185, 340);
     this.scene.add(this.rimLight);
 
-    // AAA Atmospheric Rayleigh/Mie Sky Dome Shader
-    // (Anisotropic Sun Horizon Blush + 3-Ring Solar Corona + Domain-Warped FBM Clouds + Anti-Aliased Stars)
+    // Dual-Mode Sky Dome:
+    // Samples real Poly Haven 32-bit Equirectangular .hdr sky (matching PMREM clearcoat IBL 1:1!)
+    // with instant non-blocking procedural Rayleigh/Mie fallback during initial ~60ms async fetch.
     const skyGeo = new THREE.SphereGeometry(5600, 64, 40);
     this.skyUniforms = {
+      uHdrMap:          { value: getPlaceholderHdrTexture() },
+      uHdrMix:          { value: 0.0 },
+      uHdrExposure:     { value: 1.0 },
       zenithColor:      { value: new THREE.Color(0x0e5ce0) },
       midColor:         { value: new THREE.Color(0x459bf7) },
       horizonColor:     { value: new THREE.Color(0xc7e8ff) },
@@ -118,7 +367,7 @@ export class WeatherSystem {
       stormDarkness:    { value: 0.0 },
       sunsetAmount:     { value: 0.0 },
       nightAmount:      { value: 0.0 },
-      skyRadianceBoost: { value: 1.20 },
+      skyRadianceBoost: { value: 1.00 },
       flashBoost:       { value: 0.0 },
       retroMode:        { value: 0.0 },
     };
@@ -129,17 +378,20 @@ export class WeatherSystem {
       depthTest: false,
       depthWrite: false,
       fog: false,
+      toneMapped: true,
       vertexShader: `
         varying vec3 vLocalPos;
         void main() {
           vLocalPos = position;
-          // Lock sky sphere strictly to camera eye in rotation-only view space at safe mid-frustum radius
-          // so it NEVER lags camera movement and NEVER clips near/far planes!
+          // Lock sky sphere strictly to camera eye in rotation-only view space
           vec4 mvPos = vec4(mat3(viewMatrix) * (position * 0.1), 1.0);
           gl_Position = projectionMatrix * mvPos;
         }
       `,
       fragmentShader: `
+        uniform sampler2D uHdrMap;
+        uniform float uHdrMix;
+        uniform float uHdrExposure;
         uniform vec3 zenithColor;
         uniform vec3 midColor;
         uniform vec3 horizonColor;
@@ -157,6 +409,9 @@ export class WeatherSystem {
         uniform float flashBoost;
         uniform float retroMode;
         varying vec3 vLocalPos;
+
+        const float INV_PI = 0.3183098861837907;
+        const float INV_TWO_PI = 0.15915494309189535;
 
         float hash21(vec2 p) {
           p = fract(p * vec2(127.1, 311.7));
@@ -185,9 +440,9 @@ export class WeatherSystem {
           float v = 0.0;
           float a = 0.52;
           mat2 rot = mat2(0.80, 0.60, -0.60, 0.80);
-          for (int i = 0; i < 5; i++) {
+          for (int i = 0; i < 4; i++) {
             v += a * noise2(p);
-            p = rot * p * 2.06;
+            p = rot * p * 2.05;
             a *= 0.5;
           }
           return v;
@@ -202,135 +457,108 @@ export class WeatherSystem {
           vec2 offset = (rnd - 0.5) * 0.56;
           float dist = length(gv - offset);
           float core = smoothstep(0.16, 0.015, dist);
-          float twinkle = 0.64 + 0.36 * sin(timeSec * (2.2 + rnd.y * 3.8) + rnd.x * 95.0);
+          float twinkle = 0.72 + 0.28 * sin(timeSec * (2.0 + rnd.y * 3.0) + rnd.x * 95.0);
           return core * twinkle;
+        }
+
+        vec3 evalProceduralSky(vec3 d, vec3 sDir) {
+          float h = clamp(d.y, 0.0, 1.0);
+          vec2 horizD = normalize(d.xz + vec2(1e-5));
+          vec2 horizS = normalize(sDir.xz + vec2(1e-5));
+          float sunAzimuth = clamp(dot(horizD, horizS) * 0.5 + 0.5, 0.0, 1.0);
+          vec3 dirHorizon = mix(antiHorizonColor, horizonColor, pow(sunAzimuth, 1.28));
+          dirHorizon = mix(dirHorizon, themeHorizonTint, 0.14);
+
+          vec3 col = mix(dirHorizon, midColor, smoothstep(0.0, 0.34, h));
+          col = mix(col, zenithColor, smoothstep(0.24, 0.88, h));
+          col *= skyRadianceBoost;
+
+          float horizonBand = pow(1.0 - abs(d.y), 4.8);
+          vec3 mieTint = mix(dirHorizon * 1.12, sunColor * 1.08, 0.30 + sunsetAmount * 0.42);
+          col = mix(col, mieTint, horizonBand * (0.42 + sunsetAmount * 0.28) * (1.0 - stormDarkness * 0.42));
+
+          if (nightAmount > 0.04 && d.y > 0.015) {
+            float skyFade = smoothstep(0.015, 0.24, d.y) * nightAmount * (1.0 - cloudCover * 0.82);
+            vec2 starProj = d.xz / (d.y + 0.36);
+            vec3 tintA;
+            float stA = starLayer(starProj * 78.0, uTime, 0.978, tintA);
+            col += tintA * stA * 1.15 * skyFade;
+          }
+
+          float sunDot = max(0.0, dot(d, sDir));
+          float coronaWide  = pow(sunDot, 7.0) * (0.16 + sunsetAmount * 0.14);
+          float coronaMid   = pow(sunDot, 42.0) * 0.36;
+          float coronaTight = pow(sunDot, 220.0) * 0.75;
+          float disc        = smoothstep(0.99905, 0.99968, sunDot);
+          float clearVis    = max(0.06, 1.0 - cloudCover * 0.78);
+          col += sunColor * (coronaWide + coronaMid + coronaTight + disc * 2.2) * clearVis * mix(1.0, 0.25, nightAmount);
+
+          if (d.y > 0.008 && cloudCover > 0.02) {
+            vec2 windLow = vec2(uTime * 0.0032, uTime * 0.0016);
+            vec2 cloudUv = (d.xz / (d.y + 0.18)) * 1.15 + windLow;
+            float billow = fbm(cloudUv);
+            float thresh = mix(0.66, 0.24, cloudCover);
+            float cMask = smoothstep(thresh, thresh + 0.25, billow) * smoothstep(0.008, 0.12, d.y);
+            vec3 cloudBright = mix(vec3(0.94, 0.96, 0.99), sunColor, 0.38 + sunsetAmount * 0.38);
+            vec3 cloudDark = mix(midColor * 0.68, vec3(0.16, 0.20, 0.28), clamp(cloudCover * 0.55 + stormDarkness * 0.42, 0.0, 1.0));
+            if (nightAmount > 0.4) {
+              cloudBright = vec3(0.18, 0.22, 0.34);
+              cloudDark = vec3(0.05, 0.07, 0.12);
+            }
+            col = mix(col, mix(cloudDark, cloudBright, clamp(billow * 1.15, 0.0, 1.0)), cMask * 0.90);
+          }
+
+          if (d.y < 0.0) {
+            col = mix(col, groundFogColor, smoothstep(0.0, -0.14, d.y));
+          }
+          return col;
         }
 
         void main() {
           vec3 d = normalize(vLocalPos);
           vec3 sDir = normalize(sunDir);
-          float h = clamp(d.y, 0.0, 1.0);
 
-          // Azimuthal alignment toward solar direction for anisotropic Mie horizon blush
-          vec2 horizD = normalize(d.xz + vec2(1e-5));
-          vec2 horizS = normalize(sDir.xz + vec2(1e-5));
-          float sunAzimuth = clamp(dot(horizD, horizS) * 0.5 + 0.5, 0.0, 1.0);
-          vec3 dirHorizon = mix(antiHorizonColor, horizonColor, pow(sunAzimuth, 1.28));
-          dirHorizon = mix(dirHorizon, themeHorizonTint, 0.18);
+          // Procedural fallback / 1982 retro base
+          float effHdrMix = uHdrMix * (1.0 - step(0.5, retroMode));
+          vec3 col = vec3(0.0);
 
-          // 3-stop Rayleigh vertical sky gradient with HDR luminance boost (prevents sRGB->Linear ACES toe crush!)
-          vec3 col = mix(dirHorizon, midColor, smoothstep(0.0, 0.34, h));
-          col = mix(col, zenithColor, smoothstep(0.24, 0.88, h));
-          col *= skyRadianceBoost;
-
-          // Warm Mie atmospheric horizon scattering, twilight golden-rose band & solar horizon pillar bloom
-          float horizonBand = pow(1.0 - abs(d.y), 4.8);
-          vec3 mieTint = mix(dirHorizon * 1.24, sunColor * 1.18, 0.34 + sunsetAmount * 0.44);
-          col = mix(col, mieTint, horizonBand * (0.50 + sunsetAmount * 0.30) * (1.0 - stormDarkness * 0.38));
-          float horizonPillar = pow(sunAzimuth, 6.5) * pow(1.0 - h, 3.6) * (0.36 + sunsetAmount * 0.48) * (1.0 - cloudCover * 0.65);
-          col += sunColor * horizonPillar * (1.0 - nightAmount * 0.55);
-
-          // Crisp Dual-Scale Anti-Aliased Twinkling Starfield + Galactic Band at Night / Dusk
-          if (nightAmount > 0.04 && d.y > 0.015) {
-            float skyFade = smoothstep(0.015, 0.24, d.y) * nightAmount * (1.0 - cloudCover * 0.82);
-            vec2 starProj = d.xz / (d.y + 0.36);
-
-            vec3 tintA;
-            float stA = starLayer(starProj * 78.0, uTime, 0.976, tintA);
-            vec3 tintB;
-            float stB = starLayer(starProj * 148.0 + vec2(19.3, -7.1), uTime * 0.8, 0.984, tintB);
-
-            col += (tintA * stA * 1.35 + tintB * stB * 0.80) * skyFade;
-
-            // Subtle night Milky Way dust glow & urban neon horizon wash
-            float galaxy = fbm(starProj * 1.85 + vec2(1.4, -0.8));
-            col += vec3(0.20, 0.14, 0.38) * galaxy * nightAmount * 0.16 * smoothstep(0.04, 0.55, d.y);
+          if (effHdrMix < 0.999) {
+            col = evalProceduralSky(d, sDir);
           }
 
-          // Solar / Lunar Disc + 4-Ring Anisotropic Mie Corona & HDR Bloom Halo
-          float sunDot = max(0.0, dot(d, sDir));
-          float coronaHalo  = pow(sunDot, 2.8) * (0.10 + sunsetAmount * 0.12);
-          float coronaWide  = pow(sunDot, 6.0) * (0.22 + sunsetAmount * 0.16);
-          float coronaMid   = pow(sunDot, 38.0) * 0.48;
-          float coronaTight = pow(sunDot, 210.0) * 0.88;
-          float disc        = smoothstep(0.99900, 0.99968, sunDot);
-          float clearVis    = max(0.08, 1.0 - cloudCover * 0.76);
-          float nightSunDim = mix(1.0, 0.34, nightAmount);
-          col += sunColor * (coronaHalo + coronaWide + coronaMid + coronaTight + disc * 2.55) * clearVis * nightSunDim;
+          if (effHdrMix > 0.001) {
+            // Exact Three.js equirectUv mapping so sky dome matches PMREM clearcoat reflections 1:1
+            vec2 eqUv = vec2(
+              atan(d.z, d.x) * INV_TWO_PI + 0.5,
+              asin(clamp(d.y, -1.0, 1.0)) * INV_PI + 0.5
+            );
+            vec3 hdrCol = texture2D(uHdrMap, eqUv).rgb * uHdrExposure;
 
-          // Multi-Layer Volumetric Domain-Warped Cumulus & High Cirrus Cloud Deck
-          if (d.y > 0.008 && cloudCover > 0.02) {
-            vec2 windLow = vec2(uTime * 0.0044, uTime * 0.0021);
-            vec2 baseUv = (d.xz / (d.y + 0.165)) * 1.18 + windLow;
-
-            // Organic domain warp for billowing cumulus edges
-            float warpX = noise2(baseUv * 1.6 + vec2(4.2, 1.3));
-            float warpY = noise2(baseUv * 1.6 + vec2(-2.7, 5.1));
-            vec2 cloudUv = baseUv + (vec2(warpX, warpY) - 0.5) * 0.24;
-
-            float n = fbm(cloudUv);
-            float detail = fbm(cloudUv * 2.85 - windLow * 0.6);
-            float billow = mix(n, n * 0.74 + detail * 0.34, 0.65);
-
-            float thresh = mix(0.65, 0.24, cloudCover);
-            float cMask = smoothstep(thresh, thresh + 0.24, billow) * smoothstep(0.008, 0.12, d.y);
-
-            // Directional sunward self-shadowing & Henyey-Greenstein silver/gold rim lining
-            vec2 sunStep = normalize(sDir.xz + vec2(0.001)) * 0.082;
-            float nLit = fbm(cloudUv + sunStep);
-            float lightGrad = clamp((billow - nLit) * 3.8 + 0.56, 0.0, 1.0);
-            float hgForward = pow(sunDot, 4.0) * (0.68 + sunsetAmount * 0.44);
-            float silverRim = smoothstep(thresh + 0.16, thresh + 0.008, billow) * (0.28 + pow(sunDot, 2.2) * 0.78);
-
-            vec3 cloudBright = mix(vec3(0.98, 0.99, 1.0), sunColor, 0.46 + sunsetAmount * 0.40) * (1.12 + hgForward);
-            vec3 cloudDark   = mix(midColor * 0.72, vec3(0.18, 0.23, 0.34), clamp(cloudCover * 0.55 + stormDarkness * 0.42, 0.0, 1.0));
-
-            if (sunsetAmount > 0.15) {
-              cloudDark = mix(cloudDark, vec3(0.58, 0.32, 0.52), sunsetAmount * 0.62);
-            }
-            if (nightAmount > 0.4) {
-              cloudBright = vec3(0.36, 0.26, 0.58);
-              cloudDark   = vec3(0.08, 0.10, 0.20);
+            // Smooth horizon ground-haze skirt below y = 0 so dark puresky nadir never peeks under terrain
+            if (d.y < 0.015) {
+              vec2 horizonUv = vec2(eqUv.x, 0.506);
+              vec3 horizonSample = texture2D(uHdrMap, horizonUv).rgb * uHdrExposure;
+              vec3 lowerTarget = mix(horizonSample * 0.88, groundFogColor, 0.55);
+              hdrCol = mix(hdrCol, lowerTarget, smoothstep(0.015, -0.11, d.y));
             }
 
-            vec3 cloudCol = mix(cloudDark, cloudBright, lightGrad) + sunColor * silverRim * (1.0 - nightAmount * 0.65);
-
-            // Internal storm sheet-lightning veins illuminating storm clouds!
-            if (flashBoost > 0.005) {
-              float vein = pow(clamp(1.0 - abs(billow - 0.54) * 4.5, 0.0, 1.0), 2.0);
-              cloudCol += vec3(0.75, 0.86, 1.0) * flashBoost * (0.65 + vein * 1.55);
-            }
-
-            col = mix(col, cloudCol, cMask * 0.93);
-
-            // Mid-altitude sunlit Altocumulus deck with crisp golden/silver rim-lighting
-            vec2 altoUv = (d.xz / (d.y + 0.22)) * 1.95 + vec2(-uTime * 0.0032, uTime * 0.0026);
-            float altoN = fbm(altoUv);
-            float altoMask = smoothstep(thresh + 0.06, thresh + 0.28, altoN) * smoothstep(0.04, 0.26, d.y) * (1.0 - cMask * 0.72);
-            float altoRim = smoothstep(thresh + 0.18, thresh + 0.05, altoN) * (0.35 + pow(sunDot, 2.0) * 0.65);
-            vec3 altoCol = mix(cloudDark * 1.08, cloudBright * 1.06, 0.68) + sunColor * altoRim * 0.55;
-            col = mix(col, altoCol, altoMask * 0.56);
-
-            // High-altitude wispy Cirrus layer + sunlit ice-crystal rim sheen
-            vec2 cirrusUv = (d.xz / (d.y + 0.28)) * vec2(2.4, 0.95) + vec2(uTime * 0.0068, -uTime * 0.0018);
-            float cirrus = smoothstep(0.54, 0.85, fbm(cirrusUv));
-            col += cloudBright * cirrus * (1.0 - cloudCover * 0.55) * smoothstep(0.08, 0.55, d.y) * 0.26;
+            col = effHdrMix >= 0.999 ? hdrCol : mix(col, hdrCol, effHdrMix);
           }
 
-          // Smooth lower-hemisphere ground haze skirt so zero horizon seam ever appears
-          if (d.y < 0.0) {
-            col = mix(col, groundFogColor, smoothstep(0.0, -0.14, d.y));
-          }
-
-          // Optional 1982 Namco Arcade subtle vibrant sky punch
           if (retroMode > 0.5) {
             float luma = dot(col, vec3(0.299, 0.587, 0.114));
-            col = mix(vec3(luma), col, 1.22);
+            col = mix(vec3(luma), col, 1.20);
           }
 
-          // Ambient atmospheric flash during Monsoon lightning
-          col += vec3(flashBoost * 0.52, flashBoost * 0.62, flashBoost * 0.78);
+          // Monsoon sheet-lightning cloud illumination
+          if (flashBoost > 0.004) {
+            float cloudGlow = smoothstep(-0.04, 0.45, d.y);
+            col += vec3(0.52, 0.62, 0.78) * flashBoost * (0.35 + cloudGlow * 0.75);
+          }
+
           gl_FragColor = vec4(col, 1.0);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }
       `,
     });
@@ -340,49 +568,149 @@ export class WeatherSystem {
     this.skyDome.frustumCulled = false;
     this.scene.add(this.skyDome);
 
-    // Ultra-clear 75%-reduced atmospheric fog so pit garages, grandstands & alpine vistas stay vibrant!
-    this.scene.fog = new THREE.FogExp2(0xb0dbff, 0.00004);
+    // Natural outdoor aerial perspective fog
+    this.scene.fog = new THREE.FogExp2(0xb0dbff, 0.00005);
   }
 
   // --------------------------------------------------------------------------
-  // DYNAMIC OUTDOOR HDR ENVIRONMENT MAP GENERATOR (PMREM)
-  // Crisp overhead clearcoat specular ribbons + dark charcoal tarmac bounce so
-  // crimson/team car paint stays deeply saturated (zero milky sky bleach!).
-  // Disposes all temporary studio geometries/materials immediately (zero leaks).
+  // REAL POLY HAVEN .HDR -> PMREM ENVIRONMENT + SKY DOME BINDER
+  // Instant procedural fallback on cold start; 0ms GPU cache hit thereafter!
   // --------------------------------------------------------------------------
-  _bakeDynamicHDREnvironment(skyReg, theme, isNight) {
+  _resolveHdrConfigForSession(skyRegId, theme, isNight) {
+    if (isNight || theme === 'VEGAS' || skyRegId === 'NEON_NIGHT') {
+      return {
+        url: POLY_HAVEN_HDRI_MAP.NEON_NIGHT,
+        envIntensity: 0.70,
+        skyExposure: 0.92,
+      };
+    }
+    if (skyRegId === 'GOLDEN_SUNSET') {
+      return {
+        url: POLY_HAVEN_HDRI_MAP.GOLDEN_SUNSET,
+        envIntensity: 0.88,
+        skyExposure: 0.96,
+      };
+    }
+    if (skyRegId === 'LIGHT_DRIZZLE' || skyRegId === 'MONSOON_STORM') {
+      return {
+        url: POLY_HAVEN_HDRI_MAP.LIGHT_DRIZZLE,
+        envIntensity: skyRegId === 'MONSOON_STORM' ? 0.68 : 0.78,
+        skyExposure: skyRegId === 'MONSOON_STORM' ? 0.58 : 0.80,
+      };
+    }
+    if (skyRegId === 'OVERCAST_COOL' || ((theme === 'SILVERSTONE' || theme === 'SUZUKA') && skyRegId === 'HOT_SUNNY')) {
+      return {
+        url: POLY_HAVEN_HDRI_MAP.OVERCAST_COOL,
+        envIntensity: 0.90,
+        skyExposure: 0.96,
+      };
+    }
+    return {
+      url: POLY_HAVEN_HDRI_MAP.HOT_SUNNY,
+      envIntensity: 0.92,
+      skyExposure: 0.96,
+    };
+  }
+
+  _applyLoadedPolyHavenHDR(hdrTex, hdrCfg, isSunset, isNight) {
+    this.activeHdrTexture = hdrTex;
+    this.skyUniforms.uHdrMap.value = hdrTex;
+    this.skyUniforms.uHdrExposure.value = hdrCfg.skyExposure;
+    this._targetHdrMix = 1.0;
+
+    // Align directional shadow caster 1:1 with the real sun position in the Poly Haven HDRI!
+    if (hdrTex.userData?.sunDir && !isNight) {
+      const sd = hdrTex.userData.sunDir;
+      const clampedY = isSunset
+        ? THREE.MathUtils.clamp(sd.y, 0.22, 0.45)
+        : THREE.MathUtils.clamp(sd.y, 0.36, 0.84);
+      const horizLen = Math.hypot(sd.x, sd.z) || 1.0;
+      const targetHoriz = Math.sqrt(Math.max(0.04, 1.0 - clampedY * clampedY));
+      const alignedDir = new THREE.Vector3(
+        (sd.x / horizLen) * targetHoriz,
+        clampedY,
+        (sd.z / horizLen) * targetHoriz
+      ).normalize();
+
+      this.skyUniforms.sunDir.value.copy(alignedDir);
+      this._sunOffset.copy(alignedDir).multiplyScalar(155.0);
+    }
+
+    if (this.pmremGenerator) {
+      let pmremRT = this._pmremByUrl.get(hdrCfg.url);
+      if (!pmremRT) {
+        pmremRT = this.pmremGenerator.fromEquirectangular(hdrTex);
+        this._pmremByUrl.set(hdrCfg.url, pmremRT);
+      }
+      this.scene.environment = pmremRT.texture;
+      if ('environmentIntensity' in this.scene) {
+        this.scene.environmentIntensity = hdrCfg.envIntensity;
+      }
+      if (this._currentFallbackEnvRT) {
+        this._currentFallbackEnvRT.dispose();
+        this._currentFallbackEnvRT = null;
+      }
+    }
+  }
+
+  _bindPolyHavenOrFallbackEnvironment(effectiveSkyReg, theme, isNight) {
+    const hdrCfg = this._resolveHdrConfigForSession(effectiveSkyReg.id, theme, isNight);
+    const isSunset = effectiveSkyReg.id === 'GOLDEN_SUNSET';
+    const cacheKey = `${hdrCfg.url}|24`;
+    const reqSeq = ++this._envRequestSeq;
+
+    // Fast synchronous path if HDRI is already decoded in memory
+    if (_hdrResolvedCache.has(cacheKey)) {
+      const cachedTex = _hdrResolvedCache.get(cacheKey);
+      this._applyLoadedPolyHavenHDR(cachedTex, hdrCfg, isSunset, isNight);
+      this._currentHdrMix = 1.0;
+      this.skyUniforms.uHdrMix.value = 1.0;
+      return;
+    }
+
+    // Non-blocking startup fallback: immediately bake lightweight procedural sky IBL while .hdr fetches
+    this._targetHdrMix = 0.0;
+    this._currentHdrMix = 0.0;
+    this.skyUniforms.uHdrMix.value = 0.0;
+    if ('environmentIntensity' in this.scene) {
+      this.scene.environmentIntensity = hdrCfg.envIntensity;
+    }
+    this._bakeProceduralFallbackEnvironment(effectiveSkyReg, theme, isNight);
+
+    loadPolyHavenHDR(hdrCfg.url, 24.0)
+      .then((hdrTex) => {
+        if (reqSeq !== this._envRequestSeq) {
+          // Pre-compile PMREM into cache even if user already switched presets
+          if (this.pmremGenerator && !this._pmremByUrl.has(hdrCfg.url)) {
+            this._pmremByUrl.set(hdrCfg.url, this.pmremGenerator.fromEquirectangular(hdrTex));
+          }
+          return;
+        }
+        this._applyLoadedPolyHavenHDR(hdrTex, hdrCfg, isSunset, isNight);
+      })
+      .catch((err) => {
+        console.warn(`[WeatherSystem] Using procedural sky fallback for ${hdrCfg.url}:`, err);
+      });
+  }
+
+  // Synchronous lightweight outdoor sky/ground dome fallback used ONLY during initial ~60ms .hdr fetch
+  _bakeProceduralFallbackEnvironment(skyReg, theme, isNight) {
     if (!this.pmremGenerator) return;
 
     const envScene = new THREE.Scene();
-    const disposables = [];
-    const trackDisp = (obj) => {
-      disposables.push(obj);
-      return obj;
-    };
-
-    const isSunset = skyReg.id === 'GOLDEN_SUNSET';
-    const isStorm = skyReg.id === 'MONSOON_STORM' || skyReg.id === 'LIGHT_DRIZZLE';
     const sunDir = this.skyUniforms.sunDir.value.clone().normalize();
+    const groundHex = isNight || theme === 'VEGAS' ? 0x060810 : 0x12151a;
 
-    // Dark charcoal asphalt ground bounce prevents diffuse sky bleach on lower bodywork & sidepods!
-    let groundBounceHex = 0x0a0d12;
-    if (isNight || theme === 'VEGAS') groundBounceHex = 0x05070e;
-    else if (theme === 'MONACO') groundBounceHex = 0x091620;
-    else if (theme === 'MONZA') groundBounceHex = 0x0d0f0c;
-    else if (theme === 'SUZUKA' || theme === 'SILVERSTONE') groundBounceHex = 0x0b0f14;
-
-    // 1. Controlled-Irradiance Sky Dome + Sharp Horizon Crease + Dark Asphalt Ground Bounce
-    const domeGeo = trackDisp(new THREE.SphereGeometry(42, 32, 20));
-    const domeMat = trackDisp(new THREE.ShaderMaterial({
+    const domeGeo = new THREE.SphereGeometry(40, 24, 16);
+    const domeMat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
       uniforms: {
         cTop:    { value: new THREE.Color(skyReg.skyZenith) },
         cMid:    { value: new THREE.Color(skyReg.skyMid) },
-        cBot:    { value: new THREE.Color(skyReg.skyHorizon).multiplyScalar(isNight ? 1.24 : 1.04) },
+        cBot:    { value: new THREE.Color(skyReg.skyHorizon) },
         cSun:    { value: new THREE.Color(skyReg.sunColor) },
-        cGround: { value: new THREE.Color(groundBounceHex) },
+        cGround: { value: new THREE.Color(groundHex) },
         uSunDir: { value: sunDir },
-        uBoost:  { value: isNight ? 1.18 : (isSunset ? 1.10 : (isStorm ? 1.06 : 1.04)) },
       },
       vertexShader: `
         varying vec3 vDir;
@@ -398,82 +726,42 @@ export class WeatherSystem {
         uniform vec3 cSun;
         uniform vec3 cGround;
         uniform vec3 uSunDir;
-        uniform float uBoost;
         varying vec3 vDir;
         void main() {
           vec3 d = normalize(vDir);
           if (d.y < 0.0) {
-            // Sharp automotive horizon reflection crease fading rapidly into dark charcoal asphalt
-            float roadGrad = pow(clamp(-d.y * 5.2, 0.0, 1.0), 0.72);
-            vec3 gCol = mix(cBot * 0.48, cGround, roadGrad);
-            gl_FragColor = vec4(gCol, 1.0);
+            float roadGrad = pow(clamp(-d.y * 4.5, 0.0, 1.0), 0.75);
+            gl_FragColor = vec4(mix(cBot * 0.45, cGround, roadGrad), 1.0);
           } else {
-            vec3 c = mix(cBot, cMid, smoothstep(0.0, 0.30, d.y));
-            c = mix(c, cTop, smoothstep(0.26, 0.92, d.y));
+            vec3 c = mix(cBot, cMid, smoothstep(0.0, 0.32, d.y));
+            c = mix(c, cTop, smoothstep(0.28, 0.92, d.y));
             float sDot = max(0.0, dot(d, normalize(uSunDir)));
-            float horizonSheen = pow(1.0 - d.y, 8.0) * 0.24;
-            c += cSun * (pow(sDot, 9.0) * 0.58 + horizonSheen);
-            gl_FragColor = vec4(c * uBoost, 1.0);
+            c += cSun * (pow(sDot, 12.0) * 0.65 + pow(sDot, 160.0) * 2.4);
+            gl_FragColor = vec4(c, 1.0);
           }
         }
       `,
-    }));
+    });
     envScene.add(new THREE.Mesh(domeGeo, domeMat));
 
-    // 2. Solar / Lunar Primary Specular Emitter aligned with true Sun Direction
-    const sunInt = isNight ? 2.4 : (isSunset ? 4.2 : (isStorm ? 2.6 : 3.9));
-    const sunDiscGeo = trackDisp(new THREE.SphereGeometry(4.2, 16, 16));
-    const sunDiscMat = trackDisp(new THREE.MeshBasicMaterial({
-      color: new THREE.Color(skyReg.sunColor).multiplyScalar(sunInt),
-    }));
-    const sunDisc = new THREE.Mesh(sunDiscGeo, sunDiscMat);
-    sunDisc.position.copy(sunDir).multiplyScalar(32);
-    envScene.add(sunDisc);
+    const nextRT = this.pmremGenerator.fromScene(envScene, 0.02);
+    domeGeo.dispose();
+    domeMat.dispose();
 
-    // 3. Narrow High-Contrast Automotive Specular Softbox Ribbons (crisp clearcoat highlights, low diffuse area)
-    const addRibbon = (w, h, d, hex, mult, x, y, z, ry = 0) => {
-      const g = trackDisp(new THREE.BoxGeometry(w, h, d));
-      const m = trackDisp(new THREE.MeshBasicMaterial({
-        color: new THREE.Color(hex).multiplyScalar(mult),
-      }));
-      const mesh = new THREE.Mesh(g, m);
-      mesh.position.set(x, y, z);
-      mesh.rotation.y = ry;
-      envScene.add(mesh);
-    };
-
-    if (isNight || theme === 'VEGAS') {
-      addRibbon(28, 1.6, 0.9, 0xff1493, 3.0,   0,  8,  26);
-      addRibbon(28, 1.6, 0.9, 0x00f0ff, 3.0,   0, 10, -26);
-      addRibbon(22, 1.5, 0.9, 0xffb300, 2.5, -25,  7,   0, Math.PI / 2);
-      addRibbon(22, 1.4, 2.4, 0xf0f6ff, 2.6,   4, 28,   0);
-    } else if (isSunset) {
-      addRibbon(28, 1.8, 1.2, 0xff8c42, 2.6,  18,  7,  22, -0.6);
-      addRibbon(24, 1.5, 2.6, 0xffe4c4, 2.2, -10, 26, -12,  0.3);
-      addRibbon(20, 1.5, 1.0, 0x6f8eff, 1.7, -20, 12, -20,  0.7);
-    } else {
-      addRibbon(28, 1.5, 2.8, 0xffffff, isStorm ? 2.1 : 2.25, -10, 27, -12, 0.25);
-      addRibbon(22, 1.3, 1.8, 0xe8f4ff, isStorm ? 1.8 : 1.85,  14, 18, -22, -0.4);
-      addRibbon(22, 1.1, 1.6, 0xfff8eb, 1.75, -18, 14,  20,  0.5);
-      if (theme === 'MONACO') {
-        addRibbon(30, 1.8, 1.0, 0x00c8ff, 1.85, 0, 2.5, 28);
-      }
+    if (this._currentFallbackEnvRT) {
+      this._currentFallbackEnvRT.dispose();
     }
-
-    const nextRT = this.pmremGenerator.fromScene(envScene, 0.024);
-    for (const item of disposables) {
-      item.dispose();
-    }
-    if (this._currentEnvRT) this._currentEnvRT.dispose();
-    this._currentEnvRT = nextRT;
+    this._currentFallbackEnvRT = nextRT;
     this.scene.environment = nextRT.texture;
   }
 
+  // Keep alias for backward compatibility
+  _bakeDynamicHDREnvironment(skyReg, theme, isNight) {
+    this._bindPolyHavenOrFallbackEnvironment(skyReg, theme, isNight);
+  }
+
   // --------------------------------------------------------------------------
-  // 3-LAYER PARALLAX 3D MOUNTAIN & FOOTHILL VISTAS (360° AAA BIOME BACKDROP)
-  // Layer 1: Rolling Foothills & Forest/Coastal Bluffs (r=1340..1920m)
-  // Layer 2: Sculpted 3D Ridged Alpine Range with Snow/Rock Strata (r=2060..2960m)
-  // Layer 3: Distant Atmospheric Horizon Peaks (r=3060..4020m)
+  // 3-LAYER PARALLAX 3D MOUNTAIN & FOOTHILL VISTAS (NATURAL MATTE ALBEDO + FOG)
   // --------------------------------------------------------------------------
   _buildParallaxMountainVistas() {
     this.vistaGroup = new THREE.Group();
@@ -519,8 +807,6 @@ export class WeatherSystem {
   }
 
   _create3DMountainRing({ innerR, peakR, outerR, segs, minH, maxH, freqSeed, parallax }) {
-    // 5-ring cross-section (inner skirt -> lower foothills -> upper crag -> ridged summit crest -> back-skirt)
-    // Produces crisp sunlit & shadowed 3D alpine facets and realistic snow gullies!
     const positions = [];
     const basePositions = [];
     const colors = [];
@@ -532,7 +818,6 @@ export class WeatherSystem {
 
     for (let i = 0; i <= segs; i++) {
       const ang = (i / segs) * Math.PI * 2;
-      // Ridged multifractal alpine profile for authentic sharp peaks & U-shaped valleys
       const broad = Math.sin(ang * 4.0 + freqSeed) * 0.30 + Math.cos(ang * 7.0 - freqSeed * 1.4) * 0.22;
       const ridge1 = (1.0 - Math.abs(Math.sin(ang * 13.0 + freqSeed * 2.1))) * 0.32;
       const ridge2 = (1.0 - Math.abs(Math.cos(ang * 25.0 - freqSeed * 0.9))) * 0.16;
@@ -586,9 +871,12 @@ export class WeatherSystem {
 
     const mat = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      roughness: 0.86,
-      metalness: 0.05,
-      flatShading: true, // Crisp sunlit/shadowed alpine rock & forest facets!
+      roughness: 0.92,
+      metalness: 0.02,
+      flatShading: false,
+      fog: true,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
 
     const mesh = new THREE.Mesh(geo, mat);
@@ -606,34 +894,34 @@ export class WeatherSystem {
   _tintVistaLayersForBiome(theme, isNight, skyReg) {
     const palettes = {
       FUJI: [
-        { low: 0x1c4d2c, mid: 0x2e6146, crag: 0x4c6278, snow: 0xe6f0fc }, // Lush Japanese cedar foothills
-        { low: 0x223854, mid: 0x3f5b7d, crag: 0x627d9e, snow: 0xf6faff }, // Snow-capped Japanese Alps
-        { low: 0x486991, mid: 0x6f90b8, crag: 0x8eabcc, snow: 0xf2f8ff }, // Misty distant alpine horizon
+        { low: 0x223d28, mid: 0x334f3c, crag: 0x526475, snow: 0xe4ebf2 },
+        { low: 0x26384d, mid: 0x425873, crag: 0x647b94, snow: 0xedf3f8 },
+        { low: 0x4a6482, mid: 0x6c86a4, crag: 0x8ca2bd, snow: 0xeef4fa },
       ],
       MONACO: [
-        { low: 0x36543a, mid: 0x7a7464, crag: 0xa69b88, snow: 0xe3d8c6 }, // Tête de Chien limestone cliffs & maquis
-        { low: 0x3a5166, mid: 0x6d7d8f, crag: 0x93a1b0, snow: 0xe6edf5 }, // Côte d'Azur Maritime Alps
-        { low: 0x587896, mid: 0x86a1bd, crag: 0xa7bfd6, snow: 0xebf4fc },
+        { low: 0x344a35, mid: 0x6e695c, crag: 0x968d7d, snow: 0xd6ccbc },
+        { low: 0x384b5c, mid: 0x657485, crag: 0x8a97a6, snow: 0xdfe6ed },
+        { low: 0x566f87, mid: 0x7f96ad, crag: 0x9eb2c7, snow: 0xe6eef5 },
       ],
       MONZA: [
-        { low: 0x2b5225, mid: 0x8c5626, crag: 0xa86f38, snow: 0xd9ad73 }, // Autumn Royal Park & Brianza hills
-        { low: 0x2d425c, mid: 0x58708c, crag: 0x7b92ad, snow: 0xf4f8ff }, // Lombardy Pre-Alps (Resegone / Grigna)
-        { low: 0x547294, mid: 0x829eba, crag: 0xa3bcd6, snow: 0xf5f9ff },
+        { low: 0x2b4724, mid: 0x784d27, crag: 0x916338, snow: 0xc9a373 },
+        { low: 0x2e3f54, mid: 0x546980, crag: 0x768a9f, snow: 0xebf0f5 },
+        { low: 0x526b87, mid: 0x7b93ab, crag: 0x9cb1c7, snow: 0xedf2f7 },
       ],
       VEGAS: [
-        { low: 0x100d1b, mid: 0x261738, crag: 0x3b2252, snow: 0x563270 }, // Night Red Rock Canyon / Spring Mtns
-        { low: 0x0b0b18, mid: 0x1a1430, crag: 0x291e46, snow: 0x3f2b63 },
-        { low: 0x070813, mid: 0x141028, crag: 0x1f183b, snow: 0x30214f },
+        { low: 0x0c0e17, mid: 0x171826, crag: 0x242336, snow: 0x323047 },
+        { low: 0x090b14, mid: 0x121422, crag: 0x1c1e30, snow: 0x27293f },
+        { low: 0x070810, mid: 0x0e101c, crag: 0x161829, snow: 0x202236 },
       ],
       SUZUKA: [
-        { low: 0x1f5230, mid: 0x34694a, crag: 0x526b82, snow: 0xe8f2fc }, // Lush Suzuka Mie cedar hills & Suzuka Range
-        { low: 0x263f5c, mid: 0x466487, crag: 0x6b87a8, snow: 0xf4f9ff },
-        { low: 0x4c6e96, mid: 0x7697bd, crag: 0x96b3d4, snow: 0xf2f8ff },
+        { low: 0x234229, mid: 0x365942, crag: 0x54687a, snow: 0xe4edf5 },
+        { low: 0x293d54, mid: 0x475f7a, crag: 0x68809c, snow: 0xecf2f8 },
+        { low: 0x4c6887, mid: 0x718ca8, crag: 0x91a9c2, snow: 0xebf1f7 },
       ],
       SILVERSTONE: [
-        { low: 0x235929, mid: 0x3b7338, crag: 0x607a62, snow: 0xcfe0d8 }, // Lush British Northamptonshire green hills
-        { low: 0x2e4c59, mid: 0x526e7d, crag: 0x7892a1, snow: 0xe6eff5 },
-        { low: 0x55738c, mid: 0x809cb3, crag: 0xa1bbd1, snow: 0xeef5fc },
+        { low: 0x264a28, mid: 0x3b6137, crag: 0x5c705e, snow: 0xc6d4cd },
+        { low: 0x2f4652, mid: 0x506773, crag: 0x748996, snow: 0xdde6ec },
+        { low: 0x536c80, mid: 0x7a92a6, crag: 0x99afc2, snow: 0xe6edf2 },
       ],
     };
 
@@ -650,18 +938,17 @@ export class WeatherSystem {
       const cCrag = new THREE.Color(p.crag);
       const cSnow = new THREE.Color(p.snow);
 
-      // Sunset alpenglow warms snow caps & upper rock faces into rose-amber!
       if (isSunset && !isNight) {
-        cCrag.lerp(sunTint, 0.30);
-        cSnow.lerp(new THREE.Color(0xffb88c), 0.42);
+        cCrag.lerp(sunTint, 0.26);
+        cSnow.lerp(new THREE.Color(0xf5b287), 0.36);
       } else if (isStorm && !isNight) {
         const slate = new THREE.Color(skyReg.fogColor);
-        cLow.lerp(slate, 0.25);
-        cMid.lerp(slate, 0.32);
-        cCrag.lerp(slate, 0.35);
+        cLow.lerp(slate, 0.28);
+        cMid.lerp(slate, 0.35);
+        cCrag.lerp(slate, 0.38);
       }
 
-      const hazeBlend = idx === 2 ? (isStorm ? 0.36 : 0.22) : (idx === 1 ? (isStorm ? 0.16 : 0.08) : 0.02);
+      const hazeBlend = idx === 2 ? (isStorm ? 0.42 : 0.28) : (idx === 1 ? (isStorm ? 0.20 : 0.12) : 0.04);
 
       const posAttr = layer.geo.attributes.position;
       const colAttr = layer.geo.attributes.color;
@@ -672,10 +959,6 @@ export class WeatherSystem {
         const ang = layer.vertAngles[i];
         const by = basePos[i * 3 + 1];
 
-        // Biome-specific horizon sculpting:
-        // 1. MONACO: Open the southern +Z arc onto the sparkling Mediterranean Sea!
-        // 2. FUJI: Carve a scenic alpine saddle along the iconic Mount Fuji sightline (-0.38 rad)
-        //    on inner/mid rings so Mount Fuji towers unobstructed above cedar foothills!
         let heightScale = 1.0;
         if (theme === 'MONACO') {
           const seaOpen = Math.sin(ang);
@@ -683,7 +966,7 @@ export class WeatherSystem {
             const t = Math.min(1.0, (seaOpen - 0.22) / 0.34);
             heightScale = 1.0 - t * t * (3.0 - 2.0 * t);
           } else if (seaOpen < -0.15) {
-            heightScale = 1.18; // Dramatic Maritime Alps rising behind Casino Square!
+            heightScale = 1.18;
           }
         } else if (theme === 'FUJI' && idx < 2) {
           const dAng = Math.atan2(Math.sin(ang + 0.38), Math.cos(ang + 0.38));
@@ -711,14 +994,13 @@ export class WeatherSystem {
       colAttr.needsUpdate = true;
       layer.geo.computeVertexNormals();
 
-      // Subtle night skyline horizon emissive lift so mountains frame the stars cleanly
-      layer.mat.emissive.setHex(isNight ? 0x110b24 : (isSunset ? 0x241018 : 0x060a10));
-      layer.mat.emissiveIntensity = isNight ? 0.38 : (isSunset ? 0.14 : 0.08);
+      // Strictly zero daylight emissive glow so real sun/IBL & aerial fog shade vistas physically
+      layer.mat.emissive.setHex(0x000000);
+      layer.mat.emissiveIntensity = 0.0;
     });
   }
 
   _buildRainParticles() {
-    // 1. Slanted Wind-Driven Rain Streaks around Camera
     const count = 1800;
     const positions = new Float32Array(count * 6);
     this.rainDrops = [];
@@ -726,23 +1008,23 @@ export class WeatherSystem {
       const x = (Math.random() - 0.5) * 92;
       const y = Math.random() * 36;
       const z = (Math.random() - 0.5) * 92;
-      const speed = 38 + Math.random() * 18;
-      const lenScale = 0.85 + Math.random() * 0.55;
+      const speed = 40 + Math.random() * 18;
+      const lenScale = 0.80 + Math.random() * 0.55;
       this.rainDrops.push({ x, y, z, speed, lenScale });
       const idx = i * 6;
       positions[idx] = x;
       positions[idx + 1] = y;
       positions[idx + 2] = z;
-      positions[idx + 3] = x + 0.22;
-      positions[idx + 4] = y - 1.6 * lenScale;
-      positions[idx + 5] = z + 0.14;
+      positions[idx + 3] = x + 0.18;
+      positions[idx + 4] = y - 1.45 * lenScale;
+      positions[idx + 5] = z + 0.12;
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     this.rainMat = new THREE.LineBasicMaterial({
-      color: 0xd8eeff,
+      color: 0xcfe2f2,
       transparent: true,
-      opacity: 0.56,
+      opacity: 0.42,
       depthWrite: false,
     });
     this.rainLines = new THREE.LineSegments(geo, this.rainMat);
@@ -750,8 +1032,8 @@ export class WeatherSystem {
     this.rainLines.visible = false;
     this.scene.add(this.rainLines);
 
-    // 2. Ground Raindrop Splash Glints dancing across wet tarmac near focus target
-    const splashCount = 120;
+    // Fine wet-tarmac crown micro-splashes
+    const splashCount = 140;
     const splashPos = new Float32Array(splashCount * 6);
     this.rainSplashes = [];
     for (let i = 0; i < splashCount; i++) {
@@ -759,15 +1041,15 @@ export class WeatherSystem {
         ox: (Math.random() - 0.5) * 44,
         oz: (Math.random() - 0.5) * 44,
         phase: Math.random(),
-        rate: 3.8 + Math.random() * 3.2,
+        rate: 4.2 + Math.random() * 3.4,
       });
     }
     const splashGeo = new THREE.BufferGeometry();
     splashGeo.setAttribute('position', new THREE.BufferAttribute(splashPos, 3));
     this.splashMat = new THREE.LineBasicMaterial({
-      color: 0xe6f4ff,
+      color: 0xdcebf7,
       transparent: true,
-      opacity: 0.45,
+      opacity: 0.34,
       depthWrite: false,
     });
     this.splashLines = new THREE.LineSegments(splashGeo, this.splashMat);
@@ -777,9 +1059,8 @@ export class WeatherSystem {
   }
 
   // --------------------------------------------------------------------------
-  // 3D COCKPIT HELMET VISOR RAINDROPS, RADIAL AERO-SHEAR STREAKS & TEAR-OFF
-  // Clip-space shader quad rendered only when Cockpit Camera (cameraIndex===2)
-  // is active in wet/rainy sessions. Zero occlusion of center apex sightline!
+  // NATURAL OPTICAL COCKPIT HELMET VISOR RAINDROPS, AERO RIVULETS & TEAR-OFF
+  // Glassy meniscus refraction + sky-matched glints; center sightline stays clear!
   // --------------------------------------------------------------------------
   _buildCockpitVisorRain() {
     this.visorUniforms = {
@@ -789,7 +1070,7 @@ export class WeatherSystem {
       uSteerSlip:  { value: 0.0 },
       uTearOff:    { value: 1.2 },
       uLightning:  { value: 0.0 },
-      uSkyTint:    { value: new THREE.Color(0xd8eeff) },
+      uSkyTint:    { value: new THREE.Color(0xd2e4f4) },
     };
 
     const visorGeo = new THREE.PlaneGeometry(2, 2);
@@ -798,6 +1079,7 @@ export class WeatherSystem {
       transparent: true,
       depthTest: false,
       depthWrite: false,
+      toneMapped: false,
       vertexShader: `
         varying vec2 vUv;
         void main() {
@@ -821,92 +1103,111 @@ export class WeatherSystem {
           return fract(p.x * p.y);
         }
 
-        // Low-speed 3D spherical water beads with gravity crawl
+        vec2 vHash22(vec2 p) {
+          vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+          p3 += dot(p3, p3.yzx + 33.33);
+          return fract((p3.xx + p3.yz) * p3.zy);
+        }
+
+        // Natural 3D surface-tension water beads with asymmetric gravity/wind teardrop profile
         vec3 dropletLayer(vec2 uv, float scale, float seed, float speedFade) {
-          vec2 aspectUv = vec2(uv.x * 1.72, uv.y);
+          vec2 aspectUv = vec2(uv.x * 1.76, uv.y);
           vec2 gv = aspectUv * scale;
-          gv.y += uTime * (0.12 + uSpeedNorm * 0.25);
+          // At pit/hairpin speeds gravity pulls drops down; above 110 km/h aero lift pushes beads upward/outward
+          float windLift = mix(0.14, -0.34, smoothstep(0.22, 0.78, uSpeedNorm));
+          gv.y += uTime * windLift;
+          gv.x -= uTime * uSteerSlip * 0.18;
+
           vec2 id = floor(gv);
           vec2 f = fract(gv) - 0.5;
 
-          float n = vHash21(id + seed);
-          if (n < 0.42) return vec3(0.0);
+          vec2 rnd = vHash22(id + seed);
+          if (rnd.x < 0.48) return vec3(0.0);
 
-          vec2 offs = vec2((n - 0.5) * 0.52, (fract(n * 31.7) - 0.5) * 0.44);
+          float wobble = sin(uTime * (2.2 + rnd.y * 2.5) + rnd.x * 24.0) * 0.035;
+          vec2 offs = (rnd - 0.5) * vec2(0.54, 0.46) + vec2(wobble, 0.0);
           vec2 p = f - offs;
-          float rad = (0.11 + fract(n * 17.3) * 0.13) * speedFade;
+
+          // Subtle teardrop elongation along airflow
+          p.x *= 1.0 + clamp(p.y * 0.55, -0.18, 0.25);
+          float rad = (0.085 + rnd.y * 0.115) * speedFade;
           float d = length(p);
 
-          // Trailing micro-bead wake above crawling drop
-          float trailW = rad * 0.34;
+          // Micro condensation wake behind sliding bead
+          float trailW = rad * 0.28;
           float trail = smoothstep(trailW, 0.0, abs(p.x))
-                      * smoothstep(0.0, 0.36, p.y)
-                      * smoothstep(0.42, 0.04, p.y) * 0.45;
+                      * smoothstep(0.0, 0.34, p.y * sign(windLift))
+                      * smoothstep(0.40, 0.05, abs(p.y)) * 0.35;
 
-          float drop = smoothstep(rad, rad * 0.55, d);
+          float drop = smoothstep(rad, rad * 0.62, d);
           vec2 nrm = p / max(rad, 0.001);
-          float spec = pow(max(0.0, -nrm.x * 0.35 + nrm.y * 0.85), 5.0) * drop;
-          float rim = smoothstep(rad * 0.50, rad * 0.96, d) * drop;
-          float alpha = max(drop * 0.55, trail * 0.32);
-          return vec3(spec + trail * 0.25, rim, alpha);
+          // Dual optical caustic + top-sky specular crescent
+          float specMain = pow(max(0.0, -nrm.x * 0.28 + nrm.y * 0.88), 7.0) * drop;
+          float caustic = pow(max(0.0, nrm.x * 0.22 - nrm.y * 0.76), 5.0) * drop * 0.45;
+          float meniscus = smoothstep(rad * 0.56, rad * 0.96, d) * drop;
+          float alpha = max(drop * 0.42, trail * 0.24);
+          return vec3(specMain + caustic + trail * 0.18, meniscus, alpha);
         }
 
-        // High-speed radial aero-sheared water rivulets streaming outward from visor stagnation center
+        // High-speed radial aerodynamic boundary-layer rivulets streaming toward visor edges
         vec2 aeroStreaks(vec2 uv) {
-          vec2 center = vec2(0.50 + uSteerSlip * 0.09, 0.43);
-          vec2 rel = (uv - center) * vec2(1.68, 1.0);
+          vec2 center = vec2(0.50 + uSteerSlip * 0.08, 0.44);
+          vec2 rel = (uv - center) * vec2(1.70, 1.0);
           float r = length(rel);
           float ang = atan(rel.y, rel.x);
 
-          // Keep dead-center apex sightline crystal clear at speed!
-          float peripheryMask = smoothstep(0.14, 0.52, r);
+          // Clear aerodynamic stagnation zone in center apex sightline
+          float peripheryMask = smoothstep(0.18, 0.56, r);
 
-          float angCells = floor((ang + 3.14159265) * 28.0);
+          float angCells = floor((ang + 3.14159265) * 32.0);
           float h1 = vHash21(vec2(angCells, 11.7));
-          float angFrac = fract((ang + 3.14159265) * 28.0) - 0.5;
+          float angFrac = fract((ang + 3.14159265) * 32.0) - 0.5;
 
-          float streamSpeed = (1.4 + h1 * 1.9) * (0.45 + uSpeedNorm * 2.35);
-          float rFlow = fract(r * (3.2 + h1 * 2.4) - uTime * streamSpeed + h1 * 7.0);
+          float streamSpeed = (1.2 + h1 * 1.7) * (0.40 + uSpeedNorm * 2.15);
+          float rFlow = fract(r * (3.4 + h1 * 2.2) - uTime * streamSpeed + h1 * 7.0);
 
-          float width = 0.10 + (1.0 - rFlow) * 0.14;
-          float head = smoothstep(width, 0.0, abs(angFrac)) * smoothstep(0.06, 0.42, rFlow) * smoothstep(0.96, 0.52, rFlow);
+          float width = 0.08 + (1.0 - rFlow) * 0.11;
+          float head = smoothstep(width, 0.0, abs(angFrac))
+                     * smoothstep(0.08, 0.44, rFlow)
+                     * smoothstep(0.96, 0.56, rFlow);
 
-          // Secondary fine mist streaks
-          float angCells2 = floor((ang + 3.14159265) * 54.0);
+          float angCells2 = floor((ang + 3.14159265) * 62.0);
           float h2 = vHash21(vec2(angCells2, 43.1));
-          float angFrac2 = fract((ang + 3.14159265) * 54.0) - 0.5;
-          float rFlow2 = fract(r * 5.6 - uTime * (2.2 + h2 * 2.4) * (0.5 + uSpeedNorm * 2.6) + h2 * 13.0);
-          float fine = smoothstep(0.14, 0.0, abs(angFrac2)) * smoothstep(0.15, 0.75, rFlow2) * smoothstep(0.98, 0.72, rFlow2);
+          float angFrac2 = fract((ang + 3.14159265) * 62.0) - 0.5;
+          float rFlow2 = fract(r * 5.8 - uTime * (1.9 + h2 * 2.1) * (0.45 + uSpeedNorm * 2.3) + h2 * 13.0);
+          float fine = smoothstep(0.11, 0.0, abs(angFrac2))
+                     * smoothstep(0.18, 0.76, rFlow2)
+                     * smoothstep(0.98, 0.74, rFlow2);
 
-          float total = (head * 0.85 + fine * 0.55) * peripheryMask * smoothstep(0.12, 0.65, uSpeedNorm);
-          float glint = pow(max(0.0, head), 2.0) * peripheryMask;
+          float total = (head * 0.78 + fine * 0.48) * peripheryMask * smoothstep(0.16, 0.68, uSpeedNorm);
+          float glint = pow(max(0.0, head), 2.2) * peripheryMask;
           return vec2(total, glint);
         }
 
         void main() {
           if (uWetness <= 0.01) discard;
 
-          // Visor tear-off wipe clears accumulated droplets behind sweeping film edge
-          float wipeMask = uTearOff < 1.05 ? smoothstep(uTearOff - 0.06, uTearOff + 0.04, vUv.x) : 1.0;
-          float wipeLine = uTearOff < 1.02 ? exp(-pow((vUv.x - uTearOff) * 42.0, 2.0)) * 0.65 : 0.0;
+          float wipeMask = uTearOff < 1.05 ? smoothstep(uTearOff - 0.05, uTearOff + 0.04, vUv.x) : 1.0;
+          float wipeLine = uTearOff < 1.02 ? exp(-pow((vUv.x - uTearOff) * 46.0, 2.0)) * 0.50 : 0.0;
 
-          float lowSpeedFade = mix(1.0, 0.38, clamp(uSpeedNorm, 0.0, 1.0));
-          vec3 d1 = dropletLayer(vUv, 14.0, 3.1, lowSpeedFade);
-          vec3 d2 = dropletLayer(vUv + vec2(0.17, 0.31), 26.0, 19.7, lowSpeedFade * 0.88);
+          float lowSpeedFade = mix(1.0, 0.42, clamp(uSpeedNorm, 0.0, 1.0));
+          vec3 d1 = dropletLayer(vUv, 15.0, 3.1, lowSpeedFade);
+          vec3 d2 = dropletLayer(vUv + vec2(0.19, 0.33), 28.0, 19.7, lowSpeedFade * 0.86);
+          vec3 dMicro = dropletLayer(vUv + vec2(0.41, 0.13), 46.0, 37.3, 0.68);
           vec2 aero = aeroStreaks(vUv);
 
-          // Keep immediate center focal circle subtle so driving precision is never compromised
-          float centerClear = mix(0.45, 1.0, smoothstep(0.08, 0.34, length((vUv - vec2(0.5, 0.46)) * vec2(1.4, 1.0))));
+          // Keep central braking-marker & apex focal zone crisp and unobstructed
+          float centerClear = mix(0.28, 1.0, smoothstep(0.09, 0.38, length((vUv - vec2(0.5, 0.46)) * vec2(1.42, 1.0))));
 
-          float spec = (d1.x + d2.x * 0.85 + aero.y * 0.95) * wipeMask * centerClear;
-          float rim  = (d1.y + d2.y * 0.75) * wipeMask * centerClear;
-          float dropAlpha = (d1.z + d2.z * 0.75 + aero.x * 0.72) * uWetness * wipeMask * centerClear;
+          float spec = (d1.x + d2.x * 0.82 + dMicro.x * 0.45 + aero.y * 0.88) * wipeMask * centerClear;
+          float rim  = (d1.y + d2.y * 0.72 + dMicro.y * 0.38) * wipeMask * centerClear;
+          float dropAlpha = (d1.z + d2.z * 0.72 + dMicro.z * 0.35 + aero.x * 0.65) * uWetness * wipeMask * centerClear;
 
-          // Subtle FIA Zylon top visor strip & corner gasket framing
-          float topBrow = smoothstep(0.955, 0.992, vUv.y + pow(vUv.x - 0.5, 2.0) * 0.08);
-          vec3 waterCol = uSkyTint * (0.78 + spec * 1.65 + uLightning * 0.85) - vec3(rim * 0.16);
-          vec3 finalCol = mix(waterCol, vec3(0.03, 0.04, 0.06), topBrow * 0.75) + vec3(wipeLine);
-          float finalAlpha = clamp(dropAlpha * 0.68 + topBrow * 0.28 + wipeLine * 0.55, 0.0, 0.76);
+          // Authentic FIA Zylon top visor strip & dark rubber seal edge
+          float topBrow = smoothstep(0.958, 0.994, vUv.y + pow(vUv.x - 0.5, 2.0) * 0.08);
+          vec3 waterCol = uSkyTint * (0.68 + spec * 1.45 + uLightning * 0.75) - vec3(rim * 0.22);
+          vec3 finalCol = mix(clamp(waterCol, 0.0, 1.0), vec3(0.03, 0.04, 0.05), topBrow * 0.78) + vec3(wipeLine);
+          float finalAlpha = clamp(dropAlpha * 0.58 + topBrow * 0.24 + wipeLine * 0.45, 0.0, 0.68);
 
           gl_FragColor = vec4(finalCol, finalAlpha);
         }
@@ -954,7 +1255,7 @@ export class WeatherSystem {
     const activeReg = WEATHER_REGIMES[this.currentRegimeId] || WEATHER_REGIMES.HOT_SUNNY;
     const rainInt = activeReg.rainIntensity || 0.0;
     const surfaceWet = Math.max(0, this.offLineMoisture || 0);
-    const targetWet = Math.min(1.0, rainInt * 0.92 + (rainInt > 0.02 ? surfaceWet * 0.28 : 0.0));
+    const targetWet = Math.min(1.0, rainInt * 0.90 + (surfaceWet > 0.08 ? surfaceWet * 0.30 : 0.0));
 
     if (!cockpitActive || targetWet <= 0.02) {
       this.visorRainMesh.visible = false;
@@ -978,10 +1279,14 @@ export class WeatherSystem {
       }
       this._prevCamYaw = curYaw;
     }
-    this._smoothedYawSlip = THREE.MathUtils.lerp(this._smoothedYawSlip, THREE.MathUtils.clamp(yawRate * 0.45, -1, 1), Math.min(1, stepDt * 8.0));
+    this._smoothedYawSlip = THREE.MathUtils.lerp(
+      this._smoothedYawSlip,
+      THREE.MathUtils.clamp(yawRate * 0.45, -1, 1),
+      Math.min(1, stepDt * 8.0)
+    );
 
     this.visorUniforms.uTime.value = this.elapsedSkySec;
-    this.visorUniforms.uWetness.value = Math.max(0.12, this._visorAccum);
+    this.visorUniforms.uWetness.value = Math.max(0.10, this._visorAccum);
     this.visorUniforms.uSpeedNorm.value = THREE.MathUtils.clamp(spd / 320.0, 0.0, 1.25);
     this.visorUniforms.uSteerSlip.value = this._smoothedYawSlip;
     this.visorUniforms.uTearOff.value = this._visorTearOffProgress;
@@ -1027,14 +1332,9 @@ export class WeatherSystem {
     this.currentRegimeId = chosenId;
     const reg = WEATHER_REGIMES[this.currentRegimeId] || WEATHER_REGIMES.HOT_SUNNY;
 
-    if (mode === '1982_ORIGINAL') {
-      this.grooveMoisture = 0.0;
-      this.offLineMoisture = 0.0;
-    } else {
-      this.grooveMoisture = reg.moisture > 0.05 ? Number((reg.moisture * 0.82).toFixed(3)) : reg.moisture;
-      this.offLineMoisture = reg.moisture;
-    }
-
+    // Preserve real surface moisture across BOTH 2026 Sim and 1982 Sim-Parity wet sessions
+    this.grooveMoisture = reg.moisture > 0.05 ? Number((reg.moisture * 0.82).toFixed(3)) : reg.moisture;
+    this.offLineMoisture = reg.moisture;
     this.ambientTemp = reg.ambientTemp;
 
     const skyReg = forceNightSky ? WEATHER_REGIMES.NEON_NIGHT : reg;
@@ -1047,8 +1347,8 @@ export class WeatherSystem {
     this.activeTheme = trackDef?.theme || 'FUJI';
 
     if (isSunset) {
-      this._sunOffset.set(98, 50, 72);
-      this.skyUniforms.sunDir.value.set(0.73, 0.21, 0.65).normalize();
+      this._sunOffset.set(108, 48, 76);
+      this.skyUniforms.sunDir.value.set(0.76, 0.24, 0.60).normalize();
     } else if (isNight) {
       this._sunOffset.set(55, 112, 76);
       this.skyUniforms.sunDir.value.set(0.38, 0.52, 0.76).normalize();
@@ -1057,75 +1357,73 @@ export class WeatherSystem {
       this.skyUniforms.sunDir.value.set(0.42, 0.56, 0.71).normalize();
     }
 
-    // High-contrast Directional Sun (3.4 in sunny/golden-hour) + 45%-lower Fill/Hemisphere lighting
-    // so crisp real-time directional shadows ground every car, pit garage, barrier, and tree!
+    // Physical Sun/Sky Lighting Ratios calibrated for ACESFilmicToneMapping (exposure 0.96, zero bloom)
     const sunIntensityMap = {
-      HOT_SUNNY:     3.40,
-      GOLDEN_SUNSET: 3.40,
-      OVERCAST_COOL: 2.25,
-      LIGHT_DRIZZLE: 1.65,
-      MONSOON_STORM: 1.32,
-      NEON_NIGHT:    1.20,
+      HOT_SUNNY:     2.85,
+      GOLDEN_SUNSET: 2.55,
+      OVERCAST_COOL: 1.85,
+      LIGHT_DRIZZLE: 1.08,
+      MONSOON_STORM: 0.76,
+      NEON_NIGHT:    0.92,
     };
     const ambientIntensityMap = {
-      HOT_SUNNY:     0.64,
-      GOLDEN_SUNSET: 0.66,
-      OVERCAST_COOL: 0.62,
-      LIGHT_DRIZZLE: 0.54,
-      MONSOON_STORM: 0.48,
-      NEON_NIGHT:    0.52,
+      HOT_SUNNY:     0.36,
+      GOLDEN_SUNSET: 0.38,
+      OVERCAST_COOL: 0.42,
+      LIGHT_DRIZZLE: 0.38,
+      MONSOON_STORM: 0.32,
+      NEON_NIGHT:    0.36,
     };
-    this._baseSunIntensity = sunIntensityMap[skyReg.id] ?? 3.40;
-    this._baseAmbientIntensity = ambientIntensityMap[skyReg.id] ?? ((skyReg.ambientIntensity || 1.15) * 0.52);
+    this._baseSunIntensity = sunIntensityMap[skyReg.id] ?? 2.85;
+    this._baseAmbientIntensity = ambientIntensityMap[skyReg.id] ?? 0.38;
 
     this.sunLight.color.setHex(skyReg.sunColor);
     this.sunLight.intensity = this._baseSunIntensity;
 
     const hemiSkyMap = {
-      HOT_SUNNY:     0xdff2ff,
-      GOLDEN_SUNSET: 0xffcfb3,
-      OVERCAST_COOL: 0xd8e4f0,
-      LIGHT_DRIZZLE: 0xb8cade,
-      MONSOON_STORM: 0x8fa4bd,
-      NEON_NIGHT:    0x88a8ff,
+      HOT_SUNNY:     0xdcf0ff,
+      GOLDEN_SUNSET: 0xffcca8,
+      OVERCAST_COOL: 0xd6e2ee,
+      LIGHT_DRIZZLE: 0xb6c7db,
+      MONSOON_STORM: 0x8ba0b8,
+      NEON_NIGHT:    0x7c9ce8,
     };
     const hemiGroundMap = {
-      HOT_SUNNY:     0x2b3429,
-      GOLDEN_SUNSET: 0x36241d,
-      OVERCAST_COOL: 0x282e34,
-      LIGHT_DRIZZLE: 0x20262d,
-      MONSOON_STORM: 0x181e26,
-      NEON_NIGHT:    0x181228,
+      HOT_SUNNY:     0x232922,
+      GOLDEN_SUNSET: 0x2c1f19,
+      OVERCAST_COOL: 0x22272c,
+      LIGHT_DRIZZLE: 0x1b2026,
+      MONSOON_STORM: 0x141920,
+      NEON_NIGHT:    0x111320,
     };
-    this.ambientLight.color.setHex(hemiSkyMap[skyReg.id] || 0xdff0ff);
-    this.ambientLight.groundColor.setHex(hemiGroundMap[skyReg.id] || 0x2a332a);
+    this.ambientLight.color.setHex(hemiSkyMap[skyReg.id] || 0xdcf0ff);
+    this.ambientLight.groundColor.setHex(hemiGroundMap[skyReg.id] || 0x232922);
     this.ambientLight.intensity = this._baseAmbientIntensity;
 
-    this.fillLight.color.setHex(isNight ? 0x9ec4ff : (isSunset ? 0xc9d8ff : 0xd8e9ff));
-    this.fillLight.intensity = isNight ? 0.52 : (isSunset ? 0.47 : 0.45);
+    this.fillLight.color.setHex(isNight ? 0x8eb4f0 : (isSunset ? 0xc4d4f5 : 0xd4e6fa));
+    this.fillLight.intensity = isNight ? 0.28 : (isSunset ? 0.24 : 0.22);
 
-    this.rimLight.color.setHex(isNight ? 0xff6bd6 : (isSunset ? 0xffb070 : 0xffe9cf));
-    this.rimLight.intensity = isNight ? 0.28 : (isSunset ? 0.29 : 0.23);
+    this.rimLight.color.setHex(isNight ? 0x8ab8ff : (isSunset ? 0xffaa6b : 0xffebd4));
+    this.rimLight.intensity = isNight ? 0.16 : (isSunset ? 0.18 : 0.12);
 
-    // Rich 360-degree sky palettes tuned cleanly below UnrealBloomPass threshold (zero milky bloom wash!)
     const skyPaletteOverrides = {
       HOT_SUNNY: {
-        zenith: 0x0b52d4, mid: 0x3c91f2, horizon: 0xb8e0ff, antiHorizon: 0x8cc8fc, sun: 0xfff5e0, boost: 1.05,
+        zenith: 0x0b52d4, mid: 0x3c91f2, horizon: 0xb8e0ff, antiHorizon: 0x8cc8fc, sun: 0xfff5e0, boost: 0.96,
       },
       GOLDEN_SUNSET: {
-        zenith: 0x254fa6, mid: 0xdc5f4e, horizon: 0xf7b65c, antiHorizon: 0x7c4e98, sun: 0xffb85c, boost: 1.10,
+        zenith: 0x254fa6, mid: 0xdc5f4e, horizon: 0xf7b65c, antiHorizon: 0x7c4e98, sun: 0xffb85c, boost: 0.98,
       },
       OVERCAST_COOL: {
-        zenith: 0x425b78, mid: 0x7991ab, horizon: 0xbfd0e0, antiHorizon: 0xa8bcd0, sun: 0xeef4fa, boost: 1.04,
+        zenith: 0x425b78, mid: 0x7991ab, horizon: 0xbfd0e0, antiHorizon: 0xa8bcd0, sun: 0xeef4fa, boost: 0.94,
       },
       LIGHT_DRIZZLE: {
-        zenith: 0x2e4359, mid: 0x566e87, horizon: 0x91a6ba, antiHorizon: 0x7d92a8, sun: 0xc8d8e8, boost: 1.06,
+        zenith: 0x2e4359, mid: 0x566e87, horizon: 0x91a6ba, antiHorizon: 0x7d92a8, sun: 0xc8d8e8, boost: 0.92,
       },
       MONSOON_STORM: {
-        zenith: 0x1a283d, mid: 0x344761, horizon: 0x5c728c, antiHorizon: 0x4b607a, sun: 0xa4bcd8, boost: 1.08,
+        zenith: 0x1a283d, mid: 0x344761, horizon: 0x5c728c, antiHorizon: 0x4b607a, sun: 0xa4bcd8, boost: 0.90,
       },
       NEON_NIGHT: {
-        zenith: 0x070f28, mid: 0x13204a, horizon: 0x331e59, antiHorizon: 0x201742, sun: 0xd8ecff, boost: 1.14,
+        zenith: 0x050a1c, mid: 0x0e1836, horizon: 0x1c2240, antiHorizon: 0x141830, sun: 0xcfe2ff, boost: 0.95,
       },
     };
 
@@ -1135,45 +1433,45 @@ export class WeatherSystem {
       horizon: skyReg.skyHorizon,
       antiHorizon: skyReg.skyHorizon,
       sun: skyReg.sunColor,
-      boost: 1.05,
+      boost: 0.96,
     };
 
     const themeHorizonMap = {
-      FUJI:        isSunset ? 0xffb88c : 0xcbe8ff,
-      MONACO:      isSunset ? 0xffc680 : 0x9ee8ff,
-      SUZUKA:      isSunset ? 0xffb094 : 0xc2e4ff,
-      MONZA:       isSunset ? 0xffba70 : 0xffe4b8,
-      SILVERSTONE: isSunset ? 0xf2b49b : 0xd4e4f4,
-      VEGAS:       0x9b38ff,
+      FUJI:        isSunset ? 0xf2b085 : 0xc4e2fa,
+      MONACO:      isSunset ? 0xf5be7d : 0xa8def5,
+      SUZUKA:      isSunset ? 0xf0aa8e : 0xbedef5,
+      MONZA:       isSunset ? 0xf5b46e : 0xf5dec0,
+      SILVERSTONE: isSunset ? 0xebae96 : 0xcfdde8,
+      VEGAS:       0x252a4a,
     };
 
     this.skyUniforms.zenithColor.value.setHex(pal.zenith);
     this.skyUniforms.midColor.value.setHex(pal.mid);
     this.skyUniforms.horizonColor.value.setHex(pal.horizon);
     this.skyUniforms.antiHorizonColor.value.setHex(pal.antiHorizon);
-    this.skyUniforms.groundFogColor.value.setHex(isSunset ? 0xe89668 : skyReg.fogColor);
+    this.skyUniforms.groundFogColor.value.setHex(isSunset ? 0xd99268 : (isNight ? 0x0b0f1c : skyReg.fogColor));
     this.skyUniforms.sunColor.value.setHex(pal.sun);
     this.skyUniforms.themeHorizonTint.value.setHex(
-      isNight ? 0x7c2ae8 : (themeHorizonMap[this.activeTheme] || pal.horizon)
+      isNight ? 0x242a4d : (themeHorizonMap[this.activeTheme] || pal.horizon)
     );
     this.skyUniforms.skyRadianceBoost.value = pal.boost;
 
-    this.skyUniforms.nightAmount.value = isNight ? 1.0 : (isSunset ? 0.18 : 0.0);
+    this.skyUniforms.nightAmount.value = isNight ? 1.0 : (isSunset ? 0.16 : 0.0);
     this.skyUniforms.sunsetAmount.value = isSunset ? 1.0 : 0.0;
     this.skyUniforms.stormDarkness.value = isStorm ? 1.0 : (isDrizzle ? 0.55 : 0.0);
 
     const cloudMap = {
-      HOT_SUNNY:     0.25,
-      GOLDEN_SUNSET: 0.42,
-      OVERCAST_COOL: 0.72,
+      HOT_SUNNY:     0.22,
+      GOLDEN_SUNSET: 0.38,
+      OVERCAST_COOL: 0.68,
       LIGHT_DRIZZLE: 0.86,
       MONSOON_STORM: 0.96,
-      NEON_NIGHT:    0.16,
+      NEON_NIGHT:    0.14,
     };
-    this.skyUniforms.cloudCover.value = cloudMap[reg.id] ?? 0.30;
+    this.skyUniforms.cloudCover.value = cloudMap[reg.id] ?? 0.28;
 
     if (this.visorUniforms) {
-      this.visorUniforms.uSkyTint.value.setHex(isNight ? 0xa8dcff : (isSunset ? 0xffcfa8 : 0xdcf0ff));
+      this.visorUniforms.uSkyTint.value.setHex(isNight ? 0x9ec4e8 : (isSunset ? 0xf5c49e : 0xd2e4f4));
       this._visorAccum = 0.0;
     }
 
@@ -1185,12 +1483,11 @@ export class WeatherSystem {
       sunColor: pal.sun,
     };
 
-    // 75% cut to FogExp2 density so garages 20m away & alpine vistas remain vivid and razor-sharp!
-    this.scene.fog.color.setHex(isSunset ? 0xe89668 : skyReg.fogColor);
-    this.scene.fog.density = Math.min(0.00028, (skyReg.fogDensity || 0.00016) * 0.25);
+    this.scene.fog.color.setHex(isSunset ? 0xd99268 : (isNight ? 0x0b0f1c : skyReg.fogColor));
+    this.scene.fog.density = Math.min(0.00032, (skyReg.fogDensity || 0.00016) * (isStorm ? 0.42 : 0.28));
 
     this._tintVistaLayersForBiome(this.activeTheme, isNight, effectiveSkyReg);
-    this._bakeDynamicHDREnvironment(effectiveSkyReg, this.activeTheme, isNight);
+    this._bindPolyHavenOrFallbackEnvironment(effectiveSkyReg, this.activeTheme, isNight);
 
     return this.currentRegimeId;
   }
@@ -1208,15 +1505,22 @@ export class WeatherSystem {
   }
 
   update(dt, cameraPos, focusTargetPos, visualStyle, callbacks = {}) {
-    this.elapsedSkySec += dt;
+    const safeDt = Math.max(0.0, Math.min(0.1, Number(dt) || 0.016));
+    this.elapsedSkySec += safeDt;
     this.skyUniforms.uTime.value = this.elapsedSkySec;
     this.skyUniforms.retroMode.value = visualStyle === '1982_ARCADE' ? 1.0 : 0.0;
 
-    // Weather regime is strictly locked per race — never mutate currentRegimeId or moisture here!
-    const activeReg = WEATHER_REGIMES[this.currentRegimeId] || WEATHER_REGIMES.HOT_SUNNY;
-    const skyReg = this.isNightActive ? WEATHER_REGIMES.NEON_NIGHT : activeReg;
+    if (this._currentHdrMix !== this._targetHdrMix) {
+      const blendStep = 1.0 - Math.exp(-safeDt * 8.0);
+      this._currentHdrMix += (this._targetHdrMix - this._currentHdrMix) * blendStep;
+      if (Math.abs(this._targetHdrMix - this._currentHdrMix) < 0.004) {
+        this._currentHdrMix = this._targetHdrMix;
+      }
+      this.skyUniforms.uHdrMix.value = this._currentHdrMix;
+    }
 
-    // Keep 2048x2048 soft shadow frustum tightly centered on the focus car!
+    const activeReg = WEATHER_REGIMES[this.currentRegimeId] || WEATHER_REGIMES.HOT_SUNNY;
+
     if (focusTargetPos) {
       this.sunLight.target.position.set(focusTargetPos.x, focusTargetPos.y, focusTargetPos.z);
       this.sunLight.position.set(
@@ -1227,7 +1531,6 @@ export class WeatherSystem {
       this.sunLight.target.updateMatrixWorld();
     }
 
-    // Subtle 3-Layer 3D Mountain Parallax relative to circuit center
     if (cameraPos && this.vistaLayers) {
       const dx = cameraPos.x - VISTA_CENTER_X;
       const dz = cameraPos.z - VISTA_CENTER_Z;
@@ -1238,7 +1541,7 @@ export class WeatherSystem {
     }
 
     if (activeReg.hasLightning) {
-      this.nextLightningSec -= dt;
+      this.nextLightningSec -= safeDt;
       if (this.nextLightningSec <= 0) {
         this.lightningFlash = 1.0;
         this.nextLightningSec = 5.5 + Math.random() * 9.0;
@@ -1246,34 +1549,35 @@ export class WeatherSystem {
       }
     }
     if (this.lightningFlash > 0) {
-      this.lightningFlash = Math.max(0, this.lightningFlash - dt * 4.2);
+      this.lightningFlash = Math.max(0, this.lightningFlash - safeDt * 4.2);
     }
 
     this.skyUniforms.flashBoost.value = this.lightningFlash;
-    this.skyDome.position.copy(cameraPos);
+    if (cameraPos) {
+      this.skyDome.position.copy(cameraPos);
+    }
 
-    this.sunLight.intensity = this._baseSunIntensity + this.lightningFlash * 2.8;
-    this.ambientLight.intensity = this._baseAmbientIntensity + this.lightningFlash * 0.65;
+    this.sunLight.intensity = this._baseSunIntensity + this.lightningFlash * 2.2;
+    this.ambientLight.intensity = this._baseAmbientIntensity + this.lightningFlash * 0.48;
 
-    // Wind-driven rain streaks + wet surface splash micro-glints
     const rainInt = activeReg.rainIntensity || 0.0;
     const raining = rainInt > 0.05;
     this.rainLines.visible = raining;
     this.splashLines.visible = raining && !!focusTargetPos;
 
-    if (raining) {
-      this.rainMat.opacity = Math.min(0.88, 0.30 + rainInt * 0.44 + this.lightningFlash * 0.25);
-      this.rainMat.color.setHex(this.isNightActive ? 0xbbe8ff : 0xd8eeff);
+    if (raining && cameraPos) {
+      this.rainMat.opacity = Math.min(0.68, 0.22 + rainInt * 0.34 + this.lightningFlash * 0.18);
+      this.rainMat.color.setHex(this.isNightActive ? 0xaecae8 : 0xcfe2f2);
 
       const posAttr = this.rainLines.geometry.attributes.position;
       const arr = posAttr.array;
-      const slantX = 0.22 + rainInt * 0.16;
-      const slantZ = 0.14 + rainInt * 0.10;
+      const slantX = 0.20 + rainInt * 0.15;
+      const slantZ = 0.12 + rainInt * 0.09;
 
       for (let i = 0; i < this.rainDrops.length; i++) {
         const d = this.rainDrops[i];
-        d.y -= d.speed * (0.82 + rainInt * 0.46) * dt;
-        d.x += slantX * 9.0 * dt;
+        d.y -= d.speed * (0.85 + rainInt * 0.45) * safeDt;
+        d.x += slantX * 8.5 * safeDt;
         if (d.y < -4) {
           d.y = 28 + Math.random() * 9;
           d.x = (Math.random() - 0.5) * 88;
@@ -1282,7 +1586,7 @@ export class WeatherSystem {
         const wx = cameraPos.x + d.x;
         const wy = cameraPos.y + d.y;
         const wz = cameraPos.z + d.z;
-        const len = (1.15 + rainInt * 1.35) * d.lenScale;
+        const len = (1.05 + rainInt * 1.25) * d.lenScale;
         const idx = i * 6;
         arr[idx]     = wx;
         arr[idx + 1] = wy;
@@ -1294,14 +1598,14 @@ export class WeatherSystem {
       posAttr.needsUpdate = true;
 
       if (focusTargetPos) {
-        this.splashMat.opacity = 0.22 + rainInt * 0.36;
+        this.splashMat.opacity = 0.18 + rainInt * 0.28;
         const spAttr = this.splashLines.geometry.attributes.position;
         const spArr = spAttr.array;
-        const baseY = focusTargetPos.y + 0.05;
+        const baseY = focusTargetPos.y + 0.04;
 
         for (let i = 0; i < this.rainSplashes.length; i++) {
           const sp = this.rainSplashes[i];
-          sp.phase += sp.rate * dt;
+          sp.phase += sp.rate * safeDt;
           if (sp.phase >= 1.0) {
             sp.phase -= 1.0;
             sp.ox = (Math.random() - 0.5) * 42;
@@ -1310,8 +1614,8 @@ export class WeatherSystem {
           const crown = Math.sin(sp.phase * Math.PI);
           const sx = focusTargetPos.x + sp.ox;
           const sz = focusTargetPos.z + sp.oz;
-          const spread = (0.06 + sp.phase * 0.18) * (0.7 + rainInt * 0.5);
-          const height = crown * (0.14 + rainInt * 0.16);
+          const spread = (0.05 + sp.phase * 0.16) * (0.7 + rainInt * 0.45);
+          const height = crown * (0.11 + rainInt * 0.13);
           const idx = i * 6;
           spArr[idx]     = sx - spread * 0.5;
           spArr[idx + 1] = baseY;

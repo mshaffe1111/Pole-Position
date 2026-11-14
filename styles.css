@@ -1,20 +1,29 @@
 /* ==========================================================================
-   RACE PHANATIC F1 — POLE POSITION 2026: RETRO GRAND PRIX
-   AAA Showroom Start Screen, Broadcast Telemetry & Mobile Touch Cockpit UI
+   POLE POSITION 2026 — GRAND PRIX MOTORSPORT SIM
+   Clean GT7 / F1 24 Showroom Menu, Live Sim Telemetry HUD & Touch Cockpit UI
    ========================================================================== */
 
 :root {
   --app-w: 100vw;
   --app-h: 100vh;
-  --bg-glass: rgba(7, 12, 22, 0.82);
-  --bg-glass-strong: rgba(6, 10, 19, 0.94);
-  --border-subtle: rgba(135, 185, 255, 0.25);
-  --accent-red: #ff1e38;
-  --accent-cyan: #00e5ff;
-  --accent-green: #00e676;
-  --accent-gold: #ffd600;
-  --text-main: #f4f8ff;
-  --text-dim: #9ab0cc;
+  --sim-bg-panel: rgba(10, 14, 22, 0.88);
+  --sim-bg-elevated: rgba(17, 24, 38, 0.94);
+  --sim-border: rgba(148, 163, 184, 0.20);
+  --sim-border-active: rgba(248, 250, 252, 0.72);
+  --sim-fia-red: #e10600;
+  --sim-teal: #00d2be;
+  --sim-gold: #f5b700;
+  --sim-green: #10b981;
+  --sim-amber: #f59e0b;
+  --bg-glass: rgba(10, 14, 22, 0.86);
+  --bg-glass-strong: rgba(8, 12, 20, 0.95);
+  --border-subtle: rgba(148, 163, 184, 0.22);
+  --accent-red: #e10600;
+  --accent-cyan: #00d2be;
+  --accent-green: #10b981;
+  --accent-gold: #f5b700;
+  --text-main: #f8fafc;
+  --text-dim: #94a3b8;
 }
 
 @supports (height: 100dvh) {
@@ -39,9 +48,10 @@ html, body {
   height: var(--app-h);
   max-height: var(--app-h);
   overflow: hidden;
-  background: #050811;
+  background: #070a11;
   color: var(--text-main);
-  font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+  font-variant-numeric: tabular-nums;
   overscroll-behavior: none;
   touch-action: none;
 }
@@ -62,25 +72,16 @@ html, body {
   height: 100%;
 }
 
-/* Subtle High-Speed Peripheral Tunnel Vignette (> 225 km/h) */
+/* Fake neon-cyan speed vignette permanently disabled for crisp optical clarity */
 #speed-vignette {
-  position: fixed;
-  inset: 0;
-  z-index: 2;
+  display: none !important;
+  opacity: 0 !important;
   pointer-events: none;
-  opacity: 0;
-  background: radial-gradient(
-    circle at center,
-    rgba(0, 0, 0, 0) 56%,
-    rgba(0, 215, 255, 0.14) 84%,
-    rgba(4, 10, 24, 0.56) 100%
-  );
-  transition: opacity 0.12s linear;
 }
 
 /* 1982 Crisp Arcade Shader Visual Filter + Subtle Scanlines */
 body.arcade-shader-active #webgl-container canvas {
-  filter: contrast(1.20) saturate(1.36) brightness(1.04);
+  filter: contrast(1.16) saturate(1.24) brightness(1.02);
   image-rendering: pixelated;
 }
 
@@ -94,8 +95,8 @@ body.arcade-shader-active #webgl-container canvas {
     to bottom,
     rgba(0, 0, 0, 0.0) 0px,
     rgba(0, 0, 0, 0.0) 2px,
-    rgba(0, 0, 0, 0.16) 3px,
-    rgba(0, 0, 0, 0.16) 4px
+    rgba(0, 0, 0, 0.14) 3px,
+    rgba(0, 0, 0, 0.14) 4px
   );
 }
 
@@ -104,13 +105,13 @@ body.arcade-shader-active #arcade-scanlines {
 }
 
 /* ==========================================================================
-   BOOT LOADING SCREEN
+   BOOT LOADING SCREEN (CLEAN MOTORSPORT)
    ========================================================================== */
 #boot-loading {
   position: fixed;
   inset: 0;
   z-index: 100;
-  background: radial-gradient(circle at 50% 42%, #132240 0%, #04070e 100%);
+  background: radial-gradient(circle at 50% 44%, #111927 0%, #060910 100%);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -121,42 +122,36 @@ body.arcade-shader-active #arcade-scanlines {
 }
 
 .boot-crest {
-  font-size: 1.15rem;
+  font-size: 1.02rem;
   font-style: italic;
   font-weight: 900;
   letter-spacing: 0.14em;
   color: #ffffff;
-  background: linear-gradient(135deg, #ff1e38, #ff6d00);
-  padding: 5px 16px;
-  border-radius: 6px;
-  transform: skewX(-14deg);
-  box-shadow: 0 6px 24px rgba(255, 30, 56, 0.55);
+  background: var(--sim-fia-red);
+  padding: 4px 14px;
+  border-radius: 4px;
+  transform: skewX(-12deg);
 }
 
 .boot-title {
-  font-size: 1.65rem;
-  font-style: italic;
-  font-weight: 900;
-  letter-spacing: 0.16em;
-  background: linear-gradient(90deg, #ffffff 0%, #ffd600 55%, #ff1e38 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  font-size: 1.48rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  color: #f8fafc;
 }
 
 .boot-sub {
-  font-size: 0.75rem;
-  font-weight: 700;
+  font-size: 0.70rem;
+  font-weight: 600;
   letter-spacing: 0.10em;
   color: var(--text-dim);
 }
 
 .boot-spinner {
-  width: 46px;
-  height: 46px;
-  border: 4px solid rgba(0, 229, 255, 0.16);
-  border-top-color: var(--accent-cyan);
-  border-right-color: var(--accent-red);
+  width: 38px;
+  height: 38px;
+  border: 3px solid rgba(148, 163, 184, 0.18);
+  border-top-color: var(--sim-fia-red);
   border-radius: 50%;
   animation: spin 0.72s linear infinite;
 }
@@ -166,7 +161,7 @@ body.arcade-shader-active #arcade-scanlines {
 }
 
 /* ==========================================================================
-   AAA OPEN-STAGE SHOWROOM START SCREEN (GRAN TURISMO / F1 BROADCAST STYLE)
+   MODERN MOTORSPORT SIM MENU (CLEAN 3-ZONE GT7 / F1 24 LAYOUT)
    ========================================================================== */
 #pre-race-menu {
   position: fixed;
@@ -180,185 +175,212 @@ body.arcade-shader-active #arcade-scanlines {
     max(14px, env(safe-area-inset-right))
     max(10px, env(safe-area-inset-bottom))
     max(14px, env(safe-area-inset-left));
-  /* Top & bottom cinema framing ONLY — center 65%+ is 100% unobstructed 3D! */
+  /* Subtle top & bottom framing only — center 68% is crystal-clear 3D car showcase */
   background: linear-gradient(
     180deg,
-    rgba(4, 7, 15, 0.76) 0%,
-    rgba(4, 7, 15, 0.14) 17%,
-    rgba(4, 7, 15, 0.00) 30%,
-    rgba(4, 7, 15, 0.00) 68%,
-    rgba(4, 7, 15, 0.42) 83%,
-    rgba(4, 7, 15, 0.88) 100%
+    rgba(6, 9, 15, 0.80) 0%,
+    rgba(6, 9, 15, 0.10) 14%,
+    rgba(6, 9, 15, 0.00) 26%,
+    rgba(6, 9, 15, 0.00) 70%,
+    rgba(6, 9, 15, 0.44) 84%,
+    rgba(6, 9, 15, 0.90) 100%
   );
   pointer-events: none;
 }
 
-/* Top Broadcast Identity Bar */
+/* Zone 1: Unified Minimal Top Header (48-52px) */
 .showroom-topbar {
   pointer-events: auto;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
+  min-height: 48px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: rgba(10, 14, 22, 0.84);
+  border: 1px solid var(--sim-border);
+  backdrop-filter: blur(12px);
 }
 
 .showroom-brand {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  min-width: 0;
-}
-
-.brand-wing-row {
-  display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 12px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .f1-crest-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 1px 7px;
+  height: 24px;
+  padding: 0 9px;
   border-radius: 4px;
-  background: linear-gradient(135deg, #ff1e38 0%, #ff6d00 100%);
-  border: 1px solid rgba(255, 225, 130, 0.65);
+  background: var(--sim-fia-red);
   color: #ffffff;
-  font-size: 0.62rem;
+  font-size: 0.68rem;
   font-style: italic;
   font-weight: 900;
   letter-spacing: 0.08em;
-  transform: skewX(-16deg);
-  box-shadow: 0 2px 12px rgba(255, 30, 56, 0.52);
+  transform: skewX(-12deg);
+  flex-shrink: 0;
 }
 
-.f1-speed-mark {
-  display: inline-flex;
-  gap: 3px;
-  transform: skewX(-22deg);
-}
-
-.f1-speed-mark i {
-  display: block;
-  width: 5px;
-  height: 11px;
-  border-radius: 1px;
-}
-.f1-speed-mark i:nth-child(1) { background: var(--accent-red); }
-.f1-speed-mark i:nth-child(2) { background: var(--accent-gold); }
-.f1-speed-mark i:nth-child(3) { background: var(--accent-cyan); }
-
-.brand-kicker {
-  display: inline-block;
-  font-size: 0.63rem;
-  font-weight: 900;
-  letter-spacing: 0.17em;
-  color: var(--accent-cyan);
-  text-transform: uppercase;
-  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.85);
-}
-
-.brand-title-row {
+.brand-wordmark-group {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
+  align-items: baseline;
   gap: 10px;
+  min-width: 0;
 }
 
 .showroom-title {
-  font-size: clamp(1.38rem, 3.6vw, 2.48rem);
-  font-style: italic;
-  font-weight: 900;
-  letter-spacing: 0.03em;
-  line-height: 1.02;
+  font-size: clamp(0.98rem, 1.8vw, 1.24rem);
+  font-weight: 800;
+  letter-spacing: 0.10em;
+  line-height: 1;
   text-transform: uppercase;
-  background: linear-gradient(180deg, #ffffff 12%, #e6f0ff 52%, #8fa9c9 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  filter: drop-shadow(0 4px 18px rgba(0, 0, 0, 0.78));
-}
-
-.showroom-title span {
-  background: linear-gradient(135deg, #fff176 0%, #ffd600 35%, #ff6d00 72%, #ff1e38 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  padding-right: 4px;
+  color: #f8fafc;
+  white-space: nowrap;
 }
 
 .showroom-circuit-pill {
   display: inline-flex;
   align-items: center;
-  padding: 4px 11px;
-  border-radius: 99px;
-  background: rgba(7, 13, 25, 0.72);
-  border: 1px solid rgba(0, 229, 255, 0.28);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
-  font-size: 0.65rem;
-  font-weight: 800;
-  letter-spacing: 0.07em;
-  color: #e2eeff;
-  backdrop-filter: blur(8px);
-  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #cbd5e1;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+/* Segmented Era Selector: [ 2026 SIM | 1982 RETRO ] */
+.era-segmented-switch {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 7px;
+  background: rgba(4, 7, 13, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  flex-shrink: 0;
+}
+
+.era-seg-btn {
+  min-height: 28px !important;
+  padding: 4px 11px !important;
+  border-radius: 5px !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  color: var(--text-dim) !important;
+  font-size: 0.65rem !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.08em;
+  box-shadow: none !important;
+  white-space: nowrap;
+}
+
+.era-seg-btn.selected {
+  background: rgba(248, 250, 252, 0.12) !important;
+  color: #ffffff !important;
+  border-color: rgba(248, 250, 252, 0.34) !important;
+}
+
+.era-seg-btn[data-cfg-mode="2026_UPDATED"].selected {
+  border-bottom: 2px solid var(--sim-fia-red) !important;
+}
+
+.era-seg-btn[data-cfg-mode="1982_ORIGINAL"].selected {
+  border-bottom: 2px solid var(--sim-gold) !important;
+}
+
+.brand-kicker {
+  display: inline-block;
+  font-size: 0.60rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: var(--sim-teal);
+  text-transform: uppercase;
+}
+
 .showroom-top-actions {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   flex-shrink: 0;
   justify-content: flex-end;
 }
 
+.sim-top-btn,
 .glass-action-pill {
-  min-height: 36px;
-  padding: 6px 13px;
-  border-radius: 99px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  background: rgba(8, 14, 26, 0.76);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 5px 11px;
+  border-radius: 7px;
+  border: 1px solid var(--sim-border);
+  background: rgba(17, 24, 38, 0.78);
   color: var(--text-main);
-  font-size: 0.72rem;
-  font-weight: 800;
+  font-size: 0.68rem;
+  font-weight: 700;
   letter-spacing: 0.06em;
   white-space: nowrap;
   cursor: pointer;
-  backdrop-filter: blur(10px);
-  transition: transform 0.12s ease, border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color 0.14s ease, background 0.14s ease, transform 0.10s ease;
 }
 
+.sim-top-btn:hover,
 .glass-action-pill:hover {
-  border-color: var(--accent-cyan);
-  background: rgba(14, 25, 45, 0.90);
+  border-color: rgba(248, 250, 252, 0.55);
+  background: rgba(28, 38, 58, 0.92);
 }
 
+.sim-top-btn:active,
 .glass-action-pill:active {
-  transform: scale(0.96);
+  transform: scale(0.97);
 }
 
-.glass-action-pill.accent-pill {
-  border-color: rgba(0, 229, 255, 0.62);
-  color: var(--accent-cyan);
-  box-shadow: 0 0 16px rgba(0, 229, 255, 0.20);
+.sim-top-btn.icon-only {
+  padding: 5px 8px;
+  min-width: 34px;
 }
 
-.glass-action-pill.gold-pill {
-  border-color: rgba(255, 214, 0, 0.55);
-  color: var(--accent-gold);
+.sim-top-btn.career-pill {
+  border-color: rgba(245, 183, 0, 0.36);
 }
 
-/* Open Interactive 3D Hero Stage */
+.credits-chip {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(245, 183, 0, 0.14);
+  color: var(--sim-gold);
+  font-size: 0.64rem;
+  font-weight: 800;
+}
+
+.ui-icon {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: #cbd5e1;
+}
+
+/* Zone 2: Open Interactive 3D Hero Stage */
 .showroom-stage-spacer {
   pointer-events: auto;
   flex: 1 1 auto;
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  padding-bottom: 8px;
+  padding-bottom: 10px;
   cursor: grab;
   touch-action: none;
 }
@@ -369,30 +391,38 @@ body.arcade-shader-active #arcade-scanlines {
 
 .orbit-hint-chip {
   pointer-events: none;
-  padding: 4px 13px;
-  border-radius: 99px;
-  background: rgba(5, 10, 20, 0.48);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  background: rgba(8, 12, 20, 0.62);
+  border: 1px solid rgba(148, 163, 184, 0.18);
   font-size: 0.58rem;
-  font-weight: 800;
-  letter-spacing: 0.13em;
-  color: rgba(226, 238, 255, 0.78);
-  backdrop-filter: blur(5px);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: rgba(226, 232, 240, 0.82);
+  backdrop-filter: blur(6px);
+  transition: opacity 0.45s ease, transform 0.45s ease;
 }
 
-/* Bottom Championship Circuit Ribbon & Launch Pod */
+.orbit-hint-chip.faded-out {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+/* Zone 3: Clean Structured Bottom Race Dock */
 .showroom-bottom-dock {
   pointer-events: auto;
-  display: grid;
-  grid-template-columns: minmax(0, 1.68fr) minmax(275px, 0.95fr);
-  gap: 12px;
-  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .circuit-showcase-strip {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 7px;
+  gap: 8px;
 }
 
 .track-card {
@@ -404,15 +434,14 @@ body.arcade-shader-active #arcade-scanlines {
   align-items: stretch;
   gap: 2px;
   padding: 8px 10px;
-  border-radius: 13px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: linear-gradient(155deg, rgba(13, 22, 40, 0.82) 0%, rgba(6, 10, 20, 0.90) 100%);
+  border-radius: 8px;
+  border: 1px solid var(--sim-border);
+  background: rgba(11, 16, 26, 0.88);
   color: var(--text-main);
   text-align: left;
   cursor: pointer;
   backdrop-filter: blur(12px);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
-  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+  transition: border-color 0.14s ease, background 0.14s ease, transform 0.12s ease;
 }
 
 .track-card::before {
@@ -421,25 +450,23 @@ body.arcade-shader-active #arcade-scanlines {
   top: 0;
   left: 0;
   right: 0;
-  height: 3px;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.28), transparent);
-  opacity: 0.55;
+  height: 2px;
+  background: transparent;
+  transition: background 0.14s ease;
 }
 
 .track-card:hover {
-  border-color: rgba(0, 229, 255, 0.65);
-  transform: translateY(-2px);
+  border-color: rgba(248, 250, 252, 0.45);
+  background: rgba(17, 25, 40, 0.94);
 }
 
 .track-card.selected {
-  background: linear-gradient(150deg, rgba(0, 98, 210, 0.44) 0%, rgba(7, 17, 35, 0.94) 76%);
-  border: 1.5px solid var(--accent-cyan);
-  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.65), 0 0 22px rgba(0, 229, 255, 0.30);
+  background: rgba(20, 29, 46, 0.96);
+  border-color: rgba(248, 250, 252, 0.78);
 }
 
 .track-card.selected::before {
-  opacity: 1;
-  background: linear-gradient(90deg, var(--accent-red), var(--accent-gold), var(--accent-cyan));
+  background: var(--sim-fia-red);
 }
 
 .tc-top {
@@ -450,16 +477,20 @@ body.arcade-shader-active #arcade-scanlines {
 }
 
 .tc-flag {
-  font-size: 0.60rem;
-  font-weight: 900;
-  letter-spacing: 0.06em;
-  color: var(--accent-gold);
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #cbd5e1;
   white-space: nowrap;
 }
 
+.track-card.selected .tc-flag {
+  color: #ffffff;
+}
+
 .tc-len {
-  font-size: 0.56rem;
-  font-weight: 800;
+  font-size: 0.54rem;
+  font-weight: 700;
   color: var(--text-dim);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
@@ -467,59 +498,51 @@ body.arcade-shader-active #arcade-scanlines {
 
 .tc-svg {
   width: 100%;
-  height: 31px;
-  margin: 1px 0;
+  height: 28px;
+  margin: 2px 0;
   overflow: visible;
 }
 
 .tc-svg .tc-track-bg {
-  fill: rgba(0, 229, 255, 0.04);
-  stroke: rgba(3, 8, 18, 0.85);
-  stroke-width: 5.2;
+  fill: none;
+  stroke: rgba(2, 6, 14, 0.92);
+  stroke-width: 4.8;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
 .tc-svg .tc-track-line {
   fill: none;
-  stroke: rgba(176, 206, 242, 0.62);
-  stroke-width: 2.5;
+  stroke: rgba(148, 163, 184, 0.68);
+  stroke-width: 2.3;
   stroke-linecap: round;
   stroke-linejoin: round;
-  transition: stroke 0.18s ease, filter 0.18s ease;
+  transition: stroke 0.15s ease;
 }
 
 .tc-svg .tc-sf {
-  stroke: #ffffff;
+  stroke: #f8fafc;
   stroke-width: 2.0;
   stroke-linecap: round;
 }
 
 .tc-svg .tc-pole {
-  fill: var(--accent-red);
-  opacity: 0.75;
-}
-
-.track-card.selected .tc-svg .tc-track-bg {
-  fill: rgba(0, 229, 255, 0.11);
+  fill: var(--sim-fia-red);
 }
 
 .track-card.selected .tc-svg .tc-track-line {
-  stroke: var(--accent-cyan);
-  stroke-width: 2.9;
-  filter: drop-shadow(0 0 5px rgba(0, 229, 255, 0.82));
+  stroke: #ffffff;
+  stroke-width: 2.7;
 }
 
 .track-card.selected .tc-svg .tc-pole {
-  fill: #00ff88;
-  opacity: 1;
-  filter: drop-shadow(0 0 4px #00ff88);
+  fill: var(--sim-teal);
 }
 
 .tc-name {
   font-size: 0.72rem;
-  font-weight: 900;
-  color: #ffffff;
+  font-weight: 800;
+  color: #f8fafc;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -528,102 +551,174 @@ body.arcade-shader-active #arcade-scanlines {
 .tc-short {
   display: none;
   font-size: 0.62rem;
-  font-weight: 900;
+  font-weight: 800;
   letter-spacing: 0.05em;
-  color: #ffffff;
+  color: #f8fafc;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .tc-desc {
-  font-size: 0.62rem;
-  color: #b5c8e2;
+  font-size: 0.58rem;
+  color: var(--text-dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Right Launch & Quick-Setup Pod */
+/* Unified Session, Inline Brake Assist & Launch Bar */
 .showroom-launch-pod {
   display: flex;
-  flex-direction: column;
+  align-items: stretch;
   justify-content: space-between;
-  gap: 7px;
-  background: linear-gradient(160deg, rgba(10, 18, 34, 0.84) 0%, rgba(6, 11, 22, 0.92) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 14px;
-  padding: 8px 10px;
+  gap: 10px;
+  background: rgba(10, 14, 22, 0.92);
+  border: 1px solid var(--sim-border);
+  border-radius: 10px;
+  padding: 7px 9px;
   backdrop-filter: blur(14px);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+}
+
+.dock-session-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.dock-assist-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  background: rgba(17, 24, 38, 0.86);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  flex-shrink: 0;
+}
+
+.dock-cluster-lbl {
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.dock-seg-group {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 5px;
+  background: rgba(5, 8, 15, 0.85);
+}
+
+.dock-seg-btn {
+  min-height: 24px !important;
+  padding: 2px 9px !important;
+  border-radius: 4px !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  color: var(--text-dim) !important;
+  font-size: 0.62rem !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.06em;
+  box-shadow: none !important;
+}
+
+.dock-seg-btn.selected {
+  background: rgba(248, 250, 252, 0.14) !important;
+  color: #ffffff !important;
+  border-color: rgba(248, 250, 252, 0.36) !important;
+}
+
+.dock-seg-btn[data-cfg-assist="MIN"].selected {
+  color: var(--sim-teal) !important;
+  border-color: rgba(0, 210, 190, 0.55) !important;
+}
+
+.dock-seg-btn[data-cfg-assist="OFF"].selected {
+  color: #f8fafc !important;
+  border-color: rgba(225, 6, 0, 0.65) !important;
+}
+
+.dock-pills-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dock-quick-pill {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 4px 9px;
+  border-radius: 7px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(17, 24, 38, 0.72);
+  color: var(--text-main);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+
+.dock-quick-pill:hover {
+  border-color: rgba(248, 250, 252, 0.45);
+  background: rgba(25, 35, 54, 0.92);
+}
+
+.dq-kicker {
+  font-size: 0.48rem;
+  font-weight: 800;
+  letter-spacing: 0.10em;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.dq-val {
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  color: #f8fafc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .setup-summary-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 4px;
-  width: 100%;
-  padding: 5px 7px;
-  border-radius: 9px;
-  border: 1px solid rgba(0, 229, 255, 0.30);
-  background: rgba(11, 21, 38, 0.82);
-  color: var(--text-main);
-  cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease;
-}
-
-.setup-summary-bar:hover {
-  border-color: var(--accent-cyan);
-  background: rgba(16, 30, 54, 0.94);
-}
-
-.sum-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 6px;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  font-size: 0.58rem;
-  font-weight: 800;
-  letter-spacing: 0.03em;
-  color: #e4effd;
-  white-space: nowrap;
-}
-
-.sum-edit {
-  font-size: 0.58rem;
-  font-weight: 900;
-  color: var(--accent-cyan);
-  letter-spacing: 0.05em;
-  white-space: nowrap;
+  border-color: rgba(0, 210, 190, 0.34);
 }
 
 .launch-btn {
   position: relative;
   overflow: hidden;
-  width: 100%;
-  min-height: 46px;
-  padding: 11px 18px;
-  border: 1px solid rgba(255, 232, 145, 0.62);
-  border-radius: 11px;
-  background: linear-gradient(96deg, #ff1234 0%, #ff5e00 54%, #ffb300 100%);
+  flex: 0 0 auto;
+  min-width: 168px;
+  min-height: 44px;
+  padding: 10px 22px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  background: var(--sim-fia-red);
   color: #ffffff;
-  font-size: 1.02rem;
-  font-style: italic;
-  font-weight: 900;
-  letter-spacing: 0.11em;
+  font-size: 0.90rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.55);
   cursor: pointer;
-  box-shadow: 0 8px 28px rgba(255, 28, 56, 0.52);
-  transition: transform 0.10s ease, box-shadow 0.15s ease;
+  transition: background 0.14s ease, transform 0.10s ease;
 }
 
 .launch-btn:hover {
-  box-shadow: 0 10px 34px rgba(255, 65, 35, 0.72);
+  background: #f50a03;
 }
 
 .launch-btn:active {
@@ -636,54 +731,41 @@ body.arcade-shader-active #arcade-scanlines {
 }
 
 .launch-sheen {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: -65%;
-  width: 48%;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.38), transparent);
-  transform: skewX(-24deg);
-  animation: raceSheen 3.0s ease-in-out infinite;
-  pointer-events: none;
-}
-
-@keyframes raceSheen {
-  0%, 52% { left: -65%; }
-  100% { left: 132%; }
+  display: none !important;
 }
 
 /* ==========================================================================
-   SLIDE-OVER GARAGE & CHAMPIONSHIP RULES DRAWER
+   ORGANIZED 3-TAB SETTINGS & ENGINEERING MODAL/DRAWER
    ========================================================================== */
 .garage-backdrop {
   pointer-events: none;
   position: fixed;
   inset: 0;
   z-index: 55;
-  background: rgba(3, 6, 14, 0.0);
+  background: rgba(4, 7, 14, 0.0);
   display: flex;
   justify-content: flex-end;
   opacity: 0;
-  transition: opacity 0.22s ease, background 0.22s ease;
+  transition: opacity 0.20s ease, background 0.20s ease;
 }
 
 .garage-backdrop.open {
   pointer-events: auto;
   opacity: 1;
-  background: rgba(3, 6, 14, 0.54);
+  background: rgba(4, 7, 14, 0.62);
 }
 
 .garage-drawer {
-  width: min(460px, 94vw);
+  width: min(468px, 94vw);
   height: 100%;
-  background: rgba(7, 12, 23, 0.95);
-  border-left: 1px solid rgba(0, 229, 255, 0.42);
-  box-shadow: -24px 0 60px rgba(0, 0, 0, 0.85);
+  background: rgba(10, 14, 22, 0.97);
+  border-left: 1px solid rgba(148, 163, 184, 0.26);
+  box-shadow: -20px 0 52px rgba(0, 0, 0, 0.82);
   backdrop-filter: blur(18px);
   display: flex;
   flex-direction: column;
   transform: translateX(104%);
-  transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
   padding:
     max(12px, env(safe-area-inset-top))
     max(16px, env(safe-area-inset-right))
@@ -700,22 +782,66 @@ body.arcade-shader-active #arcade-scanlines {
   align-items: center;
   justify-content: space-between;
   padding-bottom: 10px;
-  border-bottom: 1px solid rgba(135, 185, 255, 0.22);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
 }
 
 .garage-kicker {
-  font-size: 0.60rem;
-  font-weight: 900;
-  letter-spacing: 0.16em;
-  color: var(--accent-cyan);
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: var(--sim-teal);
 }
 
 .garage-title {
-  font-size: 1.15rem;
-  font-style: italic;
-  font-weight: 900;
-  letter-spacing: 0.05em;
+  font-size: 1.08rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
   color: #ffffff;
+}
+
+/* 3-Tab Settings Navigation */
+.settings-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.settings-tab {
+  min-height: 34px;
+  padding: 6px 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(17, 24, 38, 0.65);
+  color: var(--text-dim);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.settings-tab:hover {
+  color: #f8fafc;
+  border-color: rgba(248, 250, 252, 0.35);
+}
+
+.settings-tab.selected {
+  background: rgba(248, 250, 252, 0.12);
+  color: #ffffff;
+  border-color: rgba(248, 250, 252, 0.52);
+  border-bottom: 2px solid var(--sim-fia-red);
+}
+
+.settings-panel[hidden] {
+  display: none !important;
+}
+
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .garage-scroll {
@@ -730,28 +856,32 @@ body.arcade-shader-active #arcade-scanlines {
 
 .garage-group {
   padding-bottom: 11px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
 }
 
 .garage-foot {
   padding-top: 10px;
-  border-top: 1px solid rgba(135, 185, 255, 0.22);
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.garage-foot .launch-btn {
+  width: 100%;
 }
 
 .cfg-label {
-  font-size: 0.68rem;
-  font-weight: 900;
-  letter-spacing: 0.11em;
-  color: var(--accent-cyan);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.10em;
+  color: #cbd5e1;
   text-transform: uppercase;
   margin-bottom: 6px;
 }
 
 .cfg-note {
-  font-size: 0.68rem;
+  font-size: 0.66rem;
   color: var(--text-dim);
-  margin-top: 5px;
-  line-height: 1.32;
+  margin-top: 6px;
+  line-height: 1.36;
 }
 
 .pill-row {
@@ -762,29 +892,46 @@ body.arcade-shader-active #arcade-scanlines {
 
 .cfg-btn {
   flex: 1 1 auto;
-  min-height: 36px;
+  min-height: 34px;
   padding: 6px 9px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(16, 26, 46, 0.84);
-  color: var(--text-main);
-  font-size: 0.73rem;
-  font-weight: 800;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.20);
+  background: rgba(17, 24, 38, 0.84);
+  color: var(--text-dim);
+  font-size: 0.69rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
   cursor: pointer;
-  transition: all 0.14s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: all 0.13s ease;
 }
 
 .cfg-btn:hover {
-  border-color: rgba(0, 229, 255, 0.62);
+  color: #f8fafc;
+  border-color: rgba(248, 250, 252, 0.42);
 }
 
 .cfg-btn.selected {
-  background: linear-gradient(135deg, #007cf0 0%, #00dfd8 100%);
-  color: #03101c;
-  border-color: #a6fbff;
-  font-weight: 900;
-  box-shadow: 0 0 14px rgba(0, 229, 255, 0.34);
+  background: rgba(0, 210, 190, 0.16);
+  color: #ffffff;
+  border-color: var(--sim-teal);
+  font-weight: 800;
 }
+
+.tire-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.tire-dot.soft { background: #ef4444; }
+.tire-dot.med { background: #facc15; }
+.tire-dot.hard { background: #f8fafc; }
+.tire-dot.inter { background: #22c55e; }
+.tire-dot.wet { background: #3b82f6; }
 
 /* ==========================================================================
    TOP F1 BROADCAST TELEMETRY BAR & DIGITAL 8-SPEED GEAR CLUSTER
@@ -4100,5 +4247,487 @@ body.retro-1982-active #right-telemetry-dock {
 @media (max-height: 380px) and (orientation: landscape) {
   .brand-wing-row {
     display: none;
+  }
+}
+
+
+/* ==========================================================================
+   2026 MOTORSPORT SIM TELEMETRY HUD, LIVE DELTA, PEDAL/ASSIST BARS & MFD
+   ========================================================================== */
+
+/* Hide Arcade Score/Top Card in 2026 Sim Mode (shown only in 1982 Retro) */
+body.sim-2026-active .hud-stat.stat-score {
+  display: none !important;
+}
+
+/* Live Lap Delta Readout & Center-Origin Progress Bar */
+.lap-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.delta-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.56rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+}
+
+.delta-pill.ahead {
+  background: rgba(16, 185, 129, 0.20);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.55);
+}
+
+.delta-pill.behind {
+  background: rgba(239, 68, 68, 0.20);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.55);
+}
+
+.delta-bar-track {
+  position: relative;
+  width: 100%;
+  height: 4px;
+  margin: 2px 0;
+  border-radius: 2px;
+  background: rgba(148, 163, 184, 0.16);
+  overflow: hidden;
+}
+
+.delta-bar-center {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1.5px;
+  background: rgba(248, 250, 252, 0.65);
+  transform: translateX(-50%);
+  z-index: 2;
+}
+
+#hud-delta-bar-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 0%;
+  background: #10b981;
+  transition: left 0.06s linear, width 0.06s linear, background-color 0.12s ease;
+}
+
+/* Live Throttle / Manual Brake / Brake-Assist Intervention Bars */
+.hud-pedal-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 34px;
+  padding: 0 2px;
+}
+
+.pbar-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  height: 100%;
+}
+
+.pbar-track {
+  position: relative;
+  width: 7px;
+  flex: 1 1 auto;
+  border-radius: 3px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  overflow: hidden;
+}
+
+.pbar-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 0%;
+  transition: height 0.03s linear;
+}
+
+.pbar-fill.throttle {
+  background: #00d2be;
+}
+
+.pbar-fill.brake-manual {
+  background: #ef4444;
+  z-index: 2;
+}
+
+.pbar-fill.brake-assist {
+  background: #f59e0b;
+  z-index: 1;
+}
+
+.pbar-lbl {
+  font-size: 0.44rem;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--text-dim);
+}
+
+/* Clean Top-Left Minimap Card (No Arcade Cyan Halo) */
+.minimap-card {
+  background: rgba(10, 14, 22, 0.86);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.46);
+}
+
+.minimap-gps-dot {
+  display: none !important;
+}
+
+/* Upgraded 2026 Sim Car MFD: 4-Tire Matrix + Top-Down Wing/Susp Damage SVG */
+.mfd-title {
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #cbd5e1;
+}
+
+.mfd-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.assist-mini-pill {
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.48rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  background: rgba(148, 163, 184, 0.14);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  color: #cbd5e1;
+}
+
+.assist-mini-pill.intervening {
+  background: rgba(245, 158, 11, 0.24);
+  border-color: #f59e0b;
+  color: #fde68a;
+}
+
+.mfd-chassis-matrix {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 6px;
+}
+
+.mfd-car-svg {
+  width: 32px;
+  height: 60px;
+  display: block;
+  justify-self: center;
+}
+
+.tire-cell {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+  padding: 3px 5px 5px;
+  border-radius: 5px;
+  background: rgba(8, 13, 23, 0.76);
+}
+
+.tire-cell-top,
+.tire-cell-bot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 3px;
+  line-height: 1.08;
+}
+
+.tire-cell .t-corner {
+  font-size: 0.48rem;
+  font-weight: 800;
+  color: #94a3b8;
+}
+
+.tire-cell .t-temp {
+  font-size: 0.56rem;
+  font-weight: 800;
+  color: #f8fafc;
+}
+
+.tire-cell .t-pct {
+  font-size: 0.50rem;
+  font-weight: 700;
+  color: #cbd5e1;
+}
+
+.tire-cell .t-flat {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: rgba(245, 158, 11, 0.26);
+  color: #fbbf24;
+  font-size: 0.43rem;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+}
+
+/* Clean Quick Action Pills */
+.hud-quick-actions .quick-pill {
+  font-size: 0.60rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+/* ==========================================================================
+   RESPONSIVE SIM MENU & MFD OVERRIDES (PORTRAIT & LANDSCAPE MOBILE)
+   ========================================================================== */
+
+/* Tablet & Medium Screens */
+@media (max-width: 1060px) and (min-height: 500px) {
+  .showroom-topbar {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 10px;
+  }
+  .showroom-brand {
+    flex: 1 1 auto;
+  }
+  .showroom-top-actions {
+    flex: 0 0 auto;
+  }
+  .showroom-circuit-pill {
+    display: none;
+  }
+}
+
+/* Mobile Portrait & Compact Screens */
+@media (max-width: 680px) and (orientation: portrait), (max-width: 540px) {
+  .showroom-topbar {
+    flex-direction: row !important;
+    flex-wrap: wrap !important;
+    align-items: center !important;
+    gap: 5px !important;
+    padding: 5px 8px !important;
+    min-height: 42px;
+  }
+  .showroom-brand {
+    flex: 1 1 100% !important;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .showroom-circuit-pill {
+    display: none !important;
+  }
+  .era-seg-btn {
+    min-height: 24px !important;
+    padding: 2px 8px !important;
+    font-size: 0.58rem !important;
+  }
+  .showroom-top-actions {
+    flex: 1 1 100% !important;
+    justify-content: space-between !important;
+    gap: 4px !important;
+  }
+  .sim-top-btn {
+    min-height: 28px;
+    padding: 3px 8px;
+    font-size: 0.60rem;
+  }
+  #btn-open-career {
+    flex: 1 1 auto;
+    justify-content: flex-start;
+  }
+  #btn-open-garage .pill-label,
+  #btn-menu-audio .pill-label {
+    display: none !important;
+  }
+
+  /* Bottom Dock on Portrait: Clean 3x2 Circuit Cards + Compact Assist/Start Pod */
+  .showroom-bottom-dock {
+    gap: 6px;
+  }
+  .circuit-showcase-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 5px;
+  }
+  .track-card {
+    padding: 4px 6px;
+  }
+  .showroom-launch-pod {
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px 8px;
+  }
+  .dock-session-controls {
+    width: 100%;
+    gap: 5px;
+  }
+  .dock-assist-cluster {
+    width: 100%;
+    justify-content: space-between;
+    padding: 3px 7px;
+  }
+  .dock-pills-row {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+  }
+  .dock-quick-pill {
+    padding: 3px 5px;
+  }
+  .dq-kicker {
+    font-size: 0.43rem;
+  }
+  .dq-val {
+    font-size: 0.54rem;
+  }
+  .showroom-launch-pod .launch-btn {
+    width: 100%;
+    min-height: 40px;
+    font-size: 0.86rem;
+  }
+
+  /* Symmetric 2x2 HUD Grid when Arcade Score is Hidden in 2026 Sim Mode */
+  body.sim-2026-active .top-hud-bar .hud-stat.center-timer {
+    grid-column: span 3;
+  }
+  body.sim-2026-active .top-hud-bar .hud-stat.stat-pos {
+    grid-column: span 3;
+  }
+
+  .hud-quick-actions .secondary-quick {
+    display: none !important;
+  }
+}
+
+/* Mobile Landscape (<=560px height): Single-Row Topbar + Side-by-Side Bottom Dock */
+@media (max-height: 560px) and (orientation: landscape), (min-width: 541px) and (max-height: 480px) {
+  .showroom-topbar {
+    min-height: 36px;
+    padding: 3px 8px;
+    gap: 6px;
+  }
+  .showroom-circuit-pill {
+    display: none !important;
+  }
+  .era-seg-btn {
+    min-height: 24px !important;
+    padding: 2px 8px !important;
+    font-size: 0.58rem !important;
+  }
+  .sim-top-btn {
+    min-height: 26px;
+    padding: 2px 7px;
+    font-size: 0.58rem;
+  }
+  #btn-open-garage .pill-label,
+  #btn-menu-audio .pill-label {
+    display: none !important;
+  }
+
+  .showroom-bottom-dock {
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(250px, 1fr);
+    gap: 6px;
+    align-items: stretch;
+  }
+  .showroom-launch-pod {
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 4px;
+    padding: 5px 7px;
+  }
+  .dock-assist-cluster {
+    width: 100%;
+    justify-content: space-between;
+    padding: 2px 6px;
+  }
+  .dock-seg-btn {
+    min-height: 20px !important;
+    padding: 1px 6px !important;
+    font-size: 0.56rem !important;
+  }
+  .dock-pills-row {
+    width: 100%;
+    gap: 3px;
+  }
+  .dock-quick-pill {
+    padding: 2px 5px;
+  }
+  .dq-kicker {
+    display: none;
+  }
+  .dq-val {
+    font-size: 0.52rem;
+  }
+  .showroom-launch-pod .launch-btn {
+    width: 100%;
+    min-height: 30px;
+    padding: 4px 10px;
+    font-size: 0.78rem;
+  }
+  .hud-quick-actions .secondary-quick {
+    display: none !important;
+  }
+}
+
+/* Keep Tire Temp °C & Top-Down Wing/Susp Damage SVG Visible on Mobile! */
+@media (max-width: 680px), (max-height: 560px) {
+  #right-telemetry-dock {
+    width: clamp(138px, 35vw, 166px);
+  }
+  .mfd-chassis-matrix {
+    grid-template-columns: minmax(0, 1fr) 24px;
+    gap: 4px;
+  }
+  .mfd-car-svg {
+    width: 22px;
+    height: 44px;
+  }
+  #telemetry-2026-panel .tires-4grid {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 2px;
+  }
+  #telemetry-2026-panel .tire-cell {
+    padding: 2px 3px 3px;
+    align-items: stretch;
+  }
+  #telemetry-2026-panel .tire-cell .t-temp {
+    display: inline !important;
+    font-size: 0.50rem;
+  }
+  #telemetry-2026-panel .tire-cell .t-corner {
+    display: inline !important;
+    font-size: 0.43rem;
+  }
+  #telemetry-2026-panel .tire-cell .t-pct {
+    display: none;
+  }
+  .hud-pedal-bars {
+    height: 24px;
+    gap: 2px;
+  }
+  .pbar-track {
+    width: 5px;
+  }
+  .delta-pill {
+    font-size: 0.48rem;
+    padding: 0 4px;
   }
 }

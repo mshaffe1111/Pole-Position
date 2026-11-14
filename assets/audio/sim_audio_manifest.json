@@ -1,0 +1,151 @@
+{
+  "sample_rate_hz": 44100,
+  "pcm_bits": 16,
+  "total_files": 13,
+  "total_bytes": 2852880,
+  "banks": [
+    {
+      "file": "engine_idle_loop.wav",
+      "channels": 1,
+      "sample_rate": 44100,
+      "frames": 105840,
+      "duration_sec": 2.4,
+      "bytes": 211724,
+      "peak_dbfs": -1.51,
+      "rms_dbfs": -12.37,
+      "seam_delta": 0.0
+    },
+    {
+      "file": "engine_mid_bark_loop.wav",
+      "channels": 1,
+      "sample_rate": 44100,
+      "frames": 105840,
+      "duration_sec": 2.4,
+      "bytes": 211724,
+      "peak_dbfs": -1.51,
+      "rms_dbfs": -9.1,
+      "seam_delta": 0.0
+    },
+    {
+      "file": "engine_high_scream_loop.wav",
+      "channels": 1,
+      "sample_rate": 44100,
+      "frames": 105840,
+      "duration_sec": 2.4,
+      "bytes": 211724,
+      "peak_dbfs": -1.51,
+      "rms_dbfs": -8.47,
+      "seam_delta": 0.0
+    },
+    {
+      "file": "engine_offthrottle_overrun_loop.wav",
+      "channels": 1,
+      "sample_rate": 44100,
+      "frames": 105840,
+      "duration_sec": 2.4,
+      "bytes": 211724,
+      "peak_dbfs": -1.51,
+      "rms_dbfs": -7.31,
+      "seam_delta": 0.0
+    },
+    {
+      "file": "gearbox_spur_whine_loop.wav",
+      "channels": 1,
+      "sample_rate": 44100,
+      "frames": 88200,
+      "duration_sec": 2.0,
+      "bytes": 176444,
+      "peak_dbfs": -1.1,
+      "rms_dbfs": -3.25,
+      "seam_delta": 0.0
+    },
+    {
+      "file": "tire_scrub_limit_loop.wav",
+      "channels": 1,
+      "sample_rate": 44100,
+      "frames": 88200,
+      "duration_sec": 2.0,
+      "bytes": 176444,
+      "peak_dbfs": -1.72,
+      "rms_dbfs": -15.02,
+      "seam_delta": 0.0
+    },
+    {
+      "file": "tire_lockup_screech_loop.wav",
+      "channels": 1,
+      "sample_rate": 44100,
+      "frames": 82908,
+      "duration_sec": 1.88,
+      "bytes": 165860,
+      "peak_dbfs": -1.72,
+      "rms_dbfs": -11.19,
+      "seam_delta": 0.0
+    },
+    {
+      "file": "curb_sawtooth_loop.wav",
+      "channels": 1,
+      "sample_rate": 44100,
+      "frames": 79344,
+      "duration_sec": 1.7992,
+      "bytes": 158732,
+      "peak_dbfs": -1.51,
+      "rms_dbfs": -10.99,
+      "seam_delta": 0.0
+    },
+    {
+      "file": "aero_wind_cockpit_loop.wav",
+      "channels": 2,
+      "sample_rate": 44100,
+      "frames": 105840,
+      "duration_sec": 2.4,
+      "bytes": 423404,
+      "peak_dbfs": -1.94,
+      "rms_dbfs": -14.25,
+      "seam_delta": 0.0
+    },
+    {
+      "file": "brake_carbon_rotor_loop.wav",
+      "channels": 1,
+      "sample_rate": 44100,
+      "frames": 79380,
+      "duration_sec": 1.8,
+      "bytes": 158804,
+      "peak_dbfs": -2.16,
+      "rms_dbfs": -15.68,
+      "seam_delta": 0.0
+    },
+    {
+      "file": "crowd_grandstand_roar_loop.wav",
+      "channels": 2,
+      "sample_rate": 44100,
+      "frames": 123479,
+      "duration_sec": 2.8,
+      "bytes": 493960,
+      "peak_dbfs": -1.94,
+      "rms_dbfs": -14.66,
+      "seam_delta": 0.0
+    },
+    {
+      "file": "ir_carbon_cockpit.wav",
+      "channels": 2,
+      "sample_rate": 44100,
+      "frames": 12348,
+      "duration_sec": 0.28,
+      "bytes": 49436,
+      "peak_dbfs": -2.85,
+      "rms_dbfs": -25.04,
+      "seam_delta": 0.0
+    },
+    {
+      "file": "ir_grand_prix_valley.wav",
+      "channels": 2,
+      "sample_rate": 44100,
+      "frames": 50714,
+      "duration_sec": 1.15,
+      "bytes": 202900,
+      "peak_dbfs": -3.61,
+      "rms_dbfs": -31.45,
+      "seam_delta": 0.0
+    }
+  ]
+}

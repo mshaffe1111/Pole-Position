@@ -1,7 +1,7 @@
 // ============================================================================
 // RACE PHANATIC F1 — POLE POSITION 2026: RETRO GRAND PRIX
-// Blender GLB Asset Loader, Clearcoat PBR F1 Car Rig, Motorsport Livery Decals,
-// 3D First-Person Cockpit + Live OLED Display, Aero/Gravel VFX & Rigged Pit Crew
+// Motorsport PBR F1 Car Rig, Physical Damage & Tire Conditioning, Cosworth
+// PCU-8D Cockpit OLED, Slotted Rotor Blackbody Glow, Realistic Mist/Smoke VFX
 // ============================================================================
 
 import * as THREE from 'three';
@@ -9,7 +9,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { TIRE_COMPOUNDS, PIT_LANE_CONFIG } from './config.js';
 
 // ============================================================================
-// SHARED PROCEDURAL AAA PBR TEXTURES & UV PROJECTORS (CACHED — ZERO GPU LEAKS)
+// SHARED PROCEDURAL MOTORSPORT PBR TEXTURES & UV PROJECTORS (ZERO GPU LEAKS)
 // ============================================================================
 let _sharedShadowTex = null;
 function getFeatheredShadowTexture() {
@@ -24,9 +24,9 @@ function getFeatheredShadowTexture() {
   ctx.save();
   ctx.scale(1.0, 2.0);
   const gCore = ctx.createRadialGradient(128, 128, 10, 128, 128, 118);
-  gCore.addColorStop(0.0,  'rgba(1, 2, 5, 0.97)');
-  gCore.addColorStop(0.46, 'rgba(2, 4, 9, 0.84)');
-  gCore.addColorStop(0.74, 'rgba(3, 6, 12, 0.36)');
+  gCore.addColorStop(0.0,  'rgba(1, 2, 5, 0.96)');
+  gCore.addColorStop(0.46, 'rgba(2, 4, 9, 0.82)');
+  gCore.addColorStop(0.74, 'rgba(3, 6, 12, 0.34)');
   gCore.addColorStop(1.0,  'rgba(3, 6, 12, 0.0)');
   ctx.fillStyle = gCore;
   ctx.fillRect(0, 0, 256, 256);
@@ -34,11 +34,11 @@ function getFeatheredShadowTexture() {
 
   // Central flat-bottom Venturi floor plank dark spine
   const plankGrad = ctx.createLinearGradient(64, 0, 192, 0);
-  plankGrad.addColorStop(0.0, 'rgba(1, 2, 6, 0.0)');
-  plankGrad.addColorStop(0.25, 'rgba(1, 2, 6, 0.55)');
+  plankGrad.addColorStop(0.0,  'rgba(1, 2, 6, 0.0)');
+  plankGrad.addColorStop(0.25, 'rgba(1, 2, 6, 0.54)');
   plankGrad.addColorStop(0.50, 'rgba(0, 1, 4, 0.72)');
-  plankGrad.addColorStop(0.75, 'rgba(1, 2, 6, 0.55)');
-  plankGrad.addColorStop(1.0, 'rgba(1, 2, 6, 0.0)');
+  plankGrad.addColorStop(0.75, 'rgba(1, 2, 6, 0.54)');
+  plankGrad.addColorStop(1.0,  'rgba(1, 2, 6, 0.0)');
   ctx.fillStyle = plankGrad;
   ctx.fillRect(58, 92, 140, 328);
 
@@ -50,7 +50,7 @@ function getFeatheredShadowTexture() {
   for (const [wx, wy] of wheelSpots) {
     const gw = ctx.createRadialGradient(wx, wy, 3, wx, wy, 42);
     gw.addColorStop(0.0,  'rgba(0, 1, 3, 0.88)');
-    gw.addColorStop(0.55, 'rgba(1, 2, 6, 0.46)');
+    gw.addColorStop(0.55, 'rgba(1, 2, 6, 0.45)');
     gw.addColorStop(1.0,  'rgba(1, 2, 6, 0.0)');
     ctx.fillStyle = gw;
     ctx.fillRect(wx - 44, wy - 44, 88, 88);
@@ -84,16 +84,15 @@ function getCarbonWeaveMaps() {
   bumpC.height = size;
   const bCtx = bumpC.getContext('2d');
 
-  dCtx.fillStyle = '#0e1118';
+  dCtx.fillStyle = '#0f1218';
   dCtx.fillRect(0, 0, size, size);
   nCtx.fillStyle = 'rgb(128, 128, 255)';
   nCtx.fillRect(0, 0, size, size);
-  rCtx.fillStyle = '#5c5c5c';
+  rCtx.fillStyle = '#686868';
   rCtx.fillRect(0, 0, size, size);
   bCtx.fillStyle = '#585858';
   bCtx.fillRect(0, 0, size, size);
 
-  // High-frequency 3K 2x2 diagonal twill carbon-fiber weave (albedo + tangent normal + roughness + bump)
   const step = 8;
   for (let y = 0; y < size; y += step) {
     for (let x = 0; x < size; x += step) {
@@ -102,12 +101,12 @@ function getCarbonWeaveMaps() {
       const diag = ((cellX + cellY) % 4 + 4) % 4;
       const warpTow = diag < 2;
 
-      dCtx.fillStyle = warpTow ? '#232a38' : '#0a0d13';
+      dCtx.fillStyle = warpTow ? '#212733' : '#0c0f15';
       dCtx.fillRect(x, y, step - 1, step - 1);
-      dCtx.fillStyle = warpTow ? '#323c4f' : '#131821';
+      dCtx.fillStyle = warpTow ? '#2d3544' : '#141922';
       dCtx.fillRect(x + 1, y + 1, step - 2, (step / 2) - 1);
 
-      dCtx.fillStyle = warpTow ? 'rgba(185, 205, 238, 0.15)' : 'rgba(4, 7, 12, 0.28)';
+      dCtx.fillStyle = warpTow ? 'rgba(175, 192, 218, 0.12)' : 'rgba(4, 7, 12, 0.26)';
       if (warpTow) {
         dCtx.fillRect(x + 1, y + 2, step - 2, 1);
         dCtx.fillRect(x + 1, y + 5, step - 2, 1);
@@ -116,20 +115,20 @@ function getCarbonWeaveMaps() {
         dCtx.fillRect(x + 5, y + 1, 1, step - 2);
       }
 
-      const nx = warpTow ? 148 : 108;
-      const ny = (diag === 0 || diag === 3) ? 148 : 108;
-      nCtx.fillStyle = `rgb(${nx}, ${ny}, 245)`;
+      const nx = warpTow ? 146 : 110;
+      const ny = (diag === 0 || diag === 3) ? 146 : 110;
+      nCtx.fillStyle = `rgb(${nx}, ${ny}, 246)`;
       nCtx.fillRect(x, y, step - 1, step - 1);
-      nCtx.fillStyle = warpTow ? 'rgb(166, 136, 250)' : 'rgb(112, 152, 245)';
+      nCtx.fillStyle = warpTow ? 'rgb(162, 136, 250)' : 'rgb(114, 150, 246)';
       nCtx.fillRect(x + 1, y + 1, step - 3, step - 3);
 
-      rCtx.fillStyle = warpTow ? '#303030' : '#4a4a4a';
+      rCtx.fillStyle = warpTow ? '#484848' : '#646464';
       rCtx.fillRect(x + 1, y + 1, step - 2, step - 2);
-      rCtx.fillStyle = '#8e8e8e';
+      rCtx.fillStyle = '#8f8f8f';
       rCtx.fillRect(x, y, step, 1);
       rCtx.fillRect(x, y, 1, step);
 
-      bCtx.fillStyle = warpTow ? '#d4d4d4' : '#343434';
+      bCtx.fillStyle = warpTow ? '#cccccc' : '#383838';
       bCtx.fillRect(x, y, step - 1, step - 1);
     }
   }
@@ -152,49 +151,205 @@ function getCarbonWeaveMaps() {
   return _sharedCarbonMaps;
 }
 
-let _sharedTireMaps = null;
-function getTireTreadMaps() {
-  if (_sharedTireMaps) return _sharedTireMaps;
+// ============================================================================
+// 5-STAGE PIRELLI P-ZERO TREAD WEAR, GRAINING & BLISTERING TEXTURE LUT
+// Stage 0: Fresh mould-sheen slick (life > 0.78)
+// Stage 1: Scrubbed matte working tread (0.55 < life <= 0.78)
+// Stage 2: Lateral graining wavelets & wear band (0.35 < life <= 0.55)
+// Stage 3: Overheated dark thermal blistering pockmarks (0.20 < life <= 0.35)
+// Stage 4: Severe blistering + exposed dark carcass cord band (life <= 0.20)
+// ============================================================================
+let _tireWearStageMaps = null;
+function getTireWearStageMaps() {
+  if (_tireWearStageMaps) return _tireWearStageMaps;
+  _tireWearStageMaps = [];
+
+  const detRand = (seed) => {
+    const x = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  };
+
+  for (let stage = 0; stage < 5; stage++) {
+    const c = document.createElement('canvas');
+    c.width = 128;
+    c.height = 128;
+    const ctx = c.getContext('2d');
+
+    const baseColors = ['#15171b', '#191c21', '#1e2127', '#1c1e23', '#1a1c20'];
+    ctx.fillStyle = baseColors[stage];
+    ctx.fillRect(0, 0, 128, 128);
+
+    // Fine vulcanized rubber micro-grain
+    const grainCount = 1400 + stage * 420;
+    for (let i = 0; i < grainCount; i++) {
+      const rx = detRand(i * 1.7 + stage * 53.0) * 128;
+      const ry = detRand(i * 2.9 + stage * 91.0) * 128;
+      const v = (stage === 0 ? 18 : 22 + stage * 4) + Math.floor(detRand(i * 4.3) * 18);
+      ctx.fillStyle = `rgb(${v},${v + 1},${v + 2})`;
+      ctx.fillRect(rx, ry, 2, stage >= 2 ? 4 : 2);
+    }
+
+    // Subtle circumferential wear-indicator grooves
+    ctx.fillStyle = `rgba(8, 9, 12, ${Math.max(0.12, 0.48 - stage * 0.09)})`;
+    for (const gx of [26, 54, 74, 102]) {
+      ctx.fillRect(gx, 0, 2, 128);
+    }
+
+    // Stage 2+: Lateral graining shear ripples across working shoulder
+    if (stage >= 2) {
+      ctx.strokeStyle = 'rgba(48, 52, 60, 0.36)';
+      ctx.lineWidth = 1.4;
+      for (let y = 2; y < 128; y += 6) {
+        ctx.beginPath();
+        ctx.moveTo(14, y);
+        ctx.quadraticCurveTo(42, y + 3, 68, y - 1);
+        ctx.stroke();
+      }
+    }
+
+    // Stage 3+: Dark thermal blistering band & crater pockmarks along loaded inner-center rib
+    if (stage >= 3) {
+      const blisterGrad = ctx.createLinearGradient(34, 0, 88, 0);
+      blisterGrad.addColorStop(0.0, 'rgba(10, 11, 14, 0.0)');
+      blisterGrad.addColorStop(0.35, 'rgba(7, 8, 10, 0.68)');
+      blisterGrad.addColorStop(0.65, 'rgba(9, 10, 13, 0.72)');
+      blisterGrad.addColorStop(1.0, 'rgba(10, 11, 14, 0.0)');
+      ctx.fillStyle = blisterGrad;
+      ctx.fillRect(32, 0, 58, 128);
+
+      const pockCount = stage === 3 ? 42 : 85;
+      for (let p = 0; p < pockCount; p++) {
+        const px = 34 + detRand(p * 7.1 + stage * 19.0) * 52;
+        const py = detRand(p * 11.3 + stage * 37.0) * 128;
+        const pr = 1.4 + detRand(p * 5.7) * 2.4;
+        ctx.fillStyle = 'rgba(5, 6, 8, 0.85)';
+        ctx.beginPath();
+        ctx.arc(px, py, pr, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(58, 61, 68, 0.42)';
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+      }
+    }
+
+    // Stage 4 (life <= 0.20): Subtle dark-bronze/graphite kevlar-cord wear band on inner shoulder
+    if (stage >= 4) {
+      const cordGrad = ctx.createLinearGradient(18, 0, 42, 0);
+      cordGrad.addColorStop(0.0, 'rgba(46, 40, 34, 0.0)');
+      cordGrad.addColorStop(0.45, 'rgba(68, 58, 46, 0.65)');
+      cordGrad.addColorStop(0.75, 'rgba(56, 49, 40, 0.55)');
+      cordGrad.addColorStop(1.0, 'rgba(46, 40, 34, 0.0)');
+      ctx.fillStyle = cordGrad;
+      ctx.fillRect(18, 0, 24, 128);
+
+      ctx.fillStyle = 'rgba(92, 80, 64, 0.35)';
+      for (let y = 0; y < 128; y += 3) {
+        ctx.fillRect(25 + (y % 4), y, 8, 1);
+      }
+    }
+
+    const map = new THREE.CanvasTexture(c);
+    map.wrapS = THREE.RepeatWrapping;
+    map.wrapT = THREE.RepeatWrapping;
+    map.repeat.set(1, 3);
+    map.colorSpace = THREE.SRGBColorSpace;
+    _tireWearStageMaps.push(map);
+  }
+
+  return _tireWearStageMaps;
+}
+
+let _sharedScuffTex = null;
+function getCarbonScuffTexture() {
+  if (_sharedScuffTex) return _sharedScuffTex;
   const c = document.createElement('canvas');
   c.width = 128;
-  c.height = 128;
+  c.height = 64;
   const ctx = c.getContext('2d');
-  // Rich dark vulcanized F1 racing slick rubber (#141518)
-  ctx.fillStyle = '#141518';
-  ctx.fillRect(0, 0, 128, 128);
+  ctx.clearRect(0, 0, 128, 64);
 
-  for (let i = 0; i < 1800; i++) {
-    const x = Math.random() * 128;
-    const y = Math.random() * 128;
-    const v = 14 + Math.floor(Math.random() * 18);
-    ctx.fillStyle = `rgb(${v},${v + 1},${v + 3})`;
-    ctx.fillRect(x, y, 2, 3);
-  }
-  ctx.fillStyle = 'rgba(6, 7, 10, 0.50)';
-  for (const gx of [24, 52, 76, 104]) {
-    ctx.fillRect(gx, 0, 2, 128);
-  }
-  ctx.fillStyle = 'rgba(38, 42, 50, 0.24)';
-  for (let y = 0; y < 128; y += 16) {
-    ctx.fillRect(10, y, 108, 2);
+  const mask = ctx.createRadialGradient(64, 32, 6, 64, 32, 58);
+  mask.addColorStop(0.0, 'rgba(26, 28, 33, 0.88)');
+  mask.addColorStop(0.65, 'rgba(34, 37, 43, 0.58)');
+  mask.addColorStop(1.0, 'rgba(20, 22, 26, 0.0)');
+  ctx.fillStyle = mask;
+  ctx.fillRect(0, 0, 128, 64);
+
+  // Longitudinal tarmac/barrier abrasion striations + exposed pale gray carbon fibers
+  for (let i = 0; i < 42; i++) {
+    const y = 8 + ((i * 17) % 48);
+    const x0 = 6 + ((i * 23) % 34);
+    const len = 36 + ((i * 19) % 68);
+    ctx.fillStyle = i % 3 === 0 ? 'rgba(148, 154, 164, 0.44)' : 'rgba(12, 14, 18, 0.55)';
+    ctx.fillRect(x0, y, len, i % 4 === 0 ? 2 : 1);
   }
 
-  const map = new THREE.CanvasTexture(c);
-  map.wrapS = THREE.RepeatWrapping;
-  map.wrapT = THREE.RepeatWrapping;
-  map.repeat.set(1, 3);
-  map.colorSpace = THREE.SRGBColorSpace;
+  _sharedScuffTex = new THREE.CanvasTexture(c);
+  _sharedScuffTex.colorSpace = THREE.SRGBColorSpace;
+  return _sharedScuffTex;
+}
 
-  _sharedTireMaps = { map };
-  return _sharedTireMaps;
+// Wispy turbulent FBM cloud puff texture for realistic wet tire mist & dry lockup smoke (zero round neon blobs!)
+let _sharedMistPuffTex = null;
+function getTurbulentMistTexture() {
+  if (_sharedMistPuffTex) return _sharedMistPuffTex;
+  const size = 128;
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  const data = img.data;
+
+  const hash = (x, y) => {
+    const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  };
+  const vnoise = (x, y) => {
+    const ix = Math.floor(x);
+    const iy = Math.floor(y);
+    const fx = x - ix;
+    const fy = y - iy;
+    const ux = fx * fx * (3.0 - 2.0 * fx);
+    const uy = fy * fy * (3.0 - 2.0 * fy);
+    const a = hash(ix, iy);
+    const b = hash(ix + 1, iy);
+    const c0 = hash(ix, iy + 1);
+    const d = hash(ix + 1, iy + 1);
+    return (a + (b - a) * ux) + ((c0 + (d - c0) * ux) - (a + (b - a) * ux)) * uy;
+  };
+  const fbm = (x, y) =>
+    vnoise(x, y) * 0.52 +
+    vnoise(x * 2.07 + 5.2, y * 2.07 - 3.1) * 0.28 +
+    vnoise(x * 4.15 - 2.4, y * 4.15 + 7.7) * 0.14 +
+    vnoise(x * 8.3 + 1.1, y * 8.3 + 2.9) * 0.06;
+
+  for (let py = 0; py < size; py++) {
+    for (let px = 0; px < size; px++) {
+      const nx = (px / (size - 1)) * 2.0 - 1.0;
+      const ny = (py / (size - 1)) * 2.0 - 1.0;
+      const r = Math.hypot(nx, ny);
+      const radialFalloff = Math.max(0.0, 1.0 - r);
+      const smoothFalloff = radialFalloff * radialFalloff * (3.0 - 2.0 * radialFalloff);
+      const turb = fbm((nx + 1.5) * 2.4, (ny + 1.5) * 2.4);
+      const density = Math.max(0.0, Math.min(1.0, smoothFalloff * (0.42 + turb * 0.92) - (1.0 - smoothFalloff) * 0.18));
+      const shade = Math.round(226 + turb * 29);
+      const idx = (py * size + px) * 4;
+      data[idx] = shade;
+      data[idx + 1] = Math.min(255, shade + 2);
+      data[idx + 2] = Math.min(255, shade + 5);
+      data[idx + 3] = Math.round(density * 255);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  _sharedMistPuffTex = new THREE.CanvasTexture(c);
+  _sharedMistPuffTex.colorSpace = THREE.SRGBColorSpace;
+  return _sharedMistPuffTex;
 }
 
 // ============================================================================
 // HIGH-RES PROCEDURAL MOTORSPORT LIVERY DECAL ATLAS (512x512, CACHED PER TEAM)
-// Top planform (v=0.32..1.0): Twin Scuderia stripes, #1 Nose & Engine Roundels,
-// VELOCE / P-ZERO nose badges.
-// Sidepod flank (v=0.00..0.32): Exposed 3K carbon undercut skirt, diagonal slash,
-// cooling gill louver accents & bold PHANATIC / MGU-K HYBRID sponsor wordmarks.
 // ============================================================================
 const _liveryTexCache = new Map();
 function colorToHexStr(colVal, fallback = '#d40814') {
@@ -221,24 +376,18 @@ function getMotorsportLiveryTexture(primaryVal, accentVal = 0xffffff, trimVal = 
   c.height = H;
   const ctx = c.getContext('2d');
 
-  // 1. Rich saturated automotive basecoat across entire atlas
   ctx.fillStyle = pHex;
   ctx.fillRect(0, 0, W, H);
 
-  // Subtle deeper flank shading along outer edges for sculptural curvature
   const topEdgeShade = ctx.createLinearGradient(0, 0, W, 0);
-  topEdgeShade.addColorStop(0.00, 'rgba(0, 0, 0, 0.22)');
+  topEdgeShade.addColorStop(0.00, 'rgba(0, 0, 0, 0.20)');
   topEdgeShade.addColorStop(0.18, 'rgba(0, 0, 0, 0.00)');
   topEdgeShade.addColorStop(0.82, 'rgba(0, 0, 0, 0.00)');
-  topEdgeShade.addColorStop(1.00, 'rgba(0, 0, 0, 0.22)');
+  topEdgeShade.addColorStop(1.00, 'rgba(0, 0, 0, 0.20)');
   ctx.fillStyle = topEdgeShade;
   ctx.fillRect(0, 0, W, Math.floor(H * 0.68));
 
-  // --------------------------------------------------------------------------
-  // REGION A (Canvas y = 0..348 -> UV v = 1.00..0.32): TOP PLANFORM ATLAS
-  // y=8 is Nose Tip (v=0.98), y=340 is Engine-Cover Tail (v=0.33)
-  // --------------------------------------------------------------------------
-  // Twin Scuderia Racing Stripes + Trim Pin-Stripes along Monocoque & Engine Spine
+  // REGION A: TOP PLANFORM ATLAS
   ctx.fillStyle = aHex;
   ctx.fillRect(241, 10, 11, 332);
   ctx.fillRect(260, 10, 11, 332);
@@ -246,7 +395,6 @@ function getMotorsportLiveryTexture(primaryVal, accentVal = 0xffffff, trimVal = 
   ctx.fillRect(236, 10, 4, 332);
   ctx.fillRect(272, 10, 4, 332);
 
-  // Swept Sidepod Shoulder Chevrons on Top Planform
   ctx.strokeStyle = aHex;
   ctx.lineWidth = 6;
   ctx.beginPath();
@@ -267,7 +415,7 @@ function getMotorsportLiveryTexture(primaryVal, accentVal = 0xffffff, trimVal = 
   ctx.lineTo(W - 176, 260);
   ctx.stroke();
 
-  // Nose Cone Championship Roundel (#1 / #carNum) at y=84 (z ~ -1.35m)
+  // Nose Cone Championship Roundel
   ctx.save();
   ctx.beginPath();
   ctx.arc(256, 84, 32, 0, Math.PI * 2);
@@ -284,7 +432,6 @@ function getMotorsportLiveryTexture(primaryVal, accentVal = 0xffffff, trimVal = 
   ctx.fillText(String(num), 256, 86);
   ctx.restore();
 
-  // Nose Tip Scuderia Crest & P-ZERO / VELOCE Nose Sponsor Wordmarks
   ctx.fillStyle = tHex;
   ctx.fillRect(244, 24, 24, 14);
   ctx.fillStyle = '#11141a';
@@ -296,7 +443,7 @@ function getMotorsportLiveryTexture(primaryVal, accentVal = 0xffffff, trimVal = 
   ctx.font = '900 14px "Segoe UI", Arial, sans-serif';
   ctx.fillText('VELOCE', 256, 134);
 
-  // Engine Cover Shark-Fin Championship Roundel at y=254
+  // Engine Cover Shark-Fin Roundel
   ctx.save();
   ctx.beginPath();
   ctx.arc(256, 254, 28, 0, Math.PI * 2);
@@ -312,7 +459,6 @@ function getMotorsportLiveryTexture(primaryVal, accentVal = 0xffffff, trimVal = 
   ctx.fillText(String(num), 256, 256);
   ctx.restore();
 
-  // Top Sidepod Cooling Louver Gill Slats (8 dark carbon vents per side)
   ctx.fillStyle = 'rgba(10, 13, 19, 0.85)';
   for (let g = 0; g < 8; g++) {
     const gy = 188 + g * 11;
@@ -320,12 +466,7 @@ function getMotorsportLiveryTexture(primaryVal, accentVal = 0xffffff, trimVal = 
     ctx.fillRect(W - 178, gy, 36, 5);
   }
 
-  // --------------------------------------------------------------------------
-  // REGION B (Canvas y = 348..512 -> UV v = 0.32..0.00): SIDEPOD FLANK ATLAS
-  // Bottom y = 456..512 (v = 0.00..0.11): Exposed 3K Carbon-Fiber Floor Skirt!
-  // Middle y = 368..454 (v = 0.11..0.28): PHANATIC & MGU-K HYBRID Sponsor Band!
-  // --------------------------------------------------------------------------
-  // Exposed 3K Carbon-Fiber Lower Sidepod Undercut & Bargeboard Band
+  // REGION B: SIDEPOD FLANK ATLAS
   ctx.fillStyle = '#10141d';
   ctx.fillRect(0, 454, W, 58);
   for (let y = 456; y < 512; y += 6) {
@@ -335,13 +476,11 @@ function getMotorsportLiveryTexture(primaryVal, accentVal = 0xffffff, trimVal = 
       ctx.fillRect(x, y, 5, 5);
     }
   }
-  // Crisp Trim/Accent Pinstripe separating Painted Sidepod from Carbon Undercut
   ctx.fillStyle = tHex;
   ctx.fillRect(0, 449, W, 5);
   ctx.fillStyle = aHex;
   ctx.fillRect(0, 444, W, 5);
 
-  // Dynamic Motorsport Diagonal Sidepod Slash
   ctx.fillStyle = aHex;
   ctx.beginPath();
   ctx.moveTo(46, 444);
@@ -360,10 +499,9 @@ function getMotorsportLiveryTexture(primaryVal, accentVal = 0xffffff, trimVal = 
   ctx.closePath();
   ctx.fill();
 
-  // Bold Sidepod Sponsor Wordmark: PHANATIC + MGU-K HYBRID + #carNum
   ctx.save();
   ctx.fillStyle = '#ffffff';
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.50)';
   ctx.shadowBlur = 3;
   ctx.font = 'italic 900 40px "Segoe UI", Impact, Arial, sans-serif';
   ctx.textAlign = 'left';
@@ -396,12 +534,10 @@ function getWingSponsorTexture(accentVal = 0xffffff, primaryVal = 0xd40814) {
   ctx.fillStyle = aHex;
   ctx.fillRect(0, 0, 512, 128);
 
-  // Leading/trailing racing edge trim
   ctx.fillStyle = pHex;
   ctx.fillRect(0, 0, 512, 14);
   ctx.fillRect(0, 114, 512, 14);
 
-  // Contrast wordmark color (dark charcoal on light wings, crisp white on dark wings)
   const colObj = new THREE.Color(aHex);
   const luma = colObj.r * 0.299 + colObj.g * 0.587 + colObj.b * 0.114;
   ctx.fillStyle = luma > 0.45 ? '#0e121a' : '#ffffff';
@@ -417,7 +553,6 @@ function getWingSponsorTexture(accentVal = 0xffffff, primaryVal = 0xd40814) {
   return tex;
 }
 
-// Deterministic Motorsport UV Projectors (replaces scrambled smart_project islands!)
 function projectMotorsportBodyUVs(sourceGeo, flipLegacyAxes = false) {
   if (!sourceGeo || !sourceGeo.attributes?.position) return sourceGeo;
   const geo = sourceGeo.clone();
@@ -436,7 +571,6 @@ function projectMotorsportBodyUVs(sourceGeo, flipLegacyAxes = false) {
     const ny = nrm.getY(i);
 
     if (Math.abs(nx) > Math.abs(ny) * 1.18 && y < 0.56) {
-      // Sidepod / monocoque flank -> Region B (UV v = 0.01..0.31), non-mirrored left-to-right!
       const uRaw = nx < 0
         ? (z + 1.35) / 2.95
         : (1.60 - z) / 2.95;
@@ -445,7 +579,6 @@ function projectMotorsportBodyUVs(sourceGeo, flipLegacyAxes = false) {
       uvs[i * 2] = u;
       uvs[i * 2 + 1] = v;
     } else {
-      // Top planform (nose, halo fairing, sidepod tops, engine cover) -> Region A (UV v = 0.33..0.99)
       const u = Math.max(0.02, Math.min(0.98, x / 1.44 + 0.5));
       const v = 0.33 + 0.66 * Math.max(0.0, Math.min(1.0, (2.08 - z) / 4.38));
       uvs[i * 2] = u;
@@ -491,7 +624,6 @@ function projectPlanarOledUVs(sourceGeo) {
   return geo;
 }
 
-// Self-contained SkinnedMesh + Skeleton cloner (zero external SkeletonUtils dependency!)
 function cloneSkinnedGroup(sourceRoot) {
   const clone = sourceRoot.clone(true);
   const srcSkinned = [];
@@ -533,53 +665,35 @@ function getBrakeRotorTexture() {
   c.height = 128;
   const ctx = c.getContext('2d');
 
-  ctx.fillStyle = '#1a1614';
+  ctx.fillStyle = '#080707';
   ctx.fillRect(0, 0, 128, 128);
 
-  const g = ctx.createRadialGradient(64, 64, 20, 64, 64, 60);
-  g.addColorStop(0.0,  '#121010');
-  g.addColorStop(0.25, '#ff9d2e');
-  g.addColorStop(0.68, '#ff5500');
-  g.addColorStop(0.95, '#d92600');
-  g.addColorStop(1.0,  '#22120c');
+  // Radially banded carbon-carbon friction ring for physical blackbody incandescence
+  const g = ctx.createRadialGradient(64, 64, 18, 64, 64, 61);
+  g.addColorStop(0.0,  '#050404');
+  g.addColorStop(0.28, '#ffb048');
+  g.addColorStop(0.64, '#ff6210');
+  g.addColorStop(0.92, '#cf2800');
+  g.addColorStop(1.0,  '#140805');
   ctx.fillStyle = g;
   ctx.beginPath();
-  ctx.arc(64, 64, 60, 0, Math.PI * 2);
+  ctx.arc(64, 64, 61, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.fillStyle = '#2b1208';
-  for (let i = 0; i < 18; i++) {
-    const a = (i / 18) * Math.PI * 2;
-    for (const r of [32, 42, 51]) {
-      const hx = 64 + Math.cos(a + r * 0.02) * r;
-      const hy = 64 + Math.sin(a + r * 0.02) * r;
-      ctx.beginPath();
-      ctx.arc(hx, hy, 2.1, 0, Math.PI * 2);
-      ctx.fill();
-    }
+  // Slotted & cross-drilled cooling vanes (stay darker than friction face)
+  ctx.strokeStyle = '#1f0b04';
+  ctx.lineWidth = 2.0;
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(64 + Math.cos(a) * 24, 64 + Math.sin(a) * 24);
+    ctx.lineTo(64 + Math.cos(a + 0.16) * 58, 64 + Math.sin(a + 0.16) * 58);
+    ctx.stroke();
   }
 
   _sharedBrakeRotorTex = new THREE.CanvasTexture(c);
   _sharedBrakeRotorTex.colorSpace = THREE.SRGBColorSpace;
   return _sharedBrakeRotorTex;
-}
-
-let _sharedSoftGlowTex = null;
-function getSoftGlowTexture() {
-  if (_sharedSoftGlowTex) return _sharedSoftGlowTex;
-  const c = document.createElement('canvas');
-  c.width = 64;
-  c.height = 64;
-  const ctx = c.getContext('2d');
-  const g = ctx.createRadialGradient(32, 32, 1, 32, 32, 31);
-  g.addColorStop(0.0,  'rgba(255, 255, 255, 1.0)');
-  g.addColorStop(0.32, 'rgba(255, 255, 255, 0.62)');
-  g.addColorStop(0.68, 'rgba(255, 255, 255, 0.18)');
-  g.addColorStop(1.0,  'rgba(255, 255, 255, 0.0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 64, 64);
-  _sharedSoftGlowTex = new THREE.CanvasTexture(c);
-  return _sharedSoftGlowTex;
 }
 
 let _sharedLollipopStopTex = null;
@@ -596,18 +710,18 @@ function getLollipopTexture(isGo = false) {
 
   ctx.beginPath();
   ctx.arc(128, 128, 118, 0, Math.PI * 2);
-  ctx.fillStyle = isGo ? '#062b17' : '#0d1522';
+  ctx.fillStyle = isGo ? '#082b18' : '#0f1622';
   ctx.fill();
   ctx.lineWidth = 14;
-  ctx.strokeStyle = isGo ? '#00ff88' : '#ffd600';
+  ctx.strokeStyle = isGo ? '#16a34a' : '#eab308';
   ctx.stroke();
 
-  ctx.fillStyle = isGo ? '#00ff88' : '#ff2e3b';
+  ctx.fillStyle = isGo ? '#22c55e' : '#ef4444';
   ctx.font = '900 54px "Segoe UI", Arial, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(isGo ? 'GO! GO!' : 'BOX #1', 128, 102);
-  ctx.fillStyle = isGo ? '#ffffff' : '#ffd600';
+  ctx.fillStyle = isGo ? '#ffffff' : '#facc15';
   ctx.font = '800 34px "Segoe UI", Arial, sans-serif';
   ctx.fillText(isGo ? 'CLEAR' : '1ST GEAR', 128, 158);
 
@@ -690,7 +804,7 @@ export class AssetLibrary {
 }
 
 // ============================================================================
-// FORMULA 1 CLEARCOAT PBR CAR RIG, 3D COCKPIT INTERIOR & REAL-TIME VFX
+// FORMULA 1 PHYSICAL PBR CAR RIG, COSWORTH PCU-8D OLED & SIM-REALISM VFX
 // ============================================================================
 export class FormulaCarRig {
   constructor(assets, livery = {}) {
@@ -699,7 +813,7 @@ export class FormulaCarRig {
       accent = 0xffffff,
       trim = 0xffd100,
       helmet = 0x00e5ff,
-      rim = 0x22262e, // Dark satin gunmetal 10-spoke forged rim
+      rim = 0x22262e,
       compound = 'SOFT',
       carNum = 1,
     } = livery;
@@ -712,42 +826,47 @@ export class FormulaCarRig {
     this.root.add(this.chassisTiltGroup);
 
     const carbonMaps = getCarbonWeaveMaps();
-    const tireMaps = getTireTreadMaps();
+    const tireStages = getTireWearStageMaps();
     const rotorTex = getBrakeRotorTexture();
     const bodyDecalTex = getMotorsportLiveryTexture(primary, accent, trim, carNum);
     const wingDecalTex = getWingSponsorTexture(accent, primary);
 
-    // 1. Deep Saturated Rosso Corsa / Team Clearcoat Paint (exact #89 spec: zero pink sky wash!)
+    // 1. Physical Automotive Basecoat + Clearcoat Paint (emissiveIntensity = 0.0!)
     this.primaryMat = new THREE.MeshPhysicalMaterial({
-      color: 0xffffff, // Full saturation carried in Motorsport Livery Decal CanvasTexture!
+      color: 0xffffff,
       map: bodyDecalTex,
-      metalness: 0.32,
-      roughness: 0.18,
+      metalness: 0.36,
+      roughness: 0.16,
       clearcoat: 1.0,
-      clearcoatRoughness: 0.05,
+      clearcoatRoughness: 0.038,
       clearcoatNormalMap: carbonMaps.normalMap,
-      clearcoatNormalScale: new THREE.Vector2(0.04, 0.04),
-      reflectivity: 0.95,
-      envMapIntensity: 1.15,
+      clearcoatNormalScale: new THREE.Vector2(0.03, 0.03),
+      reflectivity: 0.94,
+      envMapIntensity: 1.10,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
-    // Solid saturated primary material for small trim cowlings (mirrors, brake ducts)
     this.primarySolidMat = new THREE.MeshPhysicalMaterial({
       color: primary,
-      metalness: 0.32,
-      roughness: 0.18,
+      metalness: 0.36,
+      roughness: 0.16,
       clearcoat: 1.0,
-      clearcoatRoughness: 0.05,
-      reflectivity: 0.95,
-      envMapIntensity: 1.15,
+      clearcoatRoughness: 0.038,
+      reflectivity: 0.94,
+      envMapIntensity: 1.10,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     this.accentMat = new THREE.MeshPhysicalMaterial({
       color: accent,
-      metalness: 0.32,
-      roughness: 0.18,
+      metalness: 0.34,
+      roughness: 0.16,
       clearcoat: 1.0,
-      clearcoatRoughness: 0.05,
-      reflectivity: 0.95,
-      envMapIntensity: 1.15,
+      clearcoatRoughness: 0.038,
+      reflectivity: 0.94,
+      envMapIntensity: 1.10,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     this.wingBannerMat = new THREE.MeshPhysicalMaterial({
       color: 0xffffff,
@@ -755,185 +874,224 @@ export class FormulaCarRig {
       metalness: 0.30,
       roughness: 0.18,
       clearcoat: 1.0,
-      clearcoatRoughness: 0.05,
-      reflectivity: 0.95,
-      envMapIntensity: 1.15,
+      clearcoatRoughness: 0.042,
+      reflectivity: 0.94,
+      envMapIntensity: 1.10,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
 
-    // 2. High-Contrast 3K Twill Carbon-Fiber Weave (Floor, Undercut, Wings, Survival Cell)
+    // 2. Satin Autoclave Pre-Preg 3K Twill Carbon-Fiber Weave (zero mirror plastic / zero glow)
     this.carbonMat = new THREE.MeshPhysicalMaterial({
       color: 0xffffff,
       map: carbonMaps.map,
       normalMap: carbonMaps.normalMap,
-      normalScale: new THREE.Vector2(0.50, 0.50),
+      normalScale: new THREE.Vector2(0.45, 0.45),
       roughnessMap: carbonMaps.roughnessMap,
       bumpMap: carbonMaps.bumpMap,
-      bumpScale: 0.008,
-      metalness: 0.34,
-      roughness: 0.26,
-      clearcoat: 0.76,
-      clearcoatRoughness: 0.12,
-      reflectivity: 0.92,
-      envMapIntensity: 1.15,
+      bumpScale: 0.006,
+      metalness: 0.16,
+      roughness: 0.36,
+      clearcoat: 0.22,
+      clearcoatRoughness: 0.16,
+      reflectivity: 0.85,
+      envMapIntensity: 0.96,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
 
-    // 3. Cockpit Interior PBR Materials (Titanium Halo, Nomex Suit, Suede Gloves, Chrome Mirrors)
+    // 3. Cockpit Interior PBR Materials (Titanium Halo, Nomex Suit, Alcantara Gloves, Chrome Mirrors)
     this.titaniumMat = new THREE.MeshStandardMaterial({
       color: 0x2c323d,
-      metalness: 0.86,
-      roughness: 0.24,
-      envMapIntensity: 1.25,
+      metalness: 0.84,
+      roughness: 0.28,
+      envMapIntensity: 1.05,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     this.cockpitFoamMat = new THREE.MeshStandardMaterial({
-      color: 0x161920,
-      roughness: 0.84,
-      metalness: 0.05,
+      color: 0x15181f,
+      roughness: 0.86,
+      metalness: 0.04,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     this.nomexSuitMat = new THREE.MeshStandardMaterial({
       color: primary,
-      roughness: 0.68,
-      metalness: 0.06,
-      envMapIntensity: 0.55,
+      roughness: 0.74,
+      metalness: 0.04,
+      envMapIntensity: 0.45,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     this.gloveSuedeMat = new THREE.MeshStandardMaterial({
-      color: 0x181c24,
-      roughness: 0.78,
-      metalness: 0.08,
+      color: 0x171b22,
+      roughness: 0.82,
+      metalness: 0.05,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     this.harnessMat = new THREE.MeshStandardMaterial({
       color: trim,
-      roughness: 0.52,
-      metalness: 0.15,
+      roughness: 0.62,
+      metalness: 0.10,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     this.mirrorGlassMat = new THREE.MeshPhysicalMaterial({
       color: 0xeef6ff,
       metalness: 1.0,
-      roughness: 0.012,
+      roughness: 0.015,
       clearcoat: 1.0,
-      clearcoatRoughness: 0.008,
+      clearcoatRoughness: 0.01,
       reflectivity: 1.0,
-      envMapIntensity: 2.35,
+      envMapIntensity: 1.85,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
 
-    // 4. Live Dynamic 256x128 OLED Steering-Wheel & Dash Telemetry Display Material
+    // 4. Live Cosworth / McLaren PCU-8D 256x128 OLED Cockpit Display
     this._initOledDisplay();
 
-    // 5. Heat-Tempered Titanium Exhaust Alloy
+    // 5. Heat-Tempered Inconel / Titanium Tailpipe Alloy (zero fake orange daylight emissive!)
     this.exhaustMat = new THREE.MeshStandardMaterial({
-      color: 0xa8a29a,
-      metalness: 0.95,
-      roughness: 0.16,
-      emissive: new THREE.Color(0xff4d00),
-      emissiveIntensity: 0.14,
-      envMapIntensity: 1.35,
+      color: 0x8a8279,
+      metalness: 0.92,
+      roughness: 0.24,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
+      envMapIntensity: 1.10,
     });
 
-    // 6. Glossy Driver Helmet & Iridium Mirror-Chrome Sky-Reflective Visor
+    // 6. Glossy Driver Helmet & Iridium Visor
     this.helmetMat = new THREE.MeshPhysicalMaterial({
       name: 'Driver_Helmet_Mat',
       color: helmet,
-      metalness: 0.36,
+      metalness: 0.34,
       roughness: 0.14,
       clearcoat: 1.0,
-      clearcoatRoughness: 0.03,
-      envMapIntensity: 1.25,
+      clearcoatRoughness: 0.035,
+      envMapIntensity: 1.12,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     this.visorMat = new THREE.MeshPhysicalMaterial({
       name: 'Driver_Visor_Mat',
       color: 0x0a1c36,
       metalness: 1.0,
-      roughness: 0.012,
+      roughness: 0.015,
       clearcoat: 1.0,
-      clearcoatRoughness: 0.008,
-      iridescence: 0.86,
+      clearcoatRoughness: 0.01,
+      iridescence: 0.82,
       iridescenceIOR: 1.48,
       reflectivity: 1.0,
-      envMapIntensity: 2.25,
+      envMapIntensity: 1.85,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
 
-    // 7. Blinking FIA Rear Rain / ERS Harvesting LED Matrix
+    // 7. True LED: FIA Rear Wet Rain / ERS Harvesting LED Matrix
     this.rainLightMat = new THREE.MeshStandardMaterial({
-      color: 0xff1a22,
+      color: 0x52080e,
       emissive: new THREE.Color(0xff1420),
-      emissiveIntensity: 2.6,
-      roughness: 0.15,
+      emissiveIntensity: 0.0,
+      roughness: 0.18,
+      metalness: 0.10,
     });
 
-    // 8. 18-Inch Dark Vulcanized Slick, Pirelli Sidewall Ring, Satin Gunmetal 10-Spoke Rim & Slotted Rotor
+    // 8. 18-Inch Pirelli Slick, Non-Emissive Satin Sidewall Stripe, Forged Rim & Slotted Rotor
     const compHex = TIRE_COMPOUNDS[compound]?.colorHex || '#ff2a2a';
+    this._baseCompoundColor = new THREE.Color(compHex);
+    this._activeTireWearStage = 0;
+
     this.tireRubberMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      map: tireMaps.map,
+      map: tireStages[0],
       roughness: 0.72,
-      metalness: 0.06,
-      envMapIntensity: 0.48,
+      metalness: 0.04,
+      envMapIntensity: 0.38,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     this.compoundMat = new THREE.MeshPhysicalMaterial({
       color: compHex,
-      emissive: compHex,
-      emissiveIntensity: 0.42,
-      roughness: 0.26,
-      clearcoat: 0.78,
-      clearcoatRoughness: 0.10,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
+      roughness: 0.48,
+      metalness: 0.02,
+      clearcoat: 0.16,
+      clearcoatRoughness: 0.32,
     });
+
     const safeRimColor = new THREE.Color(rim);
-    // Keep forged rims satin gunmetal/metallic rather than chalky bright white/silver pie-plates
     if (safeRimColor.r > 0.65 && safeRimColor.g > 0.65 && safeRimColor.b > 0.65) {
       safeRimColor.multiplyScalar(0.38);
     }
     this.wheelRimMat = new THREE.MeshPhysicalMaterial({
       color: safeRimColor,
       metalness: 0.88,
-      roughness: 0.22,
-      clearcoat: 0.82,
-      clearcoatRoughness: 0.08,
-      reflectivity: 0.95,
-      envMapIntensity: 1.20,
+      roughness: 0.24,
+      clearcoat: 0.55,
+      clearcoatRoughness: 0.10,
+      reflectivity: 0.92,
+      envMapIntensity: 1.05,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     this.nutLeftMat = new THREE.MeshStandardMaterial({
-      color: 0xff2438,
-      metalness: 0.88,
-      roughness: 0.18,
-      envMapIntensity: 1.25,
+      color: 0xd91e30,
+      metalness: 0.86,
+      roughness: 0.22,
+      envMapIntensity: 1.05,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
     this.nutRightMat = new THREE.MeshStandardMaterial({
-      color: 0x009dff,
-      metalness: 0.88,
-      roughness: 0.18,
-      envMapIntensity: 1.25,
+      color: 0x0082db,
+      metalness: 0.86,
+      roughness: 0.22,
+      envMapIntensity: 1.05,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0.0,
     });
+
+    // True Blackbody Thermal Emitter: Internal Slotted Carbon-Ceramic BrakeDisc ONLY!
     this.brakeDiscMat = new THREE.MeshStandardMaterial({
-      color: 0x3b3634,
-      metalness: 0.78,
-      roughness: 0.30,
+      color: 0x2f2b2a,
+      metalness: 0.68,
+      roughness: 0.38,
       bumpMap: rotorTex,
       bumpScale: 0.008,
-      emissive: new THREE.Color(0xd91808),
+      emissive: new THREE.Color(0x000000),
       emissiveMap: rotorTex,
       emissiveIntensity: 0.0,
     });
     this.caliperMat = new THREE.MeshPhysicalMaterial({
       color: primary,
-      metalness: 0.68,
-      roughness: 0.18,
-      clearcoat: 0.95,
-      clearcoatRoughness: 0.06,
-      emissive: new THREE.Color(0xd91808),
+      metalness: 0.72,
+      roughness: 0.22,
+      clearcoat: 0.75,
+      clearcoatRoughness: 0.08,
+      emissive: new THREE.Color(0x000000),
       emissiveIntensity: 0.0,
-      envMapIntensity: 1.15,
+      envMapIntensity: 1.05,
     });
 
-    this.shiftLedMat = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
+    // True Cockpit Shift-Strip LEDs
+    this.shiftLedMat = new THREE.MeshBasicMaterial({ color: 0x00e676 });
 
     this.parts = {
       fwMain: null,
       fwEndL: null,
       fwEndR: null,
+      fwFlapL: null,
+      fwFlapR: null,
       rwMain: null,
       rwEndL: null,
       rwEndR: null,
       drsFlap: null,
       cockpitWheel: null,
+      cockpitDash: null,
       rollHoopTCam: null,
       steeringWheel: null,
       driverArms: null,
@@ -950,10 +1108,12 @@ export class FormulaCarRig {
     const templates = assets?.templates || {};
     this._buildChassis(templates.chassis, Boolean(templates.isChassis2026));
     this._buildCockpitAndAeroDetails();
+    this._buildDamageScuffOverlays();
     this._buildWheels(templates.wheel);
     this._buildVFXAttachments();
 
     this.wheelSpinAngle = 0;
+    this._brakeThermal = 0;
     this.brakeGlow = 0;
     this.backfireTimer = 0;
     this._prevRpm = 3800;
@@ -963,6 +1123,7 @@ export class FormulaCarRig {
     this._rgt = new THREE.Vector3();
     this._negTangent = new THREE.Vector3();
     this._basisMat = new THREE.Matrix4();
+    this._tmpColor = new THREE.Color();
   }
 
   _initOledDisplay() {
@@ -981,114 +1142,230 @@ export class FormulaCarRig {
       map: this._oledTex,
       emissive: new THREE.Color(0xffffff),
       emissiveMap: this._oledTex,
-      emissiveIntensity: 0.92,
-      roughness: 0.16,
-      metalness: 0.10,
+      emissiveIntensity: 0.88,
+      roughness: 0.18,
+      metalness: 0.08,
     });
 
-    this._renderOledTelemetry(1, 0, 'SOFT', 100, 100, false, false, 0);
+    this._renderOledTelemetry({
+      gearLabel: '1',
+      rpm: 4000,
+      rpmNorm: 0.0,
+      speedKmh: 0,
+      compId: 'SOFT',
+      tireLifePct: 100,
+      tireTemps: [90, 90, 90, 90],
+      brakeBiasPct: 56.5,
+      fuelLaps: 7.0,
+      ersPct: 100,
+      ersDeploying: false,
+      ersHarvesting: false,
+      drsState: 'STBY',
+      inPit: false,
+    });
   }
 
-  _renderOledTelemetry(gearLabel, speedKmh, compId, tireLifePct, ersPct, drsOpen, inPit, rpmNorm) {
+  // Authentic Cosworth CCW Mk3 / McLaren Applied PCU-8D 256x128 Steering-Wheel OLED Layout
+  _renderOledTelemetry(d) {
     const ctx = this._oledCtx;
     if (!ctx) return;
 
-    ctx.fillStyle = '#060a12';
+    // Deep OLED black canvas + crisp anodized carbon bezel grid
+    ctx.fillStyle = '#05070b';
     ctx.fillRect(0, 0, 256, 128);
+    ctx.strokeStyle = '#263346';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, 254, 126);
 
-    // Outer carbon-bezel telemetry frame
-    ctx.strokeStyle = '#253247';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(2, 2, 252, 124);
+    // Technical column & row dividers
+    ctx.fillStyle = '#182232';
+    ctx.fillRect(2, 21, 252, 1);
+    ctx.fillRect(2, 103, 252, 1);
+    ctx.fillRect(88, 22, 1, 81);
+    ctx.fillRect(168, 22, 1, 81);
 
-    // Top DRS / PIT / RPM LED bar (y=4..28)
-    if (inPit) {
-      ctx.fillStyle = '#ff9100';
-      ctx.fillRect(5, 5, 246, 22);
-      ctx.fillStyle = '#070a10';
-      ctx.font = '900 15px "Segoe UI", Arial, sans-serif';
+    // 1. TOP BAR (y = 3..19): 15-LED RPM Shift Array or Pit-Limiter Strobe Banner
+    if (d.inPit) {
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(4, 3, 248, 16);
+      ctx.fillStyle = '#06080d';
+      ctx.font = '900 12px "Segoe UI", Consolas, Arial, sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('PIT LIMITER ACTIVE', 128, 16);
-    } else if (drsOpen) {
-      ctx.fillStyle = '#00e676';
-      ctx.fillRect(5, 5, 246, 22);
-      ctx.fillStyle = '#04140b';
-      ctx.font = '900 16px "Segoe UI", Arial, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('DRS ACTIVE  >>>', 128, 16);
+      ctx.fillText('PIT LIMITER  •  80 KM/H', 128, 11);
     } else {
-      const segs = 12;
-      const activeSegs = Math.round(Math.max(0, Math.min(1, rpmNorm)) * segs);
+      const segs = 15;
+      const activeSegs = Math.round(Math.max(0, Math.min(1, d.rpmNorm)) * segs);
+      const shiftFlash = d.rpm > 12350;
       for (let i = 0; i < segs; i++) {
-        const col = i < 5 ? '#00ff88' : (i < 9 ? '#ff3d3d' : '#00e5ff');
-        ctx.fillStyle = i < activeSegs ? col : '#141c29';
-        ctx.fillRect(8 + i * 20, 7, 16, 16);
+        let onCol = '#22c55e';
+        if (i >= 10) onCol = '#38bdf8';
+        else if (i >= 5) onCol = '#ef4444';
+        if (shiftFlash) onCol = '#38bdf8';
+        ctx.fillStyle = i < activeSegs ? onCol : '#111824';
+        ctx.fillRect(5 + i * 16.4, 5, 13, 12);
       }
     }
 
-    // Center Gear Box (x=94..162, y=32..100)
-    ctx.fillStyle = '#0d1524';
-    ctx.fillRect(94, 32, 68, 68);
-    ctx.strokeStyle = drsOpen ? '#00e676' : '#38bdf8';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(94, 32, 68, 68);
-
-    ctx.fillStyle = '#f8fafc';
-    ctx.font = '900 54px "Segoe UI", Impact, Arial, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(String(gearLabel), 128, 68);
-
-    // Left Column: Speed km/h
-    ctx.fillStyle = '#7dd3fc';
-    ctx.font = '700 11px "Segoe UI", Arial, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText('SPD KMH', 10, 42);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '900 30px "Segoe UI", Arial, sans-serif';
-    ctx.fillText(String(Math.round(speedKmh)), 10, 72);
-
-    // Right Column: Tire Compound & Life %
-    const compColor = TIRE_COMPOUNDS[compId]?.colorHex || '#ff2a2a';
-    const compShort = (compId || 'S').charAt(0);
-    ctx.fillStyle = compColor;
-    ctx.beginPath();
-    ctx.arc(182, 52, 12, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#080b10';
-    ctx.font = '900 15px "Segoe UI", Arial, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(compShort, 182, 53);
-
-    ctx.fillStyle = '#e2e8f0';
-    ctx.font = '800 20px "Segoe UI", Arial, sans-serif';
-    ctx.textAlign = 'right';
-    ctx.fillText(`${Math.max(0, Math.min(100, Math.round(tireLifePct)))}%`, 246, 56);
+    // 2. CENTER COLUMN (x = 89..167, y = 22..102): GEAR, RPM & SPEED KM/H
+    ctx.fillStyle = '#0b111c';
+    ctx.fillRect(90, 23, 77, 79);
 
     ctx.fillStyle = '#94a3b8';
-    ctx.font = '700 11px "Segoe UI", Arial, sans-serif';
-    ctx.fillText('TYRE LIFE', 246, 82);
+    ctx.font = '700 9px Consolas, "Segoe UI", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${Math.round(d.rpm)} RPM`, 128, 30);
 
-    // Bottom ERS Hybrid Battery Bar (y=105..121)
-    ctx.fillStyle = '#111927';
-    ctx.fillRect(8, 106, 240, 15);
-    const ersW = Math.round(236 * Math.max(0.02, Math.min(1.0, ersPct / 100)));
-    ctx.fillStyle = ersPct > 25 ? '#00e5ff' : '#ff5252';
-    ctx.fillRect(10, 108, ersW, 11);
-    ctx.fillStyle = '#041019';
+    ctx.fillStyle = d.drsState === 'OPEN' ? '#4ade80' : '#f8fafc';
+    ctx.font = '900 42px "Segoe UI", Impact, Arial, sans-serif';
+    ctx.fillText(String(d.gearLabel), 128, 57);
+
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '900 18px Consolas, "Segoe UI", sans-serif';
+    ctx.fillText(`${Math.round(d.speedKmh)}`, 119, 90);
+    ctx.fillStyle = '#64748b';
+    ctx.font = '800 8px "Segoe UI", Arial, sans-serif';
+    ctx.fillText('KMH', 152, 91);
+
+    // 3. LEFT COLUMN (x = 3..87, y = 22..102): 4-CORNER TIRE TEMPS (°C FL/FR/RL/RR) + COMPOUND & LIFE
+    const compColor = TIRE_COMPOUNDS[d.compId]?.colorHex || '#ff2a2a';
+    const compShort = TIRE_COMPOUNDS[d.compId]?.short || (d.compId || 'S').charAt(0);
+
+    ctx.fillStyle = compColor;
+    ctx.fillRect(6, 25, 15, 13);
+    ctx.fillStyle = '#05070b';
     ctx.font = '900 10px "Segoe UI", Arial, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(`ERS ${Math.round(ersPct)}%`, 128, 114);
+    ctx.fillText(compShort, 13.5, 32);
+
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '800 10px Consolas, "Segoe UI", sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${Math.max(0, Math.min(100, Math.round(d.tireLifePct)))}%`, 25, 32);
+    ctx.fillStyle = '#64748b';
+    ctx.font = '700 8px "Segoe UI", Arial, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText('°C', 84, 32);
+
+    const tempColorFor = (tc) => {
+      if (tc < 74) return '#38bdf8';  // Cold out-lap
+      if (tc <= 108) return '#22c55e'; // Optimal grip window
+      if (tc <= 118) return '#f59e0b'; // Overheating
+      return '#ef4444';                // Blistering
+    };
+
+    const corners = [
+      { lbl: 'FL', val: d.tireTemps[0], x: 6,  y: 42 },
+      { lbl: 'FR', val: d.tireTemps[1], x: 47, y: 42 },
+      { lbl: 'RL', val: d.tireTemps[2], x: 6,  y: 72 },
+      { lbl: 'RR', val: d.tireTemps[3], x: 47, y: 72 },
+    ];
+    for (const c of corners) {
+      const tc = Math.round(Number(c.val) || 90);
+      const col = tempColorFor(tc);
+      ctx.fillStyle = '#0d1522';
+      ctx.fillRect(c.x, c.y, 37, 26);
+      ctx.fillStyle = col;
+      ctx.fillRect(c.x, c.y, 3, 26);
+
+      ctx.fillStyle = '#64748b';
+      ctx.font = '700 7px "Segoe UI", Arial, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(c.lbl, c.x + 5, c.y + 7);
+
+      ctx.fillStyle = '#f1f5f9';
+      ctx.font = '900 12px Consolas, "Segoe UI", sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(`${tc}°`, c.x + 35, c.y + 19);
+    }
+
+    // 4. RIGHT COLUMN (x = 170..253, y = 22..102): DRS STATUS, BRAKE BIAS & FUEL LAPS
+    let drsBg = '#141d2b';
+    let drsFg = '#64748b';
+    let drsTxt = 'DRS STBY';
+    if (d.drsState === 'OPEN') {
+      drsBg = '#16a34a';
+      drsFg = '#04130a';
+      drsTxt = 'DRS OPEN';
+    } else if (d.drsState === 'AVAIL') {
+      drsBg = '#854d0e';
+      drsFg = '#fef08a';
+      drsTxt = 'DRS AVAIL';
+    } else if (d.drsState === 'FAIL') {
+      drsBg = '#7f1d1d';
+      drsFg = '#fecaca';
+      drsTxt = 'DRS FAIL';
+    }
+    ctx.fillStyle = drsBg;
+    ctx.fillRect(173, 25, 77, 17);
+    ctx.fillStyle = drsFg;
+    ctx.font = '900 10px "Segoe UI", Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(drsTxt, 211.5, 34);
+
+    // Brake Bias row
+    ctx.fillStyle = '#64748b';
+    ctx.font = '700 8px "Segoe UI", Arial, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('BBAL', 173, 55);
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = '900 13px Consolas, "Segoe UI", sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${d.brakeBiasPct.toFixed(1)}%`, 250, 56);
+
+    ctx.fillStyle = '#182232';
+    ctx.fillRect(173, 67, 77, 1);
+
+    // Fuel Laps row
+    const fuelVal = Math.max(0, Number(d.fuelLaps) || 0);
+    const fuelCol = fuelVal <= 1.1 ? '#ef4444' : (fuelVal <= 2.2 ? '#f59e0b' : '#4ade80');
+    ctx.fillStyle = '#64748b';
+    ctx.font = '700 8px "Segoe UI", Arial, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('FUEL', 173, 84);
+    ctx.fillStyle = fuelCol;
+    ctx.font = '900 13px Consolas, "Segoe UI", sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${fuelVal.toFixed(1)}L`, 250, 85);
+
+    // 5. BOTTOM BAR (y = 106..123): MGU-K ERS BATTERY SOC & DEPLOY / HARVEST MODE
+    ctx.fillStyle = '#0e1624';
+    ctx.fillRect(5, 107, 246, 16);
+    const ersClamped = Math.max(0, Math.min(100, d.ersPct));
+    const ersBarW = Math.round(242 * (ersClamped / 100));
+    ctx.fillStyle = d.ersDeploying ? '#22c55e' : (d.ersHarvesting ? '#f59e0b' : (ersClamped < 20 ? '#ef4444' : '#eab308'));
+    ctx.fillRect(7, 109, Math.max(3, ersBarW), 12);
+
+    const modeTag = d.ersDeploying ? 'DEPLOY' : (d.ersHarvesting ? 'HARVEST' : 'MGU-K');
+    ctx.fillStyle = '#f8fafc';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
+    ctx.shadowBlur = 2;
+    ctx.font = '900 10px Consolas, "Segoe UI", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`ERS ${Math.round(ersClamped)}%  •  ${modeTag}`, 128, 115.5);
+    ctx.shadowBlur = 0;
 
     this._oledTex.needsUpdate = true;
+  }
+
+  _captureBaseTransform(obj) {
+    if (!obj) return;
+    if (obj.userData.baseRotX === undefined) {
+      obj.userData.baseRotX = obj.rotation.x;
+      obj.userData.baseRotY = obj.rotation.y;
+      obj.userData.baseRotZ = obj.rotation.z;
+    }
+    if (obj.userData.basePosX === undefined) {
+      obj.userData.basePosX = obj.position.x;
+      obj.userData.basePosY = obj.position.y;
+      obj.userData.basePosZ = obj.position.z;
+    }
   }
 
   _buildChassis(template, is2026Glb = false) {
     if (template) {
       const clone = template.clone(true);
-      // Verify orientation automatically: f1_car_2026.glb already faces -Z forward; legacy f1_car.glb faces +Z!
       let detected2026 = is2026Glb;
       clone.traverse((n) => {
         if (n.name === 'FrontWing' || n.name === 'SteeringWheel' || n.name === 'CockpitTub_Interior') {
@@ -1099,7 +1376,6 @@ export class FormulaCarRig {
       const flipLegacy = !detected2026;
       clone.rotation.y = flipLegacy ? Math.PI : 0;
 
-      // Hide physics collision debug hulls immediately & capture high-level node references
       const toDetachWheels = [];
       clone.traverse((obj) => {
         const oname = obj.name || '';
@@ -1109,6 +1385,7 @@ export class FormulaCarRig {
         }
         if (oname === 'SteeringWheel') this.parts.steeringWheel = obj;
         if (oname === 'Cockpit_Wheel') this.parts.cockpitWheel = obj;
+        if (oname === 'CockpitDash') this.parts.cockpitDash = obj;
         if (oname === 'DriverArms_Gloves' || oname === 'Driver_Gloves') this.parts.driverArms = obj;
         if (oname === 'Halo_Titanium') this.parts.haloMesh = obj;
         if (oname === 'WingMirror_L') this.parts.wingMirrorL = obj;
@@ -1116,11 +1393,36 @@ export class FormulaCarRig {
         if (oname === 'CockpitTub_Interior') this.parts.cockpitTub = obj;
         if (oname === 'Roll_Hoop_TCam') this.parts.rollHoopTCam = obj;
         if (oname === 'FrontWing' || oname === 'Front_Wing_Main') this.parts.fwMain = obj;
-        if (oname === 'Front_Wing_Endplate_R') this.parts.fwEndL = obj;
-        if (oname === 'Front_Wing_Endplate_L') this.parts.fwEndR = obj;
+
+        // Handle both 2026 (-Z forward) and legacy (+Z forward rotated PI) endplate L/R conventions
+        if (oname === 'FrontWing_Endplate_L') {
+          this.parts.fwEndL = obj;
+        } else if (oname === 'FrontWing_Endplate_R') {
+          this.parts.fwEndR = obj;
+        } else if (oname === 'Front_Wing_Endplate_L') {
+          if (flipLegacy) this.parts.fwEndR = obj;
+          else this.parts.fwEndL = obj;
+        } else if (oname === 'Front_Wing_Endplate_R') {
+          if (flipLegacy) this.parts.fwEndL = obj;
+          else this.parts.fwEndR = obj;
+        }
+
+        if (oname === 'FrontWing_Flap_L') this.parts.fwFlapL = obj;
+        if (oname === 'FrontWing_Flap_R') this.parts.fwFlapR = obj;
+
         if (oname === 'RearWing' || oname === 'Rear_Wing_Main') this.parts.rwMain = obj;
-        if (oname === 'Rear_Wing_Endplate_R') this.parts.rwEndL = obj;
-        if (oname === 'Rear_Wing_Endplate_L') this.parts.rwEndR = obj;
+        if (oname === 'RearWing_Endplate_L') {
+          this.parts.rwEndL = obj;
+        } else if (oname === 'RearWing_Endplate_R') {
+          this.parts.rwEndR = obj;
+        } else if (oname === 'Rear_Wing_Endplate_L') {
+          if (flipLegacy) this.parts.rwEndR = obj;
+          else this.parts.rwEndL = obj;
+        } else if (oname === 'Rear_Wing_Endplate_R') {
+          if (flipLegacy) this.parts.rwEndL = obj;
+          else this.parts.rwEndR = obj;
+        }
+
         if (oname === 'RearWing_DRS') {
           this.parts.drsFlap = obj;
           this._drsOpenSign = 1;
@@ -1133,13 +1435,13 @@ export class FormulaCarRig {
         }
         if (oname.startsWith('Suspension_')) {
           this.suspensionNodes[oname.slice('Suspension_'.length)] = obj;
+          this._captureBaseTransform(obj);
         }
         if (oname === 'Wheel_FL' || oname === 'Wheel_FR' || oname === 'Wheel_RL' || oname === 'Wheel_RR') {
           toDetachWheels.push(obj);
         }
       });
 
-      // Detach embedded 18-inch GLB wheels so _buildWheels wraps them in steerPivot + spinPivot
       for (const wObj of toDetachWheels) {
         const id = wObj.name.slice('Wheel_'.length);
         if (wObj.parent) wObj.parent.remove(wObj);
@@ -1159,9 +1461,7 @@ export class FormulaCarRig {
 
         child.castShadow = true;
         child.receiveShadow = true;
-        child.userData.baseRotX = child.rotation.x;
-        child.userData.baseRotY = child.rotation.y;
-        child.userData.baseRotZ = child.rotation.z;
+        this._captureBaseTransform(child);
 
         const contextName = `${pName}/${n}`;
 
@@ -1170,38 +1470,35 @@ export class FormulaCarRig {
           child.material = this.oledMat;
         } else if (mName === 'F1_Shift_LED') {
           child.material = this.shiftLedMat;
+        } else if (mName === 'F1_Rain_Light' || mName.startsWith('Rain_Light')) {
+          child.material = this.rainLightMat;
         } else if (mName === 'F1_Mirror_Chrome') {
           child.material = this.mirrorGlassMat;
-        } else if (mName === 'F1_Titanium_Aero' || n === 'Halo_Titanium') {
+        } else if (mName === 'F1_Titanium_Aero') {
           child.material = this.titaniumMat;
+        } else if (mName === 'F1_Titanium_Exhaust' || mName.startsWith('Titanium_Exhaust')) {
+          child.material = this.exhaustMat;
         } else if (mName === 'F1_Cockpit_Foam') {
           child.material = this.cockpitFoamMat;
-        } else if (mName === 'F1_Driver_Nomex' || n === 'Driver_Shoulders') {
+        } else if (mName === 'F1_Driver_Nomex') {
           child.material = this.nomexSuitMat;
-        } else if (mName === 'F1_Glove_Suede' || n === 'Driver_Gloves') {
+        } else if (mName === 'F1_Glove_Suede') {
           child.material = this.gloveSuedeMat;
         } else if (mName === 'F1_Harness_Belt') {
           child.material = this.harnessMat;
+        } else if (mName === 'F1_Helmet_Shell' || mName.startsWith('Driver_Helmet')) {
+          child.material = this.helmetMat;
+        } else if (mName === 'F1_Visor_Chrome' || mName.startsWith('Driver_Visor')) {
+          child.material = this.visorMat;
         } else if (mName === 'F1_Caliper_Alloy' || contextName.includes('BrakeCaliper')) {
           child.material = this.caliperMat;
         } else if (mName === 'F1_Brake_Rotor' || contextName.includes('BrakeDisc')) {
           child.material = this.brakeDiscMat;
-        } else if (
-          n === 'Carbon_Chassis' ||
-          n === 'Suspension_Arms' ||
-          n === 'Cockpit_Wheel' ||
-          n === 'Roll_Hoop_TCam' ||
-          n.startsWith('Front_Wing_Endplate') ||
-          n.startsWith('Rear_Wing_Endplate') ||
-          n.includes('Floor') ||
-          n.includes('Diffuser') ||
-          mName.startsWith('Carbon_Fiber') ||
-          mName === 'F1_Carbon_Weave'
-        ) {
+        } else if (mName === 'F1_Carbon_Weave' || mName.startsWith('Carbon_Fiber')) {
           child.material = this.carbonMat;
         } else if (
+          (pName === 'Body' && mName === 'F1_Livery_Primary') ||
           n === 'Body_Main' ||
-          pName === 'Body' && mName === 'F1_Livery_Primary' ||
           (mName.startsWith('Livery_Primary') && !contextName.includes('WingMirror'))
         ) {
           child.geometry = projectMotorsportBodyUVs(child.geometry, flipLegacy);
@@ -1214,30 +1511,39 @@ export class FormulaCarRig {
         ) {
           child.geometry = projectWingBannerUVs(child.geometry);
           child.material = this.wingBannerMat;
-        } else if (
-          n === 'Body_Accent' ||
-          n === 'Front_Wing_Main' ||
-          mName === 'F1_Livery_Accent' ||
-          mName.startsWith('Livery_Accent')
-        ) {
+        } else if (mName === 'F1_Livery_Accent' || mName.startsWith('Livery_Accent')) {
           child.material = this.accentMat;
-        } else if (n === 'Driver_Helmet' || mName.startsWith('Driver_Helmet') || mName === 'F1_Helmet_Shell') {
+        } else if (n === 'Halo_Titanium') {
+          child.material = this.titaniumMat;
+        } else if (n === 'Driver_Shoulders') {
+          child.material = this.nomexSuitMat;
+        } else if (n === 'Driver_Gloves') {
+          child.material = this.gloveSuedeMat;
+        } else if (
+          n === 'Carbon_Chassis' ||
+          n === 'Suspension_Arms' ||
+          n === 'Cockpit_Wheel' ||
+          n === 'Roll_Hoop_TCam' ||
+          n.includes('Endplate') ||
+          n.includes('Floor') ||
+          n.includes('Diffuser')
+        ) {
+          child.material = this.carbonMat;
+        } else if (n === 'Body_Accent' || n === 'Front_Wing_Main') {
+          child.material = this.accentMat;
+        } else if (n === 'Driver_Helmet') {
           child.material = this.helmetMat;
-        } else if (n === 'Driver_Visor' || mName.startsWith('Driver_Visor') || mName === 'F1_Visor_Chrome') {
+        } else if (n === 'Driver_Visor') {
           child.material = this.visorMat;
-        } else if (n === 'Exhaust_Pipe' || n.includes('Exhaust') || mName.startsWith('Titanium_Exhaust') || mName === 'F1_Titanium_Exhaust') {
+        } else if (n === 'Exhaust_Pipe' || n.includes('Exhaust')) {
           child.material = this.exhaustMat;
-        } else if (n === 'Rear_Rain_Light' || n === 'Rain_Light' || n.includes('Rain_Light') || mName.startsWith('Rain_Light') || mName === 'F1_Rain_Light') {
+        } else if (n === 'Rear_Rain_Light' || n === 'Rain_Light' || n.includes('Rain_Light')) {
           child.material = this.rainLightMat;
         }
       });
 
-      for (const obj of [this.parts.drsFlap, this.parts.cockpitWheel, this.parts.steeringWheel, this.parts.fwEndL, this.parts.fwEndR, this.parts.rwMain]) {
-        if (obj && obj.userData.baseRotX === undefined) {
-          obj.userData.baseRotX = obj.rotation.x;
-          obj.userData.baseRotY = obj.rotation.y;
-          obj.userData.baseRotZ = obj.rotation.z;
-        }
+      for (const obj of Object.values(this.parts)) {
+        if (obj) this._captureBaseTransform(obj);
       }
 
       this.chassisTiltGroup.add(clone);
@@ -1246,19 +1552,32 @@ export class FormulaCarRig {
       const body = new THREE.Mesh(bodyGeo, this.primaryMat);
       body.position.set(0, 0.32, 0);
       body.castShadow = true;
-      const fw = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.08, 0.36), this.accentMat);
-      fw.position.set(0, 0.12, -2.2);
-      fw.castShadow = true;
-      const rwGeo = projectWingBannerUVs(new THREE.BoxGeometry(1.1, 0.32, 0.30));
+
+      const fwGroup = new THREE.Group();
+      fwGroup.position.set(0, 0.12, -2.2);
+      const fwMainMesh = new THREE.Mesh(new THREE.BoxGeometry(1.78, 0.06, 0.34), this.accentMat);
+      fwMainMesh.castShadow = true;
+      const endGeo = new THREE.BoxGeometry(0.03, 0.18, 0.40);
+      const endL = new THREE.Mesh(endGeo, this.carbonMat);
+      endL.position.set(-0.90, 0.05, 0);
+      const endR = new THREE.Mesh(endGeo, this.carbonMat);
+      endR.position.set(0.90, 0.05, 0);
+      fwGroup.add(fwMainMesh, endL, endR);
+
+      const rwGeo = projectWingBannerUVs(new THREE.BoxGeometry(1.06, 0.30, 0.28));
       const rw = new THREE.Mesh(rwGeo, this.wingBannerMat);
       rw.position.set(0, 0.72, 1.95);
       rw.castShadow = true;
-      this.parts.fwMain = fw;
+
+      this.parts.fwMain = fwGroup;
+      this.parts.fwEndL = endL;
+      this.parts.fwEndR = endR;
       this.parts.rwMain = rw;
-      this.chassisTiltGroup.add(body, fw, rw);
+      for (const obj of [fwGroup, endL, endR, rw]) this._captureBaseTransform(obj);
+      this.chassisTiltGroup.add(body, fwGroup, rw);
     }
 
-    // Deep Soft-Feathered Grounding Contact Shadow (opacity: 0.88 grounds plank & all 4 tires!)
+    // Grounding under-plank & 4-wheel contact shadow
     const shadGeo = new THREE.PlaneGeometry(2.62, 5.48);
     shadGeo.rotateX(-Math.PI / 2);
     const shadMat = new THREE.MeshBasicMaterial({
@@ -1271,28 +1590,26 @@ export class FormulaCarRig {
       polygonOffsetUnits: -2,
     });
     const shadowPlane = new THREE.Mesh(shadGeo, shadMat);
-    shadowPlane.position.y = 0.028;
+    shadowPlane.position.y = 0.026;
     this.root.add(shadowPlane);
   }
 
   _buildCockpitAndAeroDetails() {
-    // 1. FIA Roll-Hoop Overhead T-Cam Pod fallback
     if (!this.parts.rollHoopTCam && !this._embeddedGlbWheels.FL) {
       const tCamGroup = new THREE.Group();
       tCamGroup.position.set(0, 0.825, 0.17);
       const mast = new THREE.Mesh(new THREE.BoxGeometry(0.026, 0.08, 0.07), this.carbonMat);
       const bar = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.026, 0.065), this.carbonMat);
       bar.position.y = 0.042;
-      const lens = new THREE.Mesh(
+      const housing = new THREE.Mesh(
         new THREE.BoxGeometry(0.055, 0.03, 0.072),
-        new THREE.MeshBasicMaterial({ color: 0xffea00 })
+        new THREE.MeshStandardMaterial({ color: 0x11151d, roughness: 0.35, metalness: 0.4 })
       );
-      lens.position.set(0, 0.044, -0.004);
-      tCamGroup.add(mast, bar, lens);
+      housing.position.set(-0.085, 0.044, -0.004);
+      tCamGroup.add(mast, bar, housing);
       this.chassisTiltGroup.add(tCamGroup);
     }
 
-    // 2. Cockpit Rim & Titanium Halo fallback (when using legacy f1_car.glb or procedural chassis)
     if (!this.parts.cockpitTub) {
       const tubGroup = new THREE.Group();
       const sillGeo = new THREE.BoxGeometry(0.055, 0.045, 0.82);
@@ -1309,10 +1626,10 @@ export class FormulaCarRig {
 
     if (!this.parts.haloMesh) {
       const haloGroup = new THREE.Group();
-      const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.020, 0.19, 10), this.titaniumMat);
+      const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.019, 0.19, 10), this.titaniumMat);
       pillar.position.set(0, 0.61, -0.69);
       pillar.rotation.x = 0.22;
-      const hoop = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.021, 10, 24, Math.PI), this.titaniumMat);
+      const hoop = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.020, 10, 24, Math.PI), this.titaniumMat);
       hoop.rotation.x = Math.PI / 2 + 0.08;
       hoop.rotation.z = Math.PI;
       hoop.position.set(0, 0.685, -0.43);
@@ -1321,7 +1638,6 @@ export class FormulaCarRig {
       this.chassisTiltGroup.add(haloGroup);
     }
 
-    // 3. Dual Aero Wing Mirrors fallback (WingMirror_L / WingMirror_R)
     if (!this.parts.wingMirrorL || !this.parts.wingMirrorR) {
       for (const side of [-1, 1]) {
         const mGroup = new THREE.Group();
@@ -1339,7 +1655,6 @@ export class FormulaCarRig {
       }
     }
 
-    // 4. Butterfly F1 Steering Wheel + Live 256x128 OLED Display + Articulated Driver Forearms & Gloves
     if (!this.parts.steeringWheel) {
       const swGroup = new THREE.Group();
       swGroup.position.set(0, 0.545, -0.51);
@@ -1353,11 +1668,11 @@ export class FormulaCarRig {
       oledScreen.position.set(0, 0.006, 0.014);
 
       swGroup.add(swBody, swLed, oledScreen);
+      this._captureBaseTransform(swGroup);
       this.parts.steeringWheel = swGroup;
       this.chassisTiltGroup.add(swGroup);
     }
 
-    // Attach articulated 3D Driver Forearms & Nomex Gloves to steering wheel if not already in GLB
     if (!this.parts.driverArms && this.parts.steeringWheel) {
       const armsGroup = new THREE.Group();
       armsGroup.name = 'DriverArms_Gloves_Procedural';
@@ -1380,23 +1695,65 @@ export class FormulaCarRig {
       this.parts.driverArms = armsGroup;
     }
 
-    // 5. Articulated Rear-Wing DRS Flap fallback
     if (!this.parts.drsFlap) {
       const flapGeo = projectWingBannerUVs(new THREE.BoxGeometry(1.04, 0.022, 0.16));
       flapGeo.translate(0, 0, -0.08);
       const fallbackFlap = new THREE.Mesh(flapGeo, this.wingBannerMat);
       fallbackFlap.position.set(0, 0.865, 2.04);
-      fallbackFlap.userData.baseRotX = 0;
+      this._captureBaseTransform(fallbackFlap);
       this.chassisTiltGroup.add(fallbackFlap);
       this.parts.drsFlap = fallbackFlap;
       this._drsOpenSign = 1;
     }
   }
 
+  // Subtle physical abraded carbon-fiber scuff decals revealed progressively under wing/body/wheel contact damage
+  _buildDamageScuffOverlays() {
+    const scuffTex = getCarbonScuffTexture();
+    this._scuffFrontMat = new THREE.MeshStandardMaterial({
+      map: scuffTex,
+      transparent: true,
+      opacity: 0.0,
+      roughness: 0.92,
+      metalness: 0.08,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    this._scuffSideMat = this._scuffFrontMat.clone();
+    this._scuffRearMat = this._scuffFrontMat.clone();
+
+    this.scuffGroup = new THREE.Group();
+    this.scuffGroup.visible = false;
+
+    const patchGeo = new THREE.PlaneGeometry(0.42, 0.18);
+
+    const noseScuffL = new THREE.Mesh(patchGeo, this._scuffFrontMat);
+    noseScuffL.position.set(-0.56, 0.155, -2.14);
+    noseScuffL.rotation.set(-Math.PI / 2 + 0.18, 0, 0.08);
+
+    const noseScuffR = new THREE.Mesh(patchGeo, this._scuffFrontMat);
+    noseScuffR.position.set(0.56, 0.155, -2.14);
+    noseScuffR.rotation.set(-Math.PI / 2 + 0.18, 0, -0.08);
+
+    const sideScuffL = new THREE.Mesh(new THREE.PlaneGeometry(0.76, 0.22), this._scuffSideMat);
+    sideScuffL.position.set(-0.695, 0.26, -0.18);
+    sideScuffL.rotation.y = -Math.PI / 2;
+
+    const sideScuffR = new THREE.Mesh(new THREE.PlaneGeometry(0.76, 0.22), this._scuffSideMat);
+    sideScuffR.position.set(0.695, 0.26, -0.18);
+    sideScuffR.rotation.y = Math.PI / 2;
+
+    const rearScuff = new THREE.Mesh(patchGeo, this._scuffRearMat);
+    rearScuff.position.set(0, 0.78, 2.09);
+
+    this.scuffGroup.add(noseScuffL, noseScuffR, sideScuffL, sideScuffR, rearScuff);
+    this.chassisTiltGroup.add(this.scuffGroup);
+  }
+
   _buildWheels(wheelTemplate) {
     this.wheels = [];
-    this.brakeHaloMats = [];
-    const glowTex = getSoftGlowTexture();
 
     const coords = [
       { id: 'FL', x: -0.86, y: 0.34, z: -1.48, isFront: true },
@@ -1405,14 +1762,23 @@ export class FormulaCarRig {
       { id: 'RR', x:  0.86, y: 0.34, z:  1.42, isFront: false },
     ];
 
+    const flatPatchGeo = new THREE.CylinderGeometry(0.342, 0.342, 0.30, 12, 1, true, -0.22, 0.44);
+    flatPatchGeo.rotateZ(Math.PI / 2);
+
     for (const c of coords) {
       const steerPivot = new THREE.Group();
       steerPivot.position.set(c.x, c.y, c.z);
+
+      // Camber/damage pivot sits inside steerPivot so suspension damage tilts wheel camber cleanly
+      const camberPivot = new THREE.Group();
+      steerPivot.add(camberPivot);
+
       const spinPivot = new THREE.Group();
-      steerPivot.add(spinPivot);
+      camberPivot.add(spinPivot);
 
       const isLeft = c.x < 0;
       let hasGlbCaliper = Boolean(this.suspensionNodes[c.id]);
+      let hasGlbRotor = false;
 
       const embeddedWheel = this._embeddedGlbWheels[c.id];
       if (embeddedWheel) {
@@ -1430,10 +1796,13 @@ export class FormulaCarRig {
             ch.material = this.compoundMat;
           } else if (cm === 'F1_Wheel_Rim' || cn.includes('Wheel_Rim')) {
             ch.material = this.wheelRimMat;
-          } else if (cm === 'F1_Brake_Rotor' || cn.includes('BrakeDisc')) {
+          } else if (cm === 'F1_Brake_Rotor' || cn.includes('BrakeDisc') || cn.includes('Brake_Disc')) {
             ch.material = this.brakeDiscMat;
+            hasGlbRotor = true;
           } else if (cm === 'F1_Livery_Primary' || cm === 'F1_Helmet_Shell' || cn.includes('Nut')) {
             ch.material = isLeft ? this.nutLeftMat : this.nutRightMat;
+          } else if (cm === 'F1_Carbon_Weave') {
+            ch.material = this.carbonMat;
           }
         });
         spinPivot.add(embeddedWheel);
@@ -1453,8 +1822,9 @@ export class FormulaCarRig {
             ch.material = this.wheelRimMat;
           } else if (cn === 'Center_Lock_Nut' || cn.includes('Nut') || cm.startsWith('Center_Nut')) {
             ch.material = isLeft ? this.nutLeftMat : this.nutRightMat;
-          } else if (cn === 'Brake_Disc' || cm.startsWith('Brake_Disc')) {
+          } else if (cn === 'Brake_Disc' || cn.includes('BrakeDisc') || cm.startsWith('Brake_Disc')) {
             ch.material = this.brakeDiscMat;
+            hasGlbRotor = true;
           } else if (cn.includes('Caliper')) {
             ch.material = this.caliperMat;
             hasGlbCaliper = true;
@@ -1462,298 +1832,196 @@ export class FormulaCarRig {
         });
         spinPivot.add(wc);
       } else {
-        const cyl = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.35, 24), this.tireRubberMat);
+        const cyl = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.35, 28), this.tireRubberMat);
         cyl.rotation.z = Math.PI / 2;
         cyl.castShadow = true;
         const rimCyl = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.355, 16), this.wheelRimMat);
         rimCyl.rotation.z = Math.PI / 2;
-        const ringOut = new THREE.Mesh(new THREE.TorusGeometry(0.265, 0.010, 8, 24), this.compoundMat);
+        const ringOut = new THREE.Mesh(new THREE.TorusGeometry(0.265, 0.009, 8, 24), this.compoundMat);
         ringOut.rotation.y = Math.PI / 2;
         ringOut.position.x = isLeft ? -0.176 : 0.176;
         spinPivot.add(cyl, rimCyl, ringOut);
       }
 
-      if (!hasGlbCaliper) {
-        const caliper = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.13, 0.095), this.caliperMat);
-        caliper.position.set(isLeft ? 0.02 : -0.02, 0.06, c.isFront ? 0.11 : -0.11);
-        steerPivot.add(caliper);
+      // Ensure physical inboard slotted carbon-ceramic rotor mesh exists inside wheel spokes
+      if (!hasGlbRotor) {
+        const rotorMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.165, 0.165, 0.032, 24), this.brakeDiscMat);
+        rotorMesh.rotation.z = Math.PI / 2;
+        rotorMesh.position.x = isLeft ? 0.05 : -0.05;
+        spinPivot.add(rotorMesh);
       }
 
-      // Soft Incandescent Brake Thermal Glow Disc visible through 10-spoke forged rims!
-      const haloMat = new THREE.MeshBasicMaterial({
-        map: glowTex,
-        color: 0xff5a00,
+      if (!hasGlbCaliper) {
+        const caliper = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.13, 0.095), this.caliperMat);
+        caliper.position.set(isLeft ? 0.03 : -0.03, 0.06, c.isFront ? 0.11 : -0.11);
+        camberPivot.add(caliper);
+      }
+
+      // Rotating flat-spot rubber abrasion patch (only visible when corner has a real lockup flat-spot!)
+      const flatPatchMat = new THREE.MeshStandardMaterial({
+        color: 0x3b3f47,
+        roughness: 0.94,
+        metalness: 0.02,
         transparent: true,
         opacity: 0.0,
-        blending: THREE.AdditiveBlending,
         depthWrite: false,
-        side: THREE.DoubleSide,
       });
-      const haloPlane = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.42), haloMat);
-      haloPlane.rotation.y = Math.PI / 2;
-      haloPlane.position.x = isLeft ? -0.14 : 0.14;
-      steerPivot.add(haloPlane);
-      this.brakeHaloMats.push(haloMat);
+      const flatPatchMesh = new THREE.Mesh(flatPatchGeo, flatPatchMat);
+      flatPatchMesh.visible = false;
+      spinPivot.add(flatPatchMesh);
 
       this.root.add(steerPivot);
-      this.wheels.push({ ...c, baseY: c.y, baseSteerY: c.y, steerPivot, spinPivot });
+      this.wheels.push({
+        ...c,
+        baseY: c.y,
+        baseSteerY: c.y,
+        steerPivot,
+        camberPivot,
+        spinPivot,
+        flatPatchMesh,
+        flatPatchMat,
+      });
     }
   }
 
   _buildVFXAttachments() {
-    const glowTex = getSoftGlowTexture();
+    const mistTex = getTurbulentMistTexture();
+    const puffGeo = new THREE.PlaneGeometry(1.0, 1.0);
 
-    // 1. FIA Rear Rain-Light Soft Ruby Halo Sprite
-    this.rainHaloMat = new THREE.MeshBasicMaterial({
-      map: glowTex,
-      color: 0xff1728,
-      transparent: true,
-      opacity: 0.65,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    this.rainHaloMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 0.34), this.rainHaloMat);
-    this.rainHaloMesh.position.set(0, 0.21, 2.085);
-    this.chassisTiltGroup.add(this.rainHaloMesh);
-
-    // 2. Dual-Core Blue Plasma + Fiery Orange Exhaust Shift-Cut / Backfire Flame Assembly
-    this.exhaustFlameGroup = new THREE.Group();
-    this.exhaustFlameGroup.position.set(0, 0.35, 2.13);
-    this.exhaustFlameGroup.visible = false;
-
-    const coreConeGeo = new THREE.ConeGeometry(0.050, 0.52, 12, 1, true);
-    coreConeGeo.translate(0, 0.26, 0);
-    coreConeGeo.rotateX(Math.PI / 2);
-    this.flameCoreMat = new THREE.MeshBasicMaterial({
-      color: 0x62f0ff,
-      transparent: true,
-      opacity: 0.96,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    this.flameCoreMesh = new THREE.Mesh(coreConeGeo, this.flameCoreMat);
-
-    const outerConeGeo = new THREE.ConeGeometry(0.105, 0.96, 12, 1, true);
-    outerConeGeo.translate(0, 0.48, 0);
-    outerConeGeo.rotateX(Math.PI / 2);
-    this.flameOuterMat = new THREE.MeshBasicMaterial({
-      color: 0xff7b00,
-      transparent: true,
-      opacity: 0.88,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    this.flameOuterMesh = new THREE.Mesh(outerConeGeo, this.flameOuterMat);
-
-    const wgGeo = new THREE.ConeGeometry(0.026, 0.34, 8, 1, true);
-    wgGeo.translate(0, 0.17, 0);
-    wgGeo.rotateX(Math.PI / 2);
-    const wgLeft = new THREE.Mesh(wgGeo, this.flameOuterMat);
-    wgLeft.position.set(-0.072, -0.02, 0.02);
-    const wgRight = new THREE.Mesh(wgGeo, this.flameOuterMat);
-    wgRight.position.set(0.072, -0.02, 0.02);
-
-    this.flameFlashMat = new THREE.MeshBasicMaterial({
-      map: glowTex,
-      color: 0xffaa33,
-      transparent: true,
-      opacity: 0.85,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    const flashSprite = new THREE.Mesh(new THREE.PlaneGeometry(0.46, 0.46), this.flameFlashMat);
-    flashSprite.position.z = 0.04;
-
-    this.exhaustFlameGroup.add(this.flameOuterMesh, this.flameCoreMesh, wgLeft, wgRight, flashSprite);
-    this.chassisTiltGroup.add(this.exhaustFlameGroup);
-
-    // Continuous Exhaust Afterburner Core Glow & Shimmering Heat-Haze Plume
-    this.afterburnerMat = new THREE.MeshBasicMaterial({
-      map: glowTex,
-      color: 0xff6a1a,
-      transparent: true,
-      opacity: 0.42,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    this.afterburnerMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.24, 0.24), this.afterburnerMat);
-    this.afterburnerMesh.position.set(0, 0.35, 2.115);
-    this.chassisTiltGroup.add(this.afterburnerMesh);
-
-    const hazeGeo = new THREE.ConeGeometry(0.14, 0.78, 10, 1, true);
-    hazeGeo.translate(0, 0.39, 0);
-    hazeGeo.rotateX(Math.PI / 2);
-    this.heatHazeMat = new THREE.MeshBasicMaterial({
-      color: 0xffb870,
-      transparent: true,
-      opacity: 0.12,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    this.heatHazeMesh = new THREE.Mesh(hazeGeo, this.heatHazeMat);
-    this.heatHazeMesh.position.set(0, 0.35, 2.12);
-    this.chassisTiltGroup.add(this.heatHazeMesh);
-
-    // 3. High-Speed (>250 km/h) Rear-Wingtip Aero Condensation Vortex Ribbons
-    this.vortexGroup = new THREE.Group();
-    this.vortexTrails = [];
-    const vortexOuterGeo = new THREE.ConeGeometry(0.052, 4.6, 10, 1, true);
-    vortexOuterGeo.translate(0, 2.3, 0);
-    vortexOuterGeo.rotateX(Math.PI / 2);
-
-    const vortexCoreGeo = new THREE.ConeGeometry(0.020, 3.8, 8, 1, true);
-    vortexCoreGeo.translate(0, 1.9, 0);
-    vortexCoreGeo.rotateX(Math.PI / 2);
-
-    this.vortexOuterMat = new THREE.MeshBasicMaterial({
-      color: 0x9cefff,
-      transparent: true,
-      opacity: 0.0,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    this.vortexCoreMat = new THREE.MeshBasicMaterial({
-      color: 0xe8fcff,
-      transparent: true,
-      opacity: 0.0,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-
-    for (const side of [-1, 1]) {
-      const tipPivot = new THREE.Group();
-      tipPivot.position.set(side * 0.535, 0.895, 2.13);
-      const outerTube = new THREE.Mesh(vortexOuterGeo, this.vortexOuterMat);
-      const coreTube = new THREE.Mesh(vortexCoreGeo, this.vortexCoreMat);
-      tipPivot.add(outerTube, coreTube);
-      this.vortexGroup.add(tipPivot);
-      this.vortexTrails.push({ side, tipPivot, outerTube, coreTube });
-    }
-    this.vortexGroup.visible = false;
-    this.chassisTiltGroup.add(this.vortexGroup);
-
-    // 4. Multi-Stage Wet Rooster-Tail Spray
+    // 1. Realistic Atomized Wet Tire Mist & Venturi Diffuser Rooster-Tail Spray
+    // Per-puff opacity lifecycle prevents wrap-around popping!
     this.sprayGroup = new THREE.Group();
     this.sprayPuffs = [];
-    const puffGeo = new THREE.PlaneGeometry(1.05, 1.05);
-    this.sprayMat = new THREE.MeshBasicMaterial({
-      map: glowTex,
-      color: 0xdff0ff,
-      transparent: true,
-      opacity: 0.36,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
+    for (let i = 0; i < 20; i++) {
+      const isCenterPlume = i >= 10;
+      const wheelIdx = i % 4;
+      const side = isCenterPlume
+        ? ((i % 2 === 0 ? -1 : 1) * 0.18)
+        : (wheelIdx % 2 === 0 ? -0.86 : 0.86);
+      const baseZ = isCenterPlume
+        ? 2.05
+        : (wheelIdx < 2 ? -1.25 : 1.62);
 
-    for (let i = 0; i < 16; i++) {
-      const isCenterPlume = i >= 8;
-      const side = isCenterPlume ? ((i % 2 === 0 ? -1 : 1) * 0.16) : (i % 2 === 0 ? -0.84 : 0.84);
-      const puff = new THREE.Mesh(puffGeo, this.sprayMat);
-      puff.position.set(side, 0.35, 1.85 + (i % 8) * 0.65);
+      const mat = new THREE.MeshBasicMaterial({
+        map: mistTex,
+        color: 0xd6e4f0,
+        transparent: true,
+        opacity: 0.0,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const puff = new THREE.Mesh(puffGeo, mat);
       this.sprayGroup.add(puff);
-      this.sprayPuffs.push({ mesh: puff, baseX: side, idx: i, isCenterPlume });
+      this.sprayPuffs.push({
+        mesh: puff,
+        mat,
+        baseX: side,
+        baseZ,
+        idx: i,
+        isCenterPlume,
+      });
     }
     this.sprayGroup.visible = false;
     this.root.add(this.sprayGroup);
 
-    // 5. Titanium Underfloor Skid-Block & Damage Spark Shower
+    // 2. Grade-5 Titanium Skid-Block Micro-Sparks (Bottoming / Sawtooth Kerbs / Dragging ONLY!)
     this.sparkGroup = new THREE.Group();
     this.sparks = [];
-    const sparkGeo = new THREE.BoxGeometry(0.026, 0.026, 0.52);
-    const sparkGoldMat = new THREE.MeshBasicMaterial({
-      color: 0xffe57f,
-      blending: THREE.AdditiveBlending,
-      transparent: true,
-      opacity: 0.95,
-      depthWrite: false,
-    });
-    const sparkOrangeMat = new THREE.MeshBasicMaterial({
-      color: 0xff8c00,
+    const sparkGeo = new THREE.BoxGeometry(0.007, 0.007, 0.22);
+    const sparkWhiteGoldMat = new THREE.MeshBasicMaterial({
+      color: 0xffe8b3,
       blending: THREE.AdditiveBlending,
       transparent: true,
       opacity: 0.92,
       depthWrite: false,
     });
+    const sparkAmberMat = new THREE.MeshBasicMaterial({
+      color: 0xff9e2c,
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      opacity: 0.88,
+      depthWrite: false,
+    });
 
-    for (let i = 0; i < 14; i++) {
-      const sp = new THREE.Mesh(sparkGeo, i % 2 === 0 ? sparkGoldMat : sparkOrangeMat);
-      const spreadX = (Math.random() - 0.5) * 1.15;
-      sp.position.set(spreadX, 0.06, 1.2 + (i / 14) * 2.4);
+    for (let i = 0; i < 12; i++) {
+      const sp = new THREE.Mesh(sparkGeo, i % 2 === 0 ? sparkWhiteGoldMat : sparkAmberMat);
+      const spreadX = (((i * 0.618034) % 1.0) - 0.5) * 0.72;
+      sp.position.set(spreadX, 0.03, 0.8 + (i / 12) * 2.1);
       this.sparkGroup.add(sp);
       this.sparks.push({ mesh: sp, seed: i * 0.618, spreadX });
     }
     this.sparkGroup.visible = false;
     this.root.add(this.sparkGroup);
 
-    // 6. Off-Track Gravel & Turf Clod Kick-Up VFX (active on grass / gravel traps!)
+    // 3. Off-Track Gravel & Turf Clod Kick-Up VFX
     this.gravelGroup = new THREE.Group();
     this.gravelParticles = [];
-    const clodGeo = new THREE.DodecahedronGeometry(0.052, 0);
+    const clodGeo = new THREE.DodecahedronGeometry(0.044, 0);
     this.gravelClodMat = new THREE.MeshStandardMaterial({
-      color: 0x8a7254,
-      roughness: 0.92,
-      metalness: 0.02,
+      color: 0x8a7458,
+      roughness: 0.94,
+      metalness: 0.01,
     });
     this.turfClodMat = new THREE.MeshStandardMaterial({
-      color: 0x3b5c2c,
-      roughness: 0.88,
-      metalness: 0.02,
-    });
-    this.gravelDustMat = new THREE.MeshBasicMaterial({
-      map: glowTex,
-      color: 0xc2aa88,
-      transparent: true,
-      opacity: 0.28,
-      depthWrite: false,
-      side: THREE.DoubleSide,
+      color: 0x355228,
+      roughness: 0.90,
+      metalness: 0.01,
     });
 
     for (let i = 0; i < 16; i++) {
       const isDust = i >= 10;
       const wheelSide = i % 2 === 0 ? -0.86 : 0.86;
       const isFrontOrigin = (i % 4) < 2;
+      const dustMat = isDust
+        ? new THREE.MeshBasicMaterial({
+            map: mistTex,
+            color: 0xbda786,
+            transparent: true,
+            opacity: 0.0,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+          })
+        : null;
       const mesh = isDust
-        ? new THREE.Mesh(puffGeo, this.gravelDustMat)
+        ? new THREE.Mesh(puffGeo, dustMat)
         : new THREE.Mesh(clodGeo, i % 3 === 0 ? this.turfClodMat : this.gravelClodMat);
       this.gravelGroup.add(mesh);
       this.gravelParticles.push({
         mesh,
+        dustMat,
         isDust,
         baseX: wheelSide,
-        baseZ: isFrontOrigin ? -1.15 : 1.65,
+        baseZ: isFrontOrigin ? -1.20 : 1.62,
         seed: i * 0.417,
       });
     }
     this.gravelGroup.visible = false;
     this.root.add(this.gravelGroup);
 
-    // 7. Dry Tire Lock-Up & Heavy Slip White-Blue Pirelli Smoke Puffs
+    // 4. Realistic Unloaded-Front Lockup & Heavy Slip Pirelli Rubber Smoke Puffs
     this.lockupSmokeGroup = new THREE.Group();
     this.lockupSmokePuffs = [];
-    this.lockupSmokeMat = new THREE.MeshBasicMaterial({
-      map: glowTex,
-      color: 0xeaf2ff,
-      transparent: true,
-      opacity: 0.32,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    for (let i = 0; i < 8; i++) {
-      const puff = new THREE.Mesh(puffGeo, this.lockupSmokeMat);
-      const side = i % 2 === 0 ? -0.86 : 0.86;
-      const isFront = i < 6;
+    for (let i = 0; i < 12; i++) {
+      const cornerIdx = i < 8 ? (i % 2) : (2 + (i % 2)); // 8 front puffs (FL/FR), 4 rear puffs (RL/RR)
+      const side = cornerIdx % 2 === 0 ? -0.86 : 0.86;
+      const isFront = cornerIdx < 2;
+      const mat = new THREE.MeshBasicMaterial({
+        map: mistTex,
+        color: 0xdce4ee,
+        transparent: true,
+        opacity: 0.0,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const puff = new THREE.Mesh(puffGeo, mat);
       this.lockupSmokeGroup.add(puff);
       this.lockupSmokePuffs.push({
         mesh: puff,
+        mat,
+        cornerIdx,
         baseX: side,
-        baseZ: isFront ? -1.32 : 1.55,
-        seed: i * 0.37,
+        baseZ: isFront ? -1.36 : 1.54,
+        seed: i * 0.293,
       });
     }
     this.lockupSmokeGroup.visible = false;
@@ -1772,8 +2040,11 @@ export class FormulaCarRig {
   setCompound(compoundId) {
     const comp = TIRE_COMPOUNDS[compoundId] || TIRE_COMPOUNDS.SOFT;
     this._liveryState.compound = compoundId || 'SOFT';
-    this.compoundMat.color.setStyle(comp.colorHex);
-    this.compoundMat.emissive.setStyle(comp.colorHex);
+    this._baseCompoundColor.setStyle(comp.colorHex);
+    this.compoundMat.color.copy(this._baseCompoundColor);
+    // Strictly zero emissive on painted tire rubber stripes
+    this.compoundMat.emissive.setHex(0x000000);
+    this.compoundMat.emissiveIntensity = 0.0;
   }
 
   setLivery(livery = {}) {
@@ -1832,11 +2103,16 @@ export class FormulaCarRig {
     }
   }
 
-  triggerBackfire(duration = 0.14) {
-    this.backfireTimer = Math.max(this.backfireTimer, duration);
+  // Modern 1.6L V6 turbo-hybrid F1 cars do not shoot external shift flames: clean no-ops
+  triggerShiftFlame() {}
+  triggerBackfire() {}
+
+  updateVisuals(carState, trackFrame, moistureW, dt, elapsedSec) {
+    this.updateTransformAndVFX(carState, trackFrame, moistureW, dt, elapsedSec);
   }
 
   updateTransformAndVFX(carState, trackFrame, moistureW, dt, elapsedSec) {
+    const safeDt = Math.max(0.0, Math.min(0.1, Number(dt) || 0.0));
     const yaw = carState.relYaw || 0;
     const cosY = Math.cos(yaw);
     const sinY = Math.sin(yaw);
@@ -1853,7 +2129,7 @@ export class FormulaCarRig {
     this.root.position.copy(trackFrame.pos);
     this.root.quaternion.setFromRotationMatrix(this._basisMat);
 
-    // Auto-hide player's own helmet mesh in Cockpit View (cameraIndex === 2) so view is 100% clear
+    // Hide player's own helmet mesh in Cockpit Eye-Point View so sightline is 100% clear
     if (carState.isCockpitView !== undefined || carState.cameraIndex !== undefined || carState.cameraModeIdx !== undefined) {
       const wantHide = Boolean(
         carState.isCockpitView ||
@@ -1862,32 +2138,187 @@ export class FormulaCarRig {
       this.setCockpitViewActive(wantHide);
     }
 
-    // Dynamic 3D suspension pitch, roll & pit-jack lift (uses @physics chassisPitchRad/chassisRollRad when present!)
-    const targetPitch =
-      (carState.chassisPitchRad !== undefined
-        ? carState.chassisPitchRad
-        : (carState.brakeInput || 0) * 0.025 - (carState.throttleInput || 0) * 0.013) +
-      (carState.pitJackLift || 0) * 0.042;
-    const targetRoll =
-      carState.chassisRollRad !== undefined
-        ? carState.chassisRollRad
-        : -(carState.latG || 0) * 0.021;
-    const tiltLerp = Math.min(1, dt * 15);
-    this.chassisTiltGroup.rotation.x += (targetPitch - this.chassisTiltGroup.rotation.x) * tiltLerp;
-    this.chassisTiltGroup.rotation.z += (targetRoll - this.chassisTiltGroup.rotation.z) * tiltLerp;
-    this.chassisTiltGroup.position.y = (carState.pitJackLift || 0) * 0.18;
+    // Authoritative 240Hz suspension pitch, roll, Venturi heave & pit-jack lift
+    const jackLift = carState.pitJackLift || 0;
+    const heaveM = THREE.MathUtils.clamp(Number(carState.chassisHeaveM) || 0, -0.028, 0.024);
+    if (Number.isFinite(carState.chassisPitchRad) && Number.isFinite(carState.chassisRollRad)) {
+      this.chassisTiltGroup.rotation.x = carState.chassisPitchRad + jackLift * 0.042;
+      this.chassisTiltGroup.rotation.z = carState.chassisRollRad;
+    } else {
+      const targetPitch = (carState.brakeInput || 0) * 0.024 - (carState.throttleInput || 0) * 0.012 + jackLift * 0.042;
+      const targetRoll = -(carState.latG || 0) * 0.020;
+      const tiltAlpha = safeDt > 0 ? (1.0 - Math.exp(-safeDt * 18.0)) : 0.25;
+      this.chassisTiltGroup.rotation.x += (targetPitch - this.chassisTiltGroup.rotation.x) * tiltAlpha;
+      this.chassisTiltGroup.rotation.z += (targetRoll - this.chassisTiltGroup.rotation.z) * tiltAlpha;
+    }
+    this.chassisTiltGroup.position.y = jackLift * 0.18 + heaveM;
 
-    // Effective steering angle & cockpit steering-wheel + gloved hands rotation
+    const speedKmh = Math.max(0, Number(carState.speedKmh) || 0);
+    const speedMps = speedKmh / 3.6;
+    const rpm = carState.rpm || 0;
+    const rpmNorm = Math.max(0, Math.min(1, (rpm - 4500) / 8200));
+    const throttleIn = carState.throttleInput || 0;
+    const brakeIn = carState.brakeInput || 0;
+
+    // Extract 4-corner flat-spot array [fl, fr, rl, rr] & tire wear / thermals
+    const flatArr = Array.isArray(carState.tireFlatSpot) ? carState.tireFlatSpot : null;
+    const scalarFlat = typeof carState.tireFlatSpot === 'number' ? carState.tireFlatSpot : 0;
+    const cornerIds = ['FL', 'FR', 'RL', 'RR'];
+
+    let minTireLife = 1.0;
+    let sumTireLife = 0.0;
+    let tireCount = 0;
+    let maxTireTempC = 90.0;
+    const tempsOut = [90, 90, 90, 90];
+
+    for (let i = 0; i < 4; i++) {
+      const cid = cornerIds[i];
+      const tObj = carState.tires?.[cid];
+      if (tObj && Number.isFinite(tObj.life)) {
+        const lf = THREE.MathUtils.clamp(tObj.life, 0, 1);
+        minTireLife = Math.min(minTireLife, lf);
+        sumTireLife += lf;
+        tireCount++;
+      }
+      const tc = Array.isArray(carState.tireTempsC) && Number.isFinite(carState.tireTempsC[i])
+        ? carState.tireTempsC[i]
+        : (tObj?.surfaceTemp ?? tObj?.temp ?? 90);
+      tempsOut[i] = tc;
+      if (tc > maxTireTempC) maxTireTempC = tc;
+    }
+
+    if (tireCount === 0) {
+      if (Number.isFinite(carState.tireLife)) {
+        minTireLife = THREE.MathUtils.clamp(carState.tireLife <= 1.05 ? carState.tireLife : carState.tireLife / 100, 0, 1);
+      } else if (Number.isFinite(carState.tireWear)) {
+        minTireLife = THREE.MathUtils.clamp(carState.tireWear <= 1.05 ? 1.0 - carState.tireWear : 1.0 - carState.tireWear / 100, 0, 1);
+      }
+      sumTireLife = minTireLife * 4;
+    }
+    const avgTireLife = tireCount > 0 ? sumTireLife / tireCount : minTireLife;
+
+    // Update Pirelli Tread Wear / Graining / Blistering Texture Stage & Dynamic Roughness
+    let targetStage = 0;
+    if (minTireLife <= 0.20) targetStage = 4;
+    else if (minTireLife <= 0.35 || (maxTireTempC > 120 && minTireLife < 0.65)) targetStage = 3;
+    else if (minTireLife <= 0.55) targetStage = 2;
+    else if (minTireLife <= 0.78) targetStage = 1;
+
+    if (targetStage !== this._activeTireWearStage) {
+      const stages = getTireWearStageMaps();
+      this._activeTireWearStage = targetStage;
+      this.tireRubberMat.map = stages[targetStage];
+      this.tireRubberMat.needsUpdate = true;
+    }
+
+    const wearFactor = THREE.MathUtils.clamp((1.0 - minTireLife) / 0.85, 0, 1);
+    if (moistureW > 0.08) {
+      // Wet water sheen on rubber tread
+      this.tireRubberMat.roughness = Math.max(0.22, 0.70 - moistureW * 0.46);
+    } else if (maxTireTempC > 112) {
+      // Overheated thermal blistering glaze
+      const heatGlaze = THREE.MathUtils.clamp((maxTireTempC - 112) / 22, 0, 1);
+      this.tireRubberMat.roughness = THREE.MathUtils.lerp(0.76, 0.50, heatGlaze);
+    } else {
+      // Dry slick: fresh 0.68 -> scrubbed/grained matte 0.82
+      this.tireRubberMat.roughness = 0.68 + wearFactor * 0.14;
+    }
+
+    // Subtle rubber dust patina on sidewall stripe as tire wears down (zero emissive!)
+    this._tmpColor.copy(this._baseCompoundColor).multiplyScalar(1.0 - wearFactor * 0.26);
+    this.compoundMat.color.copy(this._tmpColor);
+    this.compoundMat.roughness = 0.48 + wearFactor * 0.24;
+
+    // Spin, steer, compress & apply suspension damage / flat-spot judder across all 4 wheels
+    this.wheelSpinAngle -= (speedMps / 0.34) * safeDt;
+
+    const dmg = carState.damage || {};
+    const fwDmg = THREE.MathUtils.clamp(Number(dmg.frontWing) || 0, 0, 1);
+    const fwLeftDmg = THREE.MathUtils.clamp(Number(dmg.frontWingLeft ?? fwDmg) || 0, 0, 1);
+    const fwRightDmg = THREE.MathUtils.clamp(Number(dmg.frontWingRight ?? fwDmg) || 0, 0, 1);
+    const rwDmg = THREE.MathUtils.clamp(Number(dmg.rearWing) || 0, 0, 1);
+    const suspDmg = THREE.MathUtils.clamp(Number(dmg.suspension) || 0, 0, 1);
+    const suspBias = dmg.suspensionBias || 1;
+    const damagedCorner = dmg.damagedCorner || (suspBias < 0 ? 'FL' : 'FR');
+    const hasPunc = Boolean(dmg.hasPuncture);
+
     const effSteerRad =
       carState.steerAngleRad !== undefined
         ? carState.steerAngleRad
         : (carState.steerInput || 0) * 0.42;
-    const wheelTurnRad =
-      carState.steerInput !== undefined
-        ? carState.steerInput * 0.96
-        : effSteerRad * 2.15;
+    const visualSteer = -effSteerRad * 0.88;
+    const wComp = Array.isArray(carState.wheelCompression) ? carState.wheelCompression : null;
+    const flatSpeedEnv = THREE.MathUtils.clamp((speedKmh - 18.0) / 140.0, 0.0, 1.0);
+    let maxFrontFlat = 0.0;
 
-    const rpm = carState.rpm || 0;
+    for (let i = 0; i < this.wheels.length; i++) {
+      const w = this.wheels[i];
+      const isLeft = w.x < 0;
+      const tCorner = carState.tires?.[w.id];
+      const cornerFlat = THREE.MathUtils.clamp(
+        flatArr ? (Number(flatArr[i]) || 0) : (Number(tCorner?.flatSpot) || scalarFlat),
+        0,
+        1
+      );
+      if (w.isFront && cornerFlat > maxFrontFlat) maxFrontFlat = cornerFlat;
+
+      const isDamagedSuspCorner = suspDmg > 0.08 && w.id === damagedCorner;
+      const isSameSideSusp = suspDmg > 0.25 && ((suspBias < 0 && isLeft) || (suspBias > 0 && !isLeft));
+      const cornerSusp = isDamagedSuspCorner ? suspDmg : (isSameSideSusp ? suspDmg * 0.32 : 0.0);
+
+      // Wheel rotation-frequency flat-spot harmonic judder (1x + 2x wheel revolution pulse)
+      const flatPulse = cornerFlat > 0.03 && flatSpeedEnv > 0
+        ? (Math.sin(this.wheelSpinAngle + i * 1.3) + 0.45 * Math.sin(this.wheelSpinAngle * 2.0 + i)) * cornerFlat * flatSpeedEnv
+        : 0.0;
+
+      // Steer + bent tie-rod toe offset + flat-spot knuckle shimmy
+      const toeDmgOffset = cornerSusp > 0 ? (isLeft ? 1 : -1) * cornerSusp * 0.11 : 0.0;
+      const shimmyYaw = w.isFront ? flatPulse * 0.015 : 0.0;
+      w.steerPivot.rotation.y = (w.isFront ? visualSteer : 0.0) + toeDmgOffset + shimmyYaw;
+
+      // Bent wishbone camber cant + punctured tire radial squat
+      const cornerPunctured = Boolean(tCorner?.punctured || (hasPunc && w.id === damagedCorner));
+      w.camberPivot.rotation.z = (isLeft ? 1 : -1) * cornerSusp * 0.19;
+      if (cornerPunctured) {
+        w.camberPivot.scale.set(1.07, 0.83, 0.88);
+      } else {
+        w.camberPivot.scale.set(1.0, 1.0, 1.0);
+      }
+
+      w.spinPivot.rotation.x = this.wheelSpinAngle;
+
+      const rawComp = wComp ? (Number(wComp[i]) || 0) : 0;
+      const compOffset = Math.abs(rawComp) > 0.10
+        ? THREE.MathUtils.clamp((rawComp - 0.25) * 0.068, -0.045, 0.058)
+        : THREE.MathUtils.clamp(rawComp, -0.045, 0.058);
+      const puncDrop = cornerPunctured ? -0.044 : 0;
+      const suspSag = -cornerSusp * 0.018;
+      w.steerPivot.position.y = w.baseY + compOffset;
+      w.camberPivot.position.y = puncDrop + suspSag + flatPulse * 0.009;
+
+      // Show rotating flat-spot tread scuff patch when flat-spotted
+      if (w.flatPatchMesh) {
+        if (cornerFlat > 0.10) {
+          w.flatPatchMesh.visible = true;
+          w.flatPatchMat.opacity = Math.min(0.78, cornerFlat * 0.85);
+        } else {
+          w.flatPatchMesh.visible = false;
+        }
+      }
+
+      const susp = this.suspensionNodes[w.id];
+      if (susp) {
+        const baseZ = susp.userData.baseRotZ || 0;
+        susp.rotation.z = baseZ + (isLeft ? -1 : 1) * (compOffset * 1.15 - cornerSusp * 0.14 + flatPulse * 0.012);
+      }
+    }
+
+    // Steering wheel & gloved hands rotation (+ subtle flat-spot buzz & suspension pull offset)
+    const wheelTurnRad =
+      (carState.steerInput !== undefined ? carState.steerInput * 0.96 : effSteerRad * 2.15) +
+      (suspDmg > 0.10 ? suspDmg * 0.09 * suspBias : 0.0) +
+      (maxFrontFlat > 0.05 ? Math.sin(this.wheelSpinAngle) * maxFrontFlat * flatSpeedEnv * 0.022 : 0.0);
+
     if (this.parts.steeringWheel) {
       const baseZ = this.parts.steeringWheel.userData.baseRotZ || 0;
       this.parts.steeringWheel.rotation.z = baseZ - wheelTurnRad;
@@ -1897,187 +2328,152 @@ export class FormulaCarRig {
     }
 
     if (this.shiftLedMat) {
-      if (rpm > 12250) this.shiftLedMat.color.setHex(0x00e5ff);
-      else if (rpm > 10900) this.shiftLedMat.color.setHex(0xff2438);
-      else if (rpm > 9000) this.shiftLedMat.color.setHex(0xffd600);
-      else this.shiftLedMat.color.setHex(0x00ff88);
+      if (rpm > 12250) this.shiftLedMat.color.setHex(0x38bdf8);
+      else if (rpm > 10900) this.shiftLedMat.color.setHex(0xef4444);
+      else if (rpm > 9000) this.shiftLedMat.color.setHex(0xf59e0b);
+      else this.shiftLedMat.color.setHex(0x22c55e);
     }
 
-    // Wet Tire Sheen, Exhaust Thermal Glow & Continuous Afterburner Heat-Haze
-    this.tireRubberMat.roughness = moistureW > 0.12 ? Math.max(0.22, 0.72 - moistureW * 0.48) : 0.72;
-    const rpmNorm = Math.max(0, Math.min(1, (rpm - 4500) / 8500));
-    const throttleIn = carState.throttleInput || 0;
-    this.exhaustMat.emissiveIntensity = 0.10 + rpmNorm * 0.55;
-    if (this.afterburnerMat && this.heatHazeMesh) {
-      const abPulse = 0.85 + 0.15 * Math.sin(elapsedSec * 42.0);
-      this.afterburnerMat.opacity = (0.18 + rpmNorm * 0.52 + throttleIn * 0.18) * abPulse;
-      const abScale = 0.82 + rpmNorm * 0.55;
-      this.afterburnerMesh.scale.setScalar(abScale);
-      this.heatHazeMat.opacity = (0.06 + rpmNorm * 0.16 + throttleIn * 0.08) * abPulse;
-      this.heatHazeMesh.scale.set(
-        0.9 + 0.18 * Math.sin(elapsedSec * 31.0),
-        0.9 + 0.18 * Math.cos(elapsedSec * 27.0),
-        0.75 + rpmNorm * 0.85
+    // FIA Rear Wet / ERS Harvesting LED Matrix (true LED emitter; off in dry full-throttle)
+    const harvesting = speedKmh > 65 && throttleIn < 0.18;
+    const flashRainLight = moistureW > 0.08 || carState.inPitLane || harvesting;
+    if (flashRainLight) {
+      const pulseOn = ((elapsedSec * 4.5 + (carState.carNum || 0) * 0.27) % 1.0) < 0.50;
+      this.rainLightMat.emissiveIntensity = pulseOn ? 3.2 : 0.08;
+    } else {
+      this.rainLightMat.emissiveIntensity = 0.0;
+    }
+
+    // Physical Slotted Carbon-Ceramic BrakeDisc Blackbody Thermal Integrator (zero floating halo quads!)
+    if (Number.isFinite(carState.brakeThermal)) {
+      this._brakeThermal = THREE.MathUtils.clamp(carState.brakeThermal, 0, 1);
+      this.brakeGlow = this._brakeThermal * 1.85;
+    } else if (safeDt > 0) {
+      const brakePower = brakeIn > 0.08 && speedMps > 12.0
+        ? brakeIn * (speedMps / 88.0) * 2.75
+        : 0.0;
+      const airCooling = (0.52 + speedMps / 74.0) * 1.28;
+      this._brakeThermal = THREE.MathUtils.clamp(
+        this._brakeThermal + (brakePower - airCooling * this._brakeThermal) * safeDt,
+        0.0,
+        1.0
       );
-      this.heatHazeMesh.rotation.z = elapsedSec * 9.5;
+      this.brakeGlow = this._brakeThermal * 1.85;
+      carState.brakeThermal = this._brakeThermal;
+    } else {
+      this._brakeThermal = THREE.MathUtils.clamp((this.brakeGlow || 0) / 1.85, 0, 1);
     }
 
-    // Blinking FIA Rear Rain / ERS Light
-    const speedKmh = carState.speedKmh || 0;
-    const flashRainLight = moistureW > 0.12 || carState.inPitLane || (speedKmh > 60 && throttleIn < 0.22);
-    const pulseOn = ((elapsedSec * 8.5 + (carState.carNum || 0) * 0.31) % 1.0) < 0.52;
-    const rainInt = flashRainLight ? (pulseOn ? 5.6 : 0.26) : 1.50;
-    this.rainLightMat.emissiveIntensity = rainInt;
-    this.rainHaloMat.opacity = flashRainLight ? (pulseOn ? 0.90 : 0.06) : 0.34;
+    const glow = this._brakeThermal > 0.08 ? (this._brakeThermal - 0.08) / 0.92 : 0.0;
+    if (glow > 0.001) {
+      this.brakeDiscMat.emissive.setRGB(
+        Math.min(1.0, glow * 1.15),
+        0.28 * glow * glow,
+        0.03 * glow * glow * glow
+      );
+      this.brakeDiscMat.emissiveIntensity = glow * 1.85;
+    } else {
+      this.brakeDiscMat.emissiveIntensity = 0.0;
+    }
 
-    // Spin, steer & compress all 4 18-inch wheels (supports @physics wheelCompression = [fl, fr, rl, rr])
-    const speedMps = speedKmh / 3.6;
-    this.wheelSpinAngle -= (speedMps / 0.34) * dt;
-    const visualSteer = -effSteerRad * 0.88;
-    const wComp = Array.isArray(carState.wheelCompression) ? carState.wheelCompression : null;
-    for (let i = 0; i < this.wheels.length; i++) {
-      const w = this.wheels[i];
-      if (w.isFront) w.steerPivot.rotation.y = visualSteer;
-      w.spinPivot.rotation.x = this.wheelSpinAngle;
-      const compOffset = wComp ? THREE.MathUtils.clamp(Number(wComp[i]) || 0, -0.06, 0.08) : 0;
-      w.steerPivot.position.y = w.baseY + compOffset;
-      const susp = this.suspensionNodes[w.id];
-      if (susp && wComp) {
-        susp.rotation.z = (w.x < 0 ? -1 : 1) * compOffset * 1.15;
+    // Visible Physical Wing Damage, DRS Jamming & Carbon Scuffing
+    const aeroFlutter = (speedKmh / 310.0) * Math.sin(elapsedSec * 34.0 + (carState.carNum || 1));
+
+    if (this.parts.fwEndL) {
+      const o = this.parts.fwEndL;
+      if (fwLeftDmg > 0.70) {
+        o.visible = false;
+      } else {
+        o.visible = true;
+        o.rotation.z = (o.userData.baseRotZ || 0) + (fwLeftDmg > 0.12 ? fwLeftDmg * 0.42 + aeroFlutter * fwLeftDmg * 0.03 : 0);
+        o.rotation.x = (o.userData.baseRotX || 0) + (fwLeftDmg > 0.12 ? fwLeftDmg * 0.20 : 0);
+        o.position.y = (o.userData.basePosY || 0) - (fwLeftDmg > 0.12 ? fwLeftDmg * 0.024 : 0);
+      }
+    }
+    if (this.parts.fwEndR) {
+      const o = this.parts.fwEndR;
+      if (fwRightDmg > 0.70) {
+        o.visible = false;
+      } else {
+        o.visible = true;
+        o.rotation.z = (o.userData.baseRotZ || 0) - (fwRightDmg > 0.12 ? fwRightDmg * 0.42 + aeroFlutter * fwRightDmg * 0.03 : 0);
+        o.rotation.x = (o.userData.baseRotX || 0) + (fwRightDmg > 0.12 ? fwRightDmg * 0.20 : 0);
+        o.position.y = (o.userData.basePosY || 0) - (fwRightDmg > 0.12 ? fwRightDmg * 0.024 : 0);
+      }
+    }
+    if (this.parts.fwMain) {
+      const o = this.parts.fwMain;
+      const maxFw = Math.max(fwLeftDmg, fwRightDmg, fwDmg);
+      const asymTilt = (fwLeftDmg - fwRightDmg) * 0.14 + (Math.abs(fwLeftDmg - fwRightDmg) < 0.04 && maxFw > 0.18 ? maxFw * 0.075 : 0);
+      o.rotation.z = (o.userData.baseRotZ || 0) + asymTilt;
+      o.rotation.x = (o.userData.baseRotX || 0) + (maxFw > 0.15 ? maxFw * 0.11 + aeroFlutter * maxFw * 0.015 : 0);
+      o.position.y = (o.userData.basePosY || 0) - (maxFw > 0.15 ? maxFw * 0.026 : 0);
+    }
+
+    if (this.parts.rwMain) {
+      const o = this.parts.rwMain;
+      if (rwDmg > 0.12) {
+        o.rotation.z = (o.userData.baseRotZ || 0) + rwDmg * 0.13 * suspBias + aeroFlutter * rwDmg * 0.018;
+        o.rotation.y = (o.userData.baseRotY || 0) + rwDmg * 0.06 * suspBias;
+        o.rotation.x = (o.userData.baseRotX || 0) - rwDmg * 0.05;
+      } else {
+        o.rotation.z = o.userData.baseRotZ || 0;
+        o.rotation.y = o.userData.baseRotY || 0;
+        o.rotation.x = o.userData.baseRotX || 0;
       }
     }
 
-    // Glowing Carbon-Ceramic Brake Discs & Calipers
-    const brakeIn = carState.brakeInput || 0;
-    const heatGain = brakeIn > 0.20 && speedKmh > 80
-      ? brakeIn * (speedKmh / 300.0) * 9.6
-      : 0;
-    if (heatGain > 0) {
-      this.brakeGlow = Math.min(5.6, this.brakeGlow + heatGain * dt);
-    } else {
-      this.brakeGlow = Math.max(0, this.brakeGlow - 2.85 * dt);
-    }
-    const heatNorm = Math.min(1.0, this.brakeGlow / 5.2);
-    const thR = 0.85 + 0.15 * Math.min(1.0, heatNorm * 1.8);
-    const thG = 0.08 + 0.64 * Math.pow(heatNorm, 1.35);
-    const thB = 0.02 + 0.18 * Math.pow(heatNorm, 2.2);
-    this.brakeDiscMat.emissive.setRGB(thR, thG, thB);
-    this.brakeDiscMat.emissiveIntensity = this.brakeGlow;
-    this.caliperMat.emissive.setRGB(thR * 0.92, thG * 0.65, thB * 0.45);
-    this.caliperMat.emissiveIntensity = Math.min(1.4, this.brakeGlow * 0.25);
-    const haloAlpha = Math.min(0.64, this.brakeGlow * 0.13);
-    for (const hm of this.brakeHaloMats) {
-      hm.color.setRGB(thR, thG * 0.92 + 0.08, thB);
-      hm.opacity = haloAlpha;
-    }
-
-    if ((carState.revBlipTimer || 0) > 0.06 && speedKmh > 135 && this.backfireTimer <= 0) {
-      this.backfireTimer = 0.085;
-    }
-
-    if (this.backfireTimer > 0 && !carState.exploded) {
-      this.backfireTimer -= dt;
-      this.exhaustFlameGroup.visible = true;
-      const flick = 0.78 + Math.random() * 0.58;
-      const lenZ = 0.72 + Math.random() * 0.85;
-      this.flameCoreMesh.scale.set(flick * 0.92, flick * 0.92, lenZ * 1.08);
-      this.flameOuterMesh.scale.set(flick * 1.08, flick * 1.08, lenZ);
-      this.exhaustFlameGroup.rotation.z = Math.random() * Math.PI * 2;
-      this.flameFlashMat.opacity = 0.55 + Math.random() * 0.40;
-    } else {
-      this.exhaustFlameGroup.visible = false;
-    }
-
-    // High-Speed (>250 km/h) Rear-Wingtip Aero Condensation Vortex Contrails
-    const vortexThreshold = 250.0;
-    if (speedKmh > vortexThreshold && !carState.exploded) {
-      this.vortexGroup.visible = true;
-      const speedNorm = Math.min(1.0, (speedKmh - vortexThreshold) / 58.0);
-      const towBoost = (carState.inSlipstream || carState.drsActive) ? 0.55 : 0.0;
-      const humidBoost = 1.0 + moistureW * 1.45 + towBoost;
-      const vAlpha = Math.min(0.54, (0.06 + speedNorm * 0.20) * humidBoost);
-      this.vortexOuterMat.opacity = vAlpha;
-      this.vortexCoreMat.opacity = Math.min(0.76, vAlpha * 1.62);
-
-      const slipYaw = -(carState.latG || 0) * 0.038;
-      const lenScale = 0.72 + speedNorm * 0.72 + towBoost * 0.28;
-      for (const vt of this.vortexTrails) {
-        const flutter = Math.sin(elapsedSec * 30.0 + vt.side * 1.7) * 0.014;
-        const pulseR = 0.92 + 0.14 * Math.sin(elapsedSec * 24.0 - vt.side * 1.1);
-        vt.tipPivot.rotation.y = slipYaw + flutter;
-        vt.tipPivot.rotation.x = -0.024 + Math.cos(elapsedSec * 22.0 + vt.side) * 0.008;
-        vt.outerTube.scale.set(pulseR, pulseR, lenScale);
-        vt.coreTube.scale.set(1.0, 1.0, lenScale * 0.96);
-        vt.outerTube.rotation.z = elapsedSec * 14.0 * vt.side;
-        vt.coreTube.rotation.z = -elapsedSec * 18.0 * vt.side;
-      }
-    } else {
-      this.vortexGroup.visible = false;
-    }
-
-    // Multi-Stage Wet Rooster-Tail Spray Plumes
-    const showSpray = moistureW > 0.12 && speedKmh > 58 && !carState.exploded;
-    this.sprayGroup.visible = showSpray;
-    if (showSpray) {
-      const intensity = Math.min(1.0, ((speedKmh - 58) / 195) * (0.42 + moistureW * 0.92));
-      this.sprayMat.opacity = 0.15 + intensity * 0.36;
-      for (const p of this.sprayPuffs) {
-        const rate = p.isCenterPlume ? 7.8 : 9.6;
-        const phase = (elapsedSec * rate + p.idx * 0.29) % 1.0;
-        if (p.isCenterPlume) {
-          p.mesh.position.z = 2.0 + phase * (5.5 + intensity * 6.8);
-          p.mesh.position.y = 0.42 + phase * (1.85 + intensity * 2.45);
-          p.mesh.position.x = p.baseX + Math.sin(elapsedSec * 6.0 + p.idx) * phase * 0.55;
-          p.mesh.scale.setScalar(0.65 + phase * (1.9 + intensity * 2.1));
-        } else {
-          p.mesh.position.z = 1.65 + phase * (3.8 + intensity * 4.5);
-          p.mesh.position.y = 0.24 + phase * (0.95 + intensity * 1.25);
-          p.mesh.position.x = p.baseX * (1.0 + phase * 0.68);
-          p.mesh.scale.setScalar(0.48 + phase * (1.35 + intensity * 1.45));
-        }
-        p.mesh.rotation.z = elapsedSec * 1.8 + p.idx;
+    // Subtle carbon abrasion scuff decals & paint clearcoat wear
+    const maxAnyDmg = Math.max(fwDmg, fwLeftDmg, fwRightDmg, rwDmg, suspDmg);
+    if (this.scuffGroup) {
+      this.scuffGroup.visible = maxAnyDmg > 0.12;
+      if (this.scuffGroup.visible) {
+        this._scuffFrontMat.opacity = Math.min(0.82, Math.max(fwDmg, fwLeftDmg, fwRightDmg) * 0.90);
+        this._scuffSideMat.opacity = Math.min(0.78, Math.max(suspDmg, maxAnyDmg * 0.55) * 0.85);
+        this._scuffRearMat.opacity = Math.min(0.80, rwDmg * 0.88);
       }
     }
+    this.primaryMat.clearcoatRoughness = 0.038 + maxAnyDmg * 0.18;
 
-    // Articulated DRS Flap & Wing Damage
-    const fwDmg = carState.damage?.frontWing || 0;
-    const rwDmg = carState.damage?.rearWing || 0;
-    const hasPunc = !!carState.damage?.hasPuncture;
-
+    // Articulated DRS Flap (functionally & visually disabled when rwDmg >= 0.35!)
     const steerMag = Math.abs(
       carState.steerInput !== undefined
         ? carState.steerInput
         : (carState.steerAngleRad || 0) * 2.4
     );
+    const drsBroken = rwDmg >= 0.35;
     const drsOpen =
       !carState.exploded &&
+      !drsBroken &&
       brakeIn < 0.08 &&
-      rwDmg < 0.55 &&
-      !!(
-        carState.drsActive ||
-        carState.inSlipstream ||
-        (speedKmh > 235 && steerMag < 0.08)
-      );
+      Boolean(carState.drsActive);
+
     if (this.parts.drsFlap) {
-      const baseX = this.parts.drsFlap.userData.baseRotX || 0;
+      const o = this.parts.drsFlap;
+      const baseX = o.userData.baseRotX || 0;
       const targetDrs = baseX + (drsOpen ? 0.32 * this._drsOpenSign : 0.0);
-      this.parts.drsFlap.rotation.x += (targetDrs - this.parts.drsFlap.rotation.x) * Math.min(1, dt * 16);
+      const flapAlpha = safeDt > 0 ? (1.0 - Math.exp(-safeDt * 18.0)) : 0.3;
+      o.rotation.x += (targetDrs - o.rotation.x) * flapAlpha;
+      o.rotation.z = (o.userData.baseRotZ || 0) + (rwDmg > 0.50 ? rwDmg * 0.08 * suspBias : 0.0);
     }
 
-    // Throttled ~15Hz Live OLED Steering-Wheel & Dash Telemetry Redraw (Player / Cockpit Car)
+    // Throttled ~15Hz Cosworth PCU-8D Cockpit OLED Telemetry Update (supports Player + Replay T-Cam AI focus & backward scrubs!)
+    const isHeroOled = Boolean(carState.isPlayer || carState.isReplayFocus || this._cockpitViewActive || carState.carNum === 1);
+    const oledInterval = isHeroOled ? 0.066 : (0.18 + ((carState.carNum || 0) % 5) * 0.015);
     const shouldRefreshOled =
-      (carState.isPlayer !== false && (carState.isPlayer || this._cockpitViewActive || carState.carNum === 1)) &&
-      (elapsedSec - this._oledLastDrawSec >= 0.066 ||
-        carState.gear !== this._oledLastGear ||
-        drsOpen !== this._oledLastDrs);
+      Math.abs(elapsedSec - this._oledLastDrawSec) >= oledInterval ||
+      carState.gear !== this._oledLastGear ||
+      drsOpen !== this._oledLastDrs;
+
     if (shouldRefreshOled) {
       this._oledLastDrawSec = elapsedSec;
       this._oledLastGear = carState.gear;
       this._oledLastDrs = drsOpen;
-      const gearLabel = speedKmh < 3 && !carState.gear ? 'N' : (carState.gear || Math.max(1, Math.min(8, Math.ceil(speedKmh / 42))));
-      const compId = carState.tireCompound || this._liveryState.compound || 'SOFT';
-      const tireWear = carState.tireWear !== undefined ? carState.tireWear : 0;
-      const tireLifePct = tireWear <= 1.05 ? (1.0 - tireWear) * 100 : tireWear;
+
+      const gearLabel = speedKmh < 3 && !carState.gear
+        ? 'N'
+        : (carState.gear || Math.max(1, Math.min(8, Math.ceil(speedKmh / 42))));
+      const compId = carState.compound || carState.tireCompound || this._liveryState.compound || 'SOFT';
       const rawErs =
         carState.ersCharge !== undefined
           ? carState.ersCharge
@@ -2086,100 +2482,149 @@ export class FormulaCarRig {
         rawErs !== undefined
           ? (rawErs <= 1.05 ? rawErs * 100 : rawErs)
           : Math.max(18, 96 - rpmNorm * 28);
-      this._renderOledTelemetry(gearLabel, speedKmh, compId, tireLifePct, ersPct, drsOpen, !!carState.inPitLane, rpmNorm);
+      const rawBias = Number(carState.brakeBias ?? carState.perfMods?.brakeBias ?? 56.5);
+      const brakeBiasPct = rawBias <= 1.0 ? rawBias * 100 : rawBias;
+      const drsState = drsBroken
+        ? 'FAIL'
+        : (drsOpen ? 'OPEN' : ((carState.inSlipstream || (speedKmh > 210 && steerMag < 0.12)) ? 'AVAIL' : 'STBY'));
+
+      this._renderOledTelemetry({
+        gearLabel,
+        rpm,
+        rpmNorm,
+        speedKmh,
+        compId,
+        tireLifePct: avgTireLife * 100,
+        tireTemps: tempsOut,
+        brakeBiasPct,
+        fuelLaps: carState.fuelLaps ?? 7.0,
+        ersPct,
+        ersDeploying: Boolean(carState.ersDeploying || (throttleIn > 0.88 && speedKmh > 120 && ersPct > 5)),
+        ersHarvesting: Boolean(brakeIn > 0.25 && speedKmh > 60),
+        drsState,
+        inPit: Boolean(carState.inPitLane),
+      });
     }
 
-    if (this.parts.fwEndL) {
-      const bZ = this.parts.fwEndL.userData.baseRotZ || 0;
-      const bX = this.parts.fwEndL.userData.baseRotX || 0;
-      if (fwDmg > 0.72) {
-        this.parts.fwEndL.visible = false;
-      } else {
-        this.parts.fwEndL.visible = true;
-        this.parts.fwEndL.rotation.z = bZ + (fwDmg > 0.48 ? 0.30 : (fwDmg > 0.26 ? 0.12 : 0.0));
-        this.parts.fwEndL.rotation.x = bX + (fwDmg > 0.48 ? 0.12 : 0.0);
+    // Realistic Wet Tire Mist & Venturi Diffuser Rooster-Tail Spray (zero popping!)
+    const showSpray = moistureW > 0.06 && speedKmh > 48 && !carState.exploded;
+    this.sprayGroup.visible = showSpray;
+    if (showSpray) {
+      const intensity = Math.min(1.0, ((speedKmh - 48) / 210) * (0.35 + moistureW * 0.95));
+      for (const p of this.sprayPuffs) {
+        const rate = p.isCenterPlume ? 3.8 : 5.4;
+        const phase = (elapsedSec * rate + p.idx * 0.213) % 1.0;
+        // Smooth bell envelope: 0 at birth, peaks mid-wake, fades cleanly to 0 before wrapping
+        const lifeEnv = Math.sin(Math.PI * Math.pow(phase, 0.68));
+        p.mat.opacity = lifeEnv * (p.isCenterPlume ? 0.30 : 0.22) * intensity;
+
+        if (p.isCenterPlume) {
+          p.mesh.position.z = p.baseZ + phase * (6.2 + intensity * 8.5);
+          p.mesh.position.y = 0.28 + phase * (1.55 + intensity * 2.15);
+          p.mesh.position.x = p.baseX + Math.sin(elapsedSec * 3.5 + p.idx * 1.7) * phase * 0.72;
+          p.mesh.scale.setScalar(0.55 + phase * (2.2 + intensity * 2.6));
+        } else {
+          p.mesh.position.z = p.baseZ + phase * (3.2 + intensity * 4.8);
+          p.mesh.position.y = 0.16 + phase * (0.72 + intensity * 1.05);
+          p.mesh.position.x = p.baseX * (1.0 + phase * 0.45);
+          p.mesh.scale.setScalar(0.36 + phase * (1.15 + intensity * 1.35));
+        }
+        p.mesh.rotation.z = elapsedSec * 1.1 + p.idx * 0.9;
       }
-    }
-    if (this.parts.fwEndR) {
-      const bZ = this.parts.fwEndR.userData.baseRotZ || 0;
-      const bX = this.parts.fwEndR.userData.baseRotX || 0;
-      if (fwDmg > 0.84) {
-        this.parts.fwEndR.visible = false;
-      } else {
-        this.parts.fwEndR.visible = true;
-        this.parts.fwEndR.rotation.z = bZ + (fwDmg > 0.48 ? -0.32 : (fwDmg > 0.34 ? -0.14 : 0.0));
-        this.parts.fwEndR.rotation.x = bX + (fwDmg > 0.48 ? 0.10 : 0.0);
-      }
-    }
-    if (this.parts.rwMain) {
-      const bZ = this.parts.rwMain.userData.baseRotZ || 0;
-      this.parts.rwMain.rotation.z = bZ + (rwDmg > 0.30 ? 0.14 * Math.sin(elapsedSec * 24) + 0.12 : 0.0);
     }
 
     // Off-Track Gravel & Turf Clod Kick-Up VFX
-    const offTrackActive = !carState.exploded && speedKmh > 30 && Boolean(carState.onGrass || carState.onGravel || carState.offTrack);
+    const offTrackActive = !carState.exploded && speedKmh > 28 && Boolean(carState.onGrass || carState.onGravel || carState.offTrack);
     this.gravelGroup.visible = offTrackActive;
     if (offTrackActive) {
-      const gPower = Math.min(1.0, (speedKmh - 28) / 145);
-      this.gravelDustMat.color.setHex(carState.onGravel ? 0xcab08a : 0x8fa078);
-      this.gravelDustMat.opacity = 0.14 + gPower * 0.24;
+      const gPower = Math.min(1.0, (speedKmh - 26) / 145);
+      const dustHex = carState.onGravel ? 0xc4ad8c : 0x889674;
       for (const gp of this.gravelParticles) {
-        const ph = (elapsedSec * (gp.isDust ? 4.8 : 7.4) + gp.seed) % 1.0;
-        gp.mesh.position.z = gp.baseZ + ph * (2.6 + gPower * 3.4);
-        gp.mesh.position.x = gp.baseX + Math.sin(ph * 6.2 + gp.seed * 8.0) * 0.28;
-        if (gp.isDust) {
-          gp.mesh.position.y = 0.18 + ph * (0.85 + gPower * 0.95);
-          gp.mesh.scale.setScalar(0.35 + ph * (1.15 + gPower * 0.95));
-          gp.mesh.rotation.z = elapsedSec * 2.1 + gp.seed;
+        const ph = (elapsedSec * (gp.isDust ? 4.2 : 6.8) + gp.seed) % 1.0;
+        gp.mesh.position.z = gp.baseZ + ph * (2.5 + gPower * 3.4);
+        gp.mesh.position.x = gp.baseX + Math.sin(ph * 5.8 + gp.seed * 8.0) * 0.26;
+        if (gp.isDust && gp.dustMat) {
+          gp.dustMat.color.setHex(dustHex);
+          gp.dustMat.opacity = Math.sin(Math.PI * Math.pow(ph, 0.7)) * (0.10 + gPower * 0.20);
+          gp.mesh.position.y = 0.16 + ph * (0.78 + gPower * 0.88);
+          gp.mesh.scale.setScalar(0.32 + ph * (1.05 + gPower * 0.95));
+          gp.mesh.rotation.z = elapsedSec * 1.8 + gp.seed;
         } else {
-          gp.mesh.position.y = 0.06 + Math.sin(ph * Math.PI) * (0.48 + gPower * 0.62);
-          gp.mesh.rotation.x = elapsedSec * 14.0 + gp.seed * 5.0;
-          gp.mesh.rotation.y = elapsedSec * 11.0;
+          gp.mesh.position.y = 0.05 + Math.sin(ph * Math.PI) * (0.42 + gPower * 0.56);
+          gp.mesh.rotation.x = elapsedSec * 13.0 + gp.seed * 5.0;
+          gp.mesh.rotation.y = elapsedSec * 10.0;
         }
       }
     }
 
-    // Dry Tire Lock-Up & Cornering Slip Smoke Puffs (Player & @cpu aiLockupPuffTimer!)
-    const skidInt = Math.max(carState.skidIntensity || 0, (carState.aiLockupPuffTimer || 0) > 0 ? 0.92 : 0);
-    const showLockupSmoke = !carState.exploded && moistureW < 0.22 && speedKmh > 42 && skidInt > 0.48;
+    // Realistic Dry Lockup & Unloaded-Inside-Front Tire Smoke Puffs
+    const flSlip = Math.abs(carState.tires?.FL?.slipRatio || 0);
+    const frSlip = Math.abs(carState.tires?.FR?.slipRatio || 0);
+    const rlSlip = Math.abs(carState.tires?.RL?.slipRatio || 0);
+    const rrSlip = Math.abs(carState.tires?.RR?.slipRatio || 0);
+    const maxLockSlip = Math.max(flSlip, frSlip, rlSlip, rrSlip);
+    const skidInt = Math.max(
+      carState.skidIntensity || 0,
+      maxLockSlip > 0.20 ? Math.min(1.0, (maxLockSlip - 0.16) * 2.4) : 0,
+      (carState.aiLockupPuffTimer || 0) > 0 ? 0.88 : 0
+    );
+
+    const showLockupSmoke = !carState.exploded && moistureW < 0.24 && speedKmh > 40 && skidInt > 0.44;
     this.lockupSmokeGroup.visible = showLockupSmoke;
     if (showLockupSmoke) {
-      const smokePow = Math.min(1.0, (skidInt - 0.45) * 1.8);
-      this.lockupSmokeMat.opacity = 0.14 + smokePow * 0.28;
+      const smokePow = Math.min(1.0, (skidInt - 0.42) * 1.75);
+      // Weight front lockup smoke toward the unloaded inside front wheel when turning in under braking!
+      const steerSign = effSteerRad;
+      const cornerWeights = [
+        flSlip > 0.18 ? Math.min(1.0, flSlip * 2.5) : (steerSign < -0.025 ? 1.0 : (steerSign > 0.025 ? 0.22 : 0.75)),
+        frSlip > 0.18 ? Math.min(1.0, frSlip * 2.5) : (steerSign >  0.025 ? 1.0 : (steerSign < -0.025 ? 0.22 : 0.75)),
+        rlSlip > 0.20 ? Math.min(1.0, rlSlip * 2.2) : (throttleIn > 0.75 ? 0.65 : 0.15),
+        rrSlip > 0.20 ? Math.min(1.0, rrSlip * 2.2) : (throttleIn > 0.75 ? 0.65 : 0.15),
+      ];
+
       for (const sp of this.lockupSmokePuffs) {
-        const ph = (elapsedSec * 6.8 + sp.seed) % 1.0;
-        sp.mesh.position.x = sp.baseX + Math.sin(ph * 5.0 + sp.seed * 6.0) * 0.20;
-        sp.mesh.position.y = 0.16 + ph * (0.55 + smokePow * 0.55);
-        sp.mesh.position.z = sp.baseZ + ph * (2.2 + smokePow * 2.4);
-        sp.mesh.scale.setScalar(0.38 + ph * (1.05 + smokePow * 0.85));
-        sp.mesh.rotation.z = elapsedSec * 2.4 + sp.seed;
+        const wgt = cornerWeights[sp.cornerIdx];
+        const ph = (elapsedSec * 5.2 + sp.seed) % 1.0;
+        const lifeEnv = Math.sin(Math.PI * Math.pow(ph, 0.62));
+        sp.mat.opacity = lifeEnv * smokePow * wgt * 0.34;
+        sp.mesh.visible = sp.mat.opacity > 0.012;
+        if (sp.mesh.visible) {
+          sp.mesh.position.x = sp.baseX + Math.sin(ph * 4.5 + sp.seed * 6.0) * 0.18;
+          sp.mesh.position.y = 0.08 + ph * (0.48 + smokePow * 0.52);
+          sp.mesh.position.z = sp.baseZ + ph * (2.4 + smokePow * 2.8);
+          sp.mesh.scale.setScalar(0.26 + ph * (0.95 + smokePow * 0.85));
+          sp.mesh.rotation.z = elapsedSec * 1.9 + sp.seed;
+        }
       }
     }
 
-    // Titanium Skid-Block & Damage Spark Shower
-    const damageSpark = (hasPunc || fwDmg > 0.55 || rwDmg > 0.60) && speedKmh > 45;
-    const curbSpark = !!carState.onCurb && speedKmh > 110;
-    const highSpeedSpark = speedKmh > 285;
-    const aeroPlankSpark =
-      highSpeedSpark ||
-      (speedKmh > 268 && Math.sin(elapsedSec * 13.5 + (carState.carNum || 1) * 1.9) > 0.32);
+    // Titanium Plank Sparks — STRICTLY on real high-load bottoming, sawtooth kerb strikes, or dragging damage!
+    // NEVER continuous sparks just for driving > 285 km/h on smooth tarmac!
+    const bottomingStrike = Math.abs(carState.chassisHeaveM || 0) > 0.014 && speedKmh > 140;
+    const kerbStrike = Boolean(carState.onCurb) && speedKmh > 120;
+    const damageDragging = (hasPunc || suspDmg > 0.42 || fwDmg > 0.58 || rwDmg > 0.62) && speedKmh > 45;
 
-    const showSparks = !carState.exploded && (damageSpark || curbSpark || aeroPlankSpark);
+    const showSparks = !carState.exploded && (bottomingStrike || kerbStrike || damageDragging);
     this.sparkGroup.visible = showSparks;
     if (showSparks) {
-      const sparkPower = damageSpark
-        ? 1.0
-        : (curbSpark ? 0.92 : (highSpeedSpark ? 0.96 : Math.min(1.0, (speedKmh - 265) / 45)));
+      const heaveExcess = Math.max(0, (Math.abs(carState.chassisHeaveM || 0) - 0.014) / 0.012);
+      const sparkPower = damageDragging
+        ? 0.92
+        : (kerbStrike ? Math.min(1.0, (speedKmh - 110) / 160) : Math.min(1.0, 0.45 + heaveExcess * 0.55));
+      const biasX = kerbStrike
+        ? Math.sign(carState.lateralOffset || 0) * 0.28
+        : (damageDragging && suspDmg > 0.42 ? (suspBias < 0 ? -0.55 : 0.55) : 0.0);
+
       for (let i = 0; i < this.sparks.length; i++) {
         const sObj = this.sparks[i];
-        const ph = (elapsedSec * (16.0 + (i % 4) * 2.8) + sObj.seed) % 1.0;
-        sObj.mesh.visible = ph < (0.40 + sparkPower * 0.58);
+        const ph = (elapsedSec * (18.0 + (i % 4) * 3.1) + sObj.seed) % 1.0;
+        sObj.mesh.visible = ph < (0.28 + sparkPower * 0.52);
         if (sObj.mesh.visible) {
-          sObj.mesh.position.z = 0.95 + ph * (2.8 + sparkPower * 2.2);
-          sObj.mesh.position.x = sObj.spreadX * (0.45 + ph * 1.02);
-          sObj.mesh.position.y = 0.045 + Math.abs(Math.sin(ph * Math.PI * 2.2)) * (0.18 + sparkPower * 0.21);
-          sObj.mesh.rotation.x = -0.08 * Math.cos(ph * Math.PI * 2.2);
-          sObj.mesh.scale.z = 0.72 + sparkPower * 1.05;
+          sObj.mesh.position.z = 0.65 + ph * (2.4 + sparkPower * 1.9);
+          sObj.mesh.position.x = biasX + sObj.spreadX * (0.35 + ph * 0.85);
+          sObj.mesh.position.y = 0.025 + Math.abs(Math.sin(ph * Math.PI * 2.4)) * (0.11 + sparkPower * 0.14);
+          sObj.mesh.rotation.x = -0.06 * Math.cos(ph * Math.PI * 2.4);
+          sObj.mesh.scale.z = 0.65 + sparkPower * 0.85;
         }
       }
     }
@@ -2194,8 +2639,6 @@ export function createCarRig(assets, livery = {}) {
 
 // ============================================================================
 // ARTICULATED / SKELETAL PIT CREW BUILDER & ANIMATOR
-// Supports both `PitCrewDiorama` AND standalone `createPitCrewTeamRig` /
-// `updatePitCrewTeamRig` with `pit_crew_rig.glb` SkinnedMesh + AnimationMixer!
 // ============================================================================
 function buildArticulatedFallbackMechanic(suitMat, stripeMat, helmMat, visorMat, gearMat, withWheelGun = false) {
   const g = new THREE.Group();
@@ -2239,7 +2682,6 @@ export class PitCrewDiorama {
   constructor(scene, assets, track) {
     this.group = new THREE.Group();
     this.members = [];
-    this.wheelGunFlashes = [];
     this.active = false;
     this._prevElapsedSec = 0;
 
@@ -2249,15 +2691,15 @@ export class PitCrewDiorama {
   }
 
   _buildCrewMaterialsAndGantry(assets) {
-    this.suitMat = new THREE.MeshStandardMaterial({ color: 0xd40814, roughness: 0.48, metalness: 0.12 });
-    this.stripeMat = new THREE.MeshStandardMaterial({ color: 0xf7f9fc, roughness: 0.35, metalness: 0.20 });
-    this.helmMat = new THREE.MeshPhysicalMaterial({ color: 0xf5f8ff, roughness: 0.14, metalness: 0.32, clearcoat: 1.0 });
-    this.visorMat = new THREE.MeshPhysicalMaterial({ color: 0x0a1628, roughness: 0.03, metalness: 0.96, clearcoat: 1.0 });
-    this.gearMat = new THREE.MeshStandardMaterial({ color: 0x1b2029, roughness: 0.30, metalness: 0.76 });
-    this.hoseMat = new THREE.MeshStandardMaterial({ color: 0xffb300, roughness: 0.42, metalness: 0.25 });
-    const glowTex = getSoftGlowTexture();
+    this.suitMat = new THREE.MeshStandardMaterial({ color: 0xd40814, roughness: 0.68, metalness: 0.06, emissiveIntensity: 0.0 });
+    this.stripeMat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.55, metalness: 0.08, emissiveIntensity: 0.0 });
+    this.helmMat = new THREE.MeshPhysicalMaterial({ color: 0xf5f8ff, roughness: 0.16, metalness: 0.28, clearcoat: 0.9, emissiveIntensity: 0.0 });
+    this.visorMat = new THREE.MeshPhysicalMaterial({ color: 0x0a1628, roughness: 0.03, metalness: 0.96, clearcoat: 1.0, emissiveIntensity: 0.0 });
+    this.gearMat = new THREE.MeshStandardMaterial({ color: 0x1b2029, roughness: 0.34, metalness: 0.76, emissiveIntensity: 0.0 });
+    this.hoseMat = new THREE.MeshStandardMaterial({ color: 0xd99b00, roughness: 0.52, metalness: 0.18, emissiveIntensity: 0.0 });
+    const mistTex = getTurbulentMistTexture();
 
-    // Overhead Carbon Pit-Box Pneumatic Boom Rig + Coiled Air Hoses
+    // Overhead Carbon Pit-Box Pneumatic Boom Rig + Air Hoses
     const boomGroup = new THREE.Group();
     const post = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, 3.85, 12), this.gearMat);
     post.position.set(0.2, 1.92, 4.15);
@@ -2265,7 +2707,6 @@ export class PitCrewDiorama {
     arm.position.set(0.2, 3.78, 2.05);
     boomGroup.add(post, arm);
 
-    // 4 Overhead Pneumatic Air Whip Hoses dropping toward wheel-gunner stations
     this.airHoses = [];
     const hoseAnchors = [
       [ 1.48, -1.10],
@@ -2284,15 +2725,15 @@ export class PitCrewDiorama {
     // Staged Spare Pirelli Slick Stack on Garage Apron
     const spareStack = new THREE.Group();
     spareStack.position.set(-2.35, 0.0, 3.85);
+    const spareRubberMat = new THREE.MeshStandardMaterial({ color: 0x16181c, roughness: 0.72, metalness: 0.04 });
     for (let t = 0; t < 4; t++) {
-      const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.33, 0.33, 0.32, 20), new THREE.MeshStandardMaterial({ color: 0x15171c, roughness: 0.72 }));
+      const tire = new THREE.Mesh(new THREE.CylinderGeometry(0.33, 0.33, 0.32, 20), spareRubberMat);
       tire.position.set(0, 0.17 + t * 0.33, 0);
       tire.castShadow = true;
       spareStack.add(tire);
     }
     this.group.add(spareStack);
 
-    // Local frame: +X is car nose forward, -X is car rear, z=0 is car centerline, +Z is Pit Garage apron!
     const roles = [
       { role: 'FRONT_JACK', stand: [ 2.9, 0, 3.15], work: [ 2.62, 0,  0.00], standYaw: Math.PI, workYaw: -Math.PI / 2 },
       { role: 'REAR_JACK',  stand: [-2.9, 0, 3.15], work: [-2.50, 0,  0.00], standYaw: Math.PI, workYaw:  Math.PI / 2 },
@@ -2326,17 +2767,17 @@ export class PitCrewDiorama {
       let jackMesh = null;
 
       if (r.role.startsWith('GUN_')) {
+        // Subtle compressed nitrogen exhaust puff from Paoli pneumatic gun (no neon cyan glow!)
         flashMat = new THREE.MeshBasicMaterial({
-          map: glowTex,
-          color: 0x80e8ff,
+          map: mistTex,
+          color: 0xe2eaf2,
           transparent: true,
           opacity: 0.0,
-          blending: THREE.AdditiveBlending,
           depthWrite: false,
           side: THREE.DoubleSide,
         });
-        const flashPlane = new THREE.Mesh(new THREE.PlaneGeometry(0.44, 0.44), flashMat);
-        flashPlane.position.set(0, 0.44, 0.52);
+        const flashPlane = new THREE.Mesh(new THREE.PlaneGeometry(0.28, 0.28), flashMat);
+        flashPlane.position.set(0, 0.44, 0.50);
         holder.add(flashPlane);
       } else if (r.role === 'FRONT_JACK' || r.role === 'REAR_JACK') {
         jackMesh = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.10, 0.88), this.stripeMat);
@@ -2374,7 +2815,6 @@ export class PitCrewDiorama {
       });
     }
 
-    // Bind 13-Bone Skeletal PitCrew_Armature + NLA Animations from pit_crew_rig.glb!
     const preloadedGltf = assets?.templates?.pitCrewRigGltf;
     if (preloadedGltf) {
       this._bindRiggedCrewFromGltf(preloadedGltf);
@@ -2421,7 +2861,6 @@ export class PitCrewDiorama {
       const m = this.members[i];
       const armClone = cloneSkinnedGroup(srcArmature);
       armClone.position.set(0, 0, 0);
-      // In pit_crew_rig.glb, PitCrew_Armature faces -X; +PI/2 turns -X into +Z (holder forward!)
       armClone.rotation.set(0, Math.PI / 2, 0);
 
       armClone.traverse((ch) => {
@@ -2531,9 +2970,8 @@ export class PitCrewDiorama {
       if (this.active && m.role.startsWith('GUN_')) {
         if (!m.mixer) m.holder.scale.y = 0.72 + 0.035 * Math.sin(elapsedSec * 46 + i);
         if (m.flashMat) {
-          const burst = !isReleasePhase && Math.sin(elapsedSec * 38 + i * 1.7) > 0.15;
-          m.flashMat.opacity = burst ? 0.86 : 0.08;
-          m.flashMat.color.setHex(i % 2 === 0 ? 0x66e6ff : 0xffd54f);
+          const burst = !isReleasePhase && Math.sin(elapsedSec * 32 + i * 1.7) > 0.35;
+          m.flashMat.opacity = burst ? 0.34 : 0.0;
         }
       } else if (this.active && (m.role === 'FRONT_JACK' || m.role === 'REAR_JACK')) {
         if (!m.mixer) m.holder.scale.y = 0.88 + 0.02 * Math.sin(elapsedSec * 12);
@@ -2560,7 +2998,7 @@ export function createPitCrewTeamRig(teamColorHex = 0xd40814, assets = null, tra
 
   const rig = diorama.group;
   rig.name = 'PitCrewTeamRig';
-  rig.group = rig; // Self-alias so both `scene.add(rig)` and `scene.add(rig.group)` work!
+  rig.group = rig;
   rig.userData.diorama = diorama;
   rig._elapsedSec = 0;
 
@@ -2604,7 +3042,7 @@ export function updatePitCrewTeamRig(rig, pitState = {}, dt = 0.016) {
 }
 
 // ============================================================================
-// 1982 / 2026 FIERY EXPLOSION & SHATTERED CARBON FIBER TRACK DEBRIS POOL
+// HIGH-SPEED CRASH EXPLOSION & SHATTERED CARBON FIBER TRACK DEBRIS POOL
 // ============================================================================
 export class EffectsManager {
   constructor(scene, track) {
@@ -2614,7 +3052,7 @@ export class EffectsManager {
     this.debrisItems = [];
 
     this._fireSphereGeo = new THREE.SphereGeometry(0.48, 10, 10);
-    this._shardBoxGeo = new THREE.BoxGeometry(0.36, 0.05, 0.24);
+    this._shardBoxGeo = new THREE.BoxGeometry(0.34, 0.032, 0.22);
     this._shockRingGeo = new THREE.RingGeometry(0.45, 0.95, 28);
     this._shockRingGeo.rotateX(-Math.PI / 2);
 
@@ -2624,16 +3062,22 @@ export class EffectsManager {
       map: carbonMaps.map,
       bumpMap: carbonMaps.bumpMap,
       bumpScale: 0.006,
-      roughness: 0.34,
-      metalness: 0.35,
+      roughness: 0.38,
+      metalness: 0.16,
+      emissiveIntensity: 0.0,
     });
     this._debrisPaintRedMat = new THREE.MeshStandardMaterial({
-      color: 0xd40814,
-      roughness: 0.20,
-      metalness: 0.32,
+      color: 0xc8161d,
+      roughness: 0.22,
+      metalness: 0.30,
+      emissiveIntensity: 0.0,
     });
-    this._debrisWarnMat = new THREE.MeshBasicMaterial({
-      color: 0xff6d00,
+    // Matte fractured Kevlar/Zylon composite shard (zero fake blinking neon!)
+    this._debrisKevlarMat = new THREE.MeshStandardMaterial({
+      color: 0x8c7332,
+      roughness: 0.78,
+      metalness: 0.06,
+      emissiveIntensity: 0.0,
     });
   }
 
@@ -2670,7 +3114,7 @@ export class EffectsManager {
     shockRing.position.y = 0.12;
     group.add(shockRing);
 
-    const blastLight = new THREE.PointLight(0xff6d00, 7.5, 28, 1.6);
+    const blastLight = new THREE.PointLight(0xff6d00, 6.0, 26, 1.8);
     blastLight.position.set(0, 1.8, 0);
     group.add(blastLight);
 
@@ -2705,9 +3149,9 @@ export class EffectsManager {
     }
 
     for (let i = 0; i < 16; i++) {
-      const isEmber = i % 3 === 0;
+      const isEmber = i % 4 === 0;
       const mat = new THREE.MeshBasicMaterial({
-        color: isEmber ? 0xffab00 : 0x1a1e26,
+        color: isEmber ? 0xff9800 : 0x1a1e26,
         transparent: true,
         opacity: 1.0,
       });
@@ -2753,21 +3197,22 @@ export class EffectsManager {
 
     for (let i = 0; i < 7; i++) {
       const mat = i === 0
-        ? this._debrisWarnMat
+        ? this._debrisKevlarMat
         : (i === 1 ? this._debrisPaintRedMat : this._debrisCarbonMat);
       const shard = new THREE.Mesh(this._shardBoxGeo, mat);
-      shard.scale.set(0.9 + (i % 3) * 0.45, 1.0 + (i % 2) * 0.8, 0.85 + ((i + 1) % 3) * 0.4);
+      shard.scale.set(0.85 + (i % 3) * 0.42, 0.8 + (i % 2) * 0.6, 0.80 + ((i + 1) % 3) * 0.38);
       shard.position.set(
-        (Math.random() - 0.5) * 2.3,
-        0.055 + (i % 2) * 0.03,
-        (Math.random() - 0.5) * 2.3
+        (Math.random() - 0.5) * 2.2,
+        0.042 + (i % 2) * 0.022,
+        (Math.random() - 0.5) * 2.2
       );
       shard.rotation.set(
-        (Math.random() - 0.5) * 0.28,
+        (Math.random() - 0.5) * 0.24,
         Math.random() * Math.PI * 2,
-        (Math.random() - 0.5) * 0.32
+        (Math.random() - 0.5) * 0.28
       );
       shard.castShadow = true;
+      shard.receiveShadow = true;
       group.add(shard);
     }
 
@@ -2792,8 +3237,6 @@ export class EffectsManager {
   }
 
   update(dt) {
-    const nowSec = performance.now() * 0.001;
-
     for (let i = this.explosions.length - 1; i >= 0; i--) {
       const ex = this.explosions[i];
       ex.age += dt;
@@ -2807,7 +3250,7 @@ export class EffectsManager {
       ex.shockRing.scale.setScalar(1.0 + ringU * 9.5);
       ex.ringMat.opacity = Math.max(0, (1.0 - ringU) * 0.9);
 
-      ex.blastLight.intensity = Math.max(0, 7.5 * Math.pow(1.0 - Math.min(1.0, ex.age / 0.75), 2.0));
+      ex.blastLight.intensity = Math.max(0, 6.0 * Math.pow(1.0 - Math.min(1.0, ex.age / 0.75), 2.0));
 
       for (const p of ex.particles) {
         p.mesh.position.x += p.vx * dt;
@@ -2833,8 +3276,8 @@ export class EffectsManager {
           p.mat.opacity = Math.max(0, 1.0 - Math.pow(u, 0.82));
         } else {
           p.vy -= 22.0 * dt;
-          if (p.mesh.position.y < 0.06) {
-            p.mesh.position.y = 0.06;
+          if (p.mesh.position.y < 0.05) {
+            p.mesh.position.y = 0.05;
             p.vy = -p.vy * 0.42;
             p.vx *= 0.78;
             p.vz *= 0.78;
@@ -2852,8 +3295,6 @@ export class EffectsManager {
         this.explosions.splice(i, 1);
       }
     }
-
-    this._debrisWarnMat.color.setHex(Math.sin(nowSec * 9.0) > 0 ? 0xff7b00 : 0xff2a00);
 
     for (let i = this.debrisItems.length - 1; i >= 0; i--) {
       this.debrisItems[i].ttl -= dt;
