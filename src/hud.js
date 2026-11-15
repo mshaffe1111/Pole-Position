@@ -3,7 +3,7 @@
 // Sim Telemetry HUD, Live Lap Delta Ring, Pedal/Assist Bars, Car MFD & Vector Map
 // ============================================================================
 
-import { TIRE_COMPOUNDS, FUJI_SECTORS, PIT_LANE_CONFIG } from './config.js?v=20261114fix';
+import { TIRE_COMPOUNDS, FUJI_SECTORS, PIT_LANE_CONFIG } from './config.js';
 
 const DELTA_BIN_COUNT = 100;
 const TRACK_SPLINE_LEN = 1000;
@@ -93,8 +93,17 @@ export class TelemetryHUD {
     this._deltaLapInvalid = false;
     this._smoothedLiveDeltaSec = 0;
 
+    // AAA HUD Panel State (Live Timing Tower, Compact MFD, Radar, Portrait Pill)
+    this.timingTowerCollapsed = false;
+    this._timingTowerManualOverride = false;
+    this._lastTimingTowerMs = 0;
+    this.mfdCollapsed = false;
+    this._portraitDismissed = false;
+
     this._cacheElements();
     this._bindStrategyButtons();
+    this._syncResponsiveHudPanels();
+    window.addEventListener('resize', () => this._syncResponsiveHudPanels());
     this._prepareMinimapStaticPath();
   }
 
@@ -125,8 +134,11 @@ export class TelemetryHUD {
     this.rpmFillEl = document.getElementById('hud-rpm-fill');
     this.slipBadgeEl = document.getElementById('hud-slipstream-badge');
 
-    // 2026 Telemetry MFD
+    // 2026 Telemetry MFD & 1-Tap Compact MFD Toggle
+    this.rightDockEl = document.getElementById('right-telemetry-dock');
     this.telemetryPanelEl = document.getElementById('telemetry-2026-panel');
+    this.mfdToggleBtn = document.getElementById('btn-toggle-mfd');
+    this.mfdBodyEl = document.getElementById('mfd-collapsible-body');
     this.compoundBadgeEl = document.getElementById('tel-compound-badge');
     this.assistBadgeEl = document.getElementById('tel-assist-badge');
     this.tireBoxes = {
@@ -177,6 +189,44 @@ export class TelemetryHUD {
     // Minimap
     this.minimapCanvas = document.getElementById('gps-minimap');
     this.minimapCtx = this.minimapCanvas ? this.minimapCanvas.getContext('2d') : null;
+
+    // Live Broadcast Timing Tower
+    this.timingTowerEl = document.getElementById('live-timing-tower');
+    this.timingTowerToggleBtn = document.getElementById('btn-toggle-timing-tower');
+    this.timingTowerChevronEl = document.getElementById('timing-tower-chevron');
+    this.timingRowsEl = document.getElementById('live-timing-rows');
+
+    // Rival Proximity / Blind-Spot Radar
+    this.radarLayerEl = document.getElementById('proximity-radar-layer');
+    this.radarLeftEl = document.getElementById('radar-arrow-left');
+    this.radarRearEl = document.getElementById('radar-arrow-rear');
+    this.radarRightEl = document.getElementById('radar-arrow-right');
+    this.radarDistLeftEl = document.getElementById('radar-dist-left');
+    this.radarDistRearEl = document.getElementById('radar-dist-rear');
+    this.radarDistRightEl = document.getElementById('radar-dist-right');
+
+    // Tactical ERS / DRS / Tear-Off Touch Cluster
+    this.touchTacticalClusterEl = document.getElementById('touch-tactical-cluster');
+    this.btnTouchDrsEl = document.getElementById('btn-touch-drs');
+    this.drsTouchLblEl = document.getElementById('drs-touch-lbl');
+    this.btnTouchErsEl = document.getElementById('btn-touch-ers');
+    this.ersTouchPctEl = document.getElementById('ers-touch-pct');
+    this.btnTouchTearoffEl = document.getElementById('btn-touch-tearoff');
+
+    // Lights-Out Launch Reaction & Time Trial HUD Banner + Portrait Hint
+    this.launchHudEl = document.getElementById('launch-reaction-hud');
+    this.launchStatusLblEl = document.getElementById('launch-status-lbl');
+    this.launchRevFillEl = document.getElementById('launch-rev-fill');
+    this.launchRevCursorEl = document.getElementById('launch-rev-cursor');
+    this.btnSkipGridIntroEl = document.getElementById('btn-skip-grid-intro');
+
+    this.timeTrialBannerEl = document.getElementById('timetrial-hud-banner');
+    this.tthGoldEl = document.getElementById('tth-gold');
+    this.tthSilverEl = document.getElementById('tth-silver');
+    this.tthBronzeEl = document.getElementById('tth-bronze');
+    this.tthPbEl = document.getElementById('tth-pb');
+
+    this.portraitPillEl = document.getElementById('portrait-rotate-pill');
   }
 
   setSpeedUnit(unit = 'KMH') {
@@ -480,7 +530,136 @@ export class TelemetryHUD {
       });
     }
 
+    const bindFastTap = (el, handler) => {
+      if (!el) return;
+      let lastPointerMs = 0;
+      el.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        lastPointerMs = performance.now();
+        handler();
+      });
+      el.addEventListener('click', (e) => {
+        if (performance.now() - lastPointerMs < 350) return;
+        e.preventDefault();
+        e.stopPropagation();
+        handler();
+      });
+    };
+
+    bindFastTap(this.timingTowerToggleBtn, () => {
+      this._timingTowerManualOverride = true;
+      this.toggleTimingTower();
+    });
+
+    bindFastTap(this.mfdToggleBtn, () => {
+      this.toggleCompactMfd();
+    });
+
+    bindFastTap(this.portraitPillEl, () => {
+      this._portraitDismissed = true;
+      this.portraitPillEl.classList.add('dismissed');
+      this.portraitPillEl.style.display = 'none';
+    });
+
+    bindFastTap(this.btnSkipGridIntroEl, () => {
+      if (this.callbacks.onSkipGridIntro) this.callbacks.onSkipGridIntro();
+    });
+
     this._syncPitStrategyHighlight();
+  }
+
+  _syncResponsiveHudPanels() {
+    const w = window.innerWidth || 1024;
+    const h = window.innerHeight || 768;
+    const isNarrowPortrait = w < 540 && h > w;
+    const isVeryShortLandscape = h < 420 && w >= h;
+
+    if (!this._timingTowerManualOverride) {
+      this.toggleTimingTower(isNarrowPortrait || isVeryShortLandscape);
+    }
+
+    if (this.portraitPillEl) {
+      this.portraitPillEl.style.display = (isNarrowPortrait && !this._portraitDismissed) ? 'inline-flex' : 'none';
+    }
+  }
+
+  toggleTimingTower(forceCollapsed) {
+    this.timingTowerCollapsed = forceCollapsed !== undefined ? Boolean(forceCollapsed) : !this.timingTowerCollapsed;
+    if (this.timingTowerEl) {
+      this.timingTowerEl.classList.toggle('collapsed', this.timingTowerCollapsed);
+    }
+    if (this.timingTowerToggleBtn) {
+      this.timingTowerToggleBtn.setAttribute('aria-expanded', String(!this.timingTowerCollapsed));
+    }
+    if (this.timingTowerChevronEl) {
+      this.timingTowerChevronEl.textContent = this.timingTowerCollapsed ? '▸' : '▾';
+    }
+  }
+
+  toggleCompactMfd(forceCollapsed) {
+    this.mfdCollapsed = forceCollapsed !== undefined ? Boolean(forceCollapsed) : !this.mfdCollapsed;
+    if (this.rightDockEl) {
+      this.rightDockEl.classList.toggle('mfd-collapsed', this.mfdCollapsed);
+    }
+    if (this.mfdToggleBtn) {
+      this.mfdToggleBtn.setAttribute('aria-expanded', String(!this.mfdCollapsed));
+      this.mfdToggleBtn.textContent = this.mfdCollapsed ? '▸' : '▾';
+    }
+  }
+
+  updateLaunchReactionHud({ visible = false, throttle01 = 0, canSkipIntro = false, statusText = '' } = {}) {
+    if (!this.launchHudEl) return;
+    if (!visible) {
+      this.launchHudEl.style.display = 'none';
+      return;
+    }
+    this.launchHudEl.style.display = 'flex';
+    const pct = Math.max(0, Math.min(100, (Number(throttle01) || 0) * 100));
+    const inSweet = pct >= 55 && pct <= 90;
+    const overRev = pct > 90;
+    this.launchHudEl.classList.toggle('in-sweet', inSweet);
+    this.launchHudEl.classList.toggle('over-rev', overRev);
+    if (this.launchRevFillEl) {
+      this.launchRevFillEl.style.width = `${pct.toFixed(1)}%`;
+    }
+    if (this.launchRevCursorEl) {
+      this.launchRevCursorEl.style.left = `${pct.toFixed(1)}%`;
+    }
+    if (this.launchStatusLblEl) {
+      this.launchStatusLblEl.textContent = statusText || (
+        inSweet
+          ? 'OPTIMAL LAUNCH RPM LOCKED — REACT ON GREEN!'
+          : (overRev ? 'WHEELSPIN WARNING — EASE TO 55–90%!' : 'HOLD 55–90% THROTTLE FOR OPTIMAL LAUNCH')
+      );
+    }
+    if (this.btnSkipGridIntroEl) {
+      this.btnSkipGridIntroEl.style.display = canSkipIntro ? 'inline-flex' : 'none';
+    }
+  }
+
+  updateTimeTrialBanner(ttInfo = null) {
+    if (!this.timeTrialBannerEl) return;
+    if (!ttInfo) {
+      this.timeTrialBannerEl.style.display = 'none';
+      return;
+    }
+    this.timeTrialBannerEl.style.display = 'inline-flex';
+    const gold = Number(ttInfo.goldSec ?? ttInfo.gold ?? ttInfo.targets?.gold);
+    const silver = Number(ttInfo.silverSec ?? ttInfo.silver ?? ttInfo.targets?.silver);
+    const bronze = Number(ttInfo.bronzeSec ?? ttInfo.bronze ?? ttInfo.targets?.bronze);
+    const best = Number(ttInfo.bestLapSec ?? ttInfo.bestSec ?? ttInfo.personalBestSec);
+    const medal = String(ttInfo.medal || 'NONE').toUpperCase();
+
+    if (this.tthGoldEl) this.tthGoldEl.textContent = `🥇 ${Number.isFinite(gold) ? formatLapTimeSim(gold) : '--:--.--'}`;
+    if (this.tthSilverEl) this.tthSilverEl.textContent = `🥈 ${Number.isFinite(silver) ? formatLapTimeSim(silver) : '--:--.--'}`;
+    if (this.tthBronzeEl) this.tthBronzeEl.textContent = `🥉 ${Number.isFinite(bronze) ? formatLapTimeSim(bronze) : '--:--.--'}`;
+    if (this.tthPbEl) {
+      const mIcon = medal === 'GOLD' ? '🥇 ' : (medal === 'SILVER' ? '🥈 ' : (medal === 'BRONZE' ? '🥉 ' : ''));
+      this.tthPbEl.textContent = Number.isFinite(best) && best > 0
+        ? `${mIcon}PB ${formatLapTimeSim(best)}`
+        : 'PB --:--.--';
+    }
   }
 
   togglePitDrawer(forceState) {
@@ -558,6 +737,8 @@ export class TelemetryHUD {
     if (this.pitActionRowEl) this.pitActionRowEl.style.display = is2026 ? 'flex' : 'none';
     if (this.pitToggleBtn) this.pitToggleBtn.style.display = is2026 ? 'inline-flex' : 'none';
     if (this.boxRequestBtn) this.boxRequestBtn.style.display = is2026 ? 'inline-flex' : 'none';
+    if (this.timingTowerEl) this.timingTowerEl.style.display = is2026 ? 'flex' : 'none';
+    if (this.touchTacticalClusterEl) this.touchTacticalClusterEl.style.display = is2026 ? 'flex' : 'none';
     if (!is2026) this.togglePitDrawer(false);
   }
 
@@ -578,6 +759,8 @@ export class TelemetryHUD {
       weatherSummary,
       brakingAssistMode,
       tractionControlMode,
+      cameraModeIdx = 0,
+      timeTrialActive = false,
     } = state;
 
     const isSim2026 = gameMode === '2026_UPDATED';
@@ -598,9 +781,13 @@ export class TelemetryHUD {
     }
 
     if (this.lapEl) {
-      this.lapEl.textContent = sessionPhase === 'QUALIFYING'
-        ? 'QUALI 1/1'
-        : `LAP ${Math.min(currentLap, totalLaps)}/${totalLaps}`;
+      if (timeTrialActive) {
+        this.lapEl.textContent = `HOT LAP ${currentLap}`;
+      } else {
+        this.lapEl.textContent = sessionPhase === 'QUALIFYING'
+          ? 'QUALI 1/1'
+          : `LAP ${Math.min(currentLap, totalLaps)}/${totalLaps}`;
+      }
     }
 
     if (this.posEl) {
@@ -784,6 +971,225 @@ export class TelemetryHUD {
 
     // Clean Vector Circuit Map
     this._drawMinimap(playerCar, allCars);
+
+    // Rival Proximity / Blind-Spot Radar, Live Timing Tower & Tactical Touch Sync
+    this._updateProximityRadar(playerCar, allCars, sessionPhase, timeTrialActive);
+    this._updateLiveTimingTower(allCars, playerCar, sessionPhase, isSim2026, timeTrialActive);
+    this._updateTacticalTouchCluster(playerCar, isSim2026, cameraModeIdx, weatherSummary, timeTrialActive);
+  }
+
+  _setRadarIndicator(arrowEl, distEl, level, distM) {
+    if (!arrowEl) return;
+    arrowEl.classList.toggle('radar-warn', level === 1);
+    arrowEl.classList.toggle('radar-danger', level === 2);
+    if (distEl) {
+      distEl.textContent = level > 0 && Number.isFinite(distM) ? `${distM.toFixed(1)}m` : '';
+    }
+  }
+
+  _updateProximityRadar(playerCar, allCars, sessionPhase, timeTrialActive = false) {
+    if (!this.radarLayerEl) return;
+    const active =
+      sessionPhase === 'RACING' &&
+      !timeTrialActive &&
+      Boolean(playerCar) &&
+      !playerCar.exploded &&
+      !playerCar.inPitLane &&
+      Array.isArray(allCars) &&
+      allCars.length > 1;
+
+    if (!active) {
+      this._setRadarIndicator(this.radarLeftEl, this.radarDistLeftEl, 0, 0);
+      this._setRadarIndicator(this.radarRearEl, this.radarDistRearEl, 0, 0);
+      this._setRadarIndicator(this.radarRightEl, this.radarDistRightEl, 0, 0);
+      return;
+    }
+
+    const totalLen = this.track?.totalLength || TRACK_SPLINE_LEN;
+    const halfLen = totalLen * 0.5;
+    const mPerGameM = this.track?.metersPerGameUnit || this.track?.realMetersPerGameMeter || 4.54;
+
+    let leftLevel = 0;
+    let leftDist = Infinity;
+    let rightLevel = 0;
+    let rightDist = Infinity;
+    let rearLevel = 0;
+    let rearDist = Infinity;
+
+    for (let i = 0; i < allCars.length; i++) {
+      const rival = allCars[i];
+      if (!rival || rival.isPlayer || rival.exploded || rival.inPitLane) continue;
+
+      let dsGame = (rival.s || 0) - (playerCar.s || 0);
+      if (dsGame > halfLen) dsGame -= totalLen;
+      else if (dsGame < -halfLen) dsGame += totalLen;
+
+      const dsRealM = dsGame * mPerGameM;
+      const absLongM = Math.abs(dsRealM);
+      const dLat = (rival.lateralOffset || 0) - (playerCar.lateralOffset || 0);
+      const absLat = Math.abs(dLat);
+
+      if (absLongM > 8.0 || absLat > 6.4) continue;
+
+      // Side-by-side overlap (< 4.6m longitudinal) vs blind-spot approach (< 7.5m)
+      if (absLongM < 7.5 && absLat > 0.55) {
+        const lvl = absLongM < 4.6 ? 2 : 1;
+        const metricM = Math.hypot(dsRealM * 0.65, dLat);
+        if (dLat < 0) {
+          if (lvl > leftLevel || (lvl === leftLevel && metricM < leftDist)) {
+            leftLevel = lvl;
+            leftDist = absLat;
+          }
+        } else {
+          if (lvl > rightLevel || (lvl === rightLevel && metricM < rightDist)) {
+            rightLevel = lvl;
+            rightDist = absLat;
+          }
+        }
+      }
+
+      // Direct rear slipstream / divebomb threat
+      if (dsRealM < -1.8 && dsRealM >= -8.0 && absLat <= 1.75) {
+        const rDist = Math.abs(dsRealM);
+        const lvl = rDist < 4.5 ? 2 : 1;
+        if (lvl > rearLevel || (lvl === rearLevel && rDist < rearDist)) {
+          rearLevel = lvl;
+          rearDist = rDist;
+        }
+      }
+    }
+
+    this._setRadarIndicator(this.radarLeftEl, this.radarDistLeftEl, leftLevel, leftDist);
+    this._setRadarIndicator(this.radarRearEl, this.radarDistRearEl, rearLevel, rearDist);
+    this._setRadarIndicator(this.radarRightEl, this.radarDistRightEl, rightLevel, rightDist);
+  }
+
+  _updateLiveTimingTower(allCars, playerCar, sessionPhase, isSim2026, timeTrialActive = false) {
+    if (!this.timingTowerEl || !this.timingRowsEl) return;
+    const showTower = isSim2026 && !timeTrialActive && Array.isArray(allCars) && allCars.length > 1;
+    this.timingTowerEl.style.display = showTower ? 'flex' : 'none';
+    if (!showTower || this.timingTowerCollapsed) return;
+
+    const nowMs = performance.now();
+    if (nowMs - this._lastTimingTowerMs < 150) return;
+    this._lastTimingTowerMs = nowMs;
+
+    const sorted = allCars.slice();
+    if (sessionPhase === 'QUALIFYING') {
+      sorted.sort((a, b) => {
+        const ba = Number.isFinite(a.bestLapTime) && a.bestLapTime > 0 ? a.bestLapTime : Infinity;
+        const bb = Number.isFinite(b.bestLapTime) && b.bestLapTime > 0 ? b.bestLapTime : Infinity;
+        if (ba !== bb) return ba - bb;
+        return (b.totalDistanceGameM || 0) - (a.totalDistanceGameM || 0);
+      });
+    } else {
+      sorted.sort((a, b) => (b.totalDistanceGameM || 0) - (a.totalDistanceGameM || 0));
+    }
+
+    const leader = sorted[0];
+    const mPerGameM = this.track?.metersPerGameUnit || this.track?.realMetersPerGameMeter || 4.54;
+    const maxRows = Math.min(8, sorted.length);
+    let html = '';
+
+    for (let i = 0; i < maxRows; i++) {
+      const c = sorted[i];
+      const pos = i + 1;
+      const isPlayer = Boolean(c.isPlayer);
+      const code = isPlayer
+        ? 'YOU'
+        : String(c.short || c.shortName || c.code || c.name || `AI${pos}`)
+            .replace(/[^A-Za-z0-9]/g, '')
+            .slice(0, 3)
+            .toUpperCase();
+      const barHex = c.liveryHex || (isPlayer ? '#e10600' : '#38bdf8');
+      const compObj = TIRE_COMPOUNDS[c.compound] || TIRE_COMPOUNDS.SOFT;
+      const compShort = compObj.short || 'S';
+      const compHex = compObj.colorHex || '#ef4444';
+
+      let gapStr = 'LEADER';
+      if (i > 0 && leader) {
+        if (sessionPhase === 'QUALIFYING') {
+          if (Number.isFinite(c.bestLapTime) && Number.isFinite(leader.bestLapTime)) {
+            gapStr = `+${Math.max(0, c.bestLapTime - leader.bestLapTime).toFixed(2)}s`;
+          } else {
+            gapStr = 'NO TIME';
+          }
+        } else {
+          const distM = Math.max(0, ((leader.totalDistanceGameM || 0) - (c.totalDistanceGameM || 0)) * mPerGameM);
+          const refSpdMps = Math.max(45, (((leader.speedKmh || 180) + (c.speedKmh || 180)) * 0.5) / 3.6);
+          const gapSec = distM / refSpdMps;
+          gapStr = gapSec >= 99.9 ? '+1L' : `+${gapSec.toFixed(1)}s`;
+        }
+      }
+
+      const pitBadge = c.inPitLane ? '<span class="tt-pit-tag">PIT</span>' : '';
+      html += `<div class="tt-row${isPlayer ? ' is-player' : ''}">` +
+        `<span class="tt-pos">${pos}</span>` +
+        `<i class="tt-team-bar" style="background:${barHex}"></i>` +
+        `<span class="tt-code">${code}</span>` +
+        `${pitBadge}` +
+        `<span class="tt-gap">${gapStr}</span>` +
+        `<span class="tt-comp" style="border-color:${compHex};color:${compHex}">${compShort}</span>` +
+        `</div>`;
+    }
+
+    this.timingRowsEl.innerHTML = html;
+  }
+
+  _updateTacticalTouchCluster(playerCar, isSim2026, cameraModeIdx = 0, weatherSummary = null, timeTrialActive = false) {
+    if (!this.touchTacticalClusterEl || !playerCar) return;
+    if (!isSim2026) {
+      this.touchTacticalClusterEl.style.display = 'none';
+      return;
+    }
+    this.touchTacticalClusterEl.style.display = 'flex';
+
+    // Hide Pit BOX row in solo Time Trial so MFD stays ultra-clean
+    if (this.pitActionRowEl) {
+      this.pitActionRowEl.style.display = timeTrialActive ? 'none' : 'flex';
+    }
+
+    // Sync ERS Charge Ring/Bar & Button State Fallback (cooperates seamlessly with controls.js)
+    if (this.btnTouchErsEl) {
+      const rawErs = Number.isFinite(playerCar.ersCharge)
+        ? playerCar.ersCharge
+        : (Number.isFinite(playerCar.ersBattery) ? playerCar.ersBattery : 1.0);
+      const ersPct = Math.max(0, Math.min(100, Math.round(rawErs * 100)));
+      this.btnTouchErsEl.style.setProperty('--ers-pct', `${ersPct}%`);
+      if (this.ersTouchPctEl) {
+        this.ersTouchPctEl.textContent = `${ersPct}%`;
+      }
+      const deploying = Boolean(playerCar.ersDeploying || playerCar.ersOvertakeActive);
+      const harvesting = !deploying && Boolean(playerCar.ersHarvesting);
+      const empty = ersPct <= 3;
+      this.btnTouchErsEl.classList.toggle('ers-active', deploying);
+      this.btnTouchErsEl.classList.toggle('ers-harvesting', harvesting);
+      this.btnTouchErsEl.classList.toggle('ers-empty', empty);
+    }
+
+    // Sync DRS Flap State & Label Fallback
+    if (this.btnTouchDrsEl) {
+      const drsOpen = Boolean(playerCar.drsActive);
+      const drsAvail = Boolean(
+        drsOpen ||
+        playerCar.drsAvailable ||
+        playerCar.inSlipstream ||
+        (!playerCar.inPitLane && playerCar.speedKmh > 255 && Math.abs(playerCar.steerInput || 0) < 0.22)
+      );
+      this.btnTouchDrsEl.classList.toggle('drs-open', drsOpen);
+      this.btnTouchDrsEl.classList.toggle('drs-available', !drsOpen && drsAvail);
+      this.btnTouchDrsEl.classList.toggle('drs-disabled', !drsOpen && !drsAvail);
+      if (this.drsTouchLblEl) {
+        this.drsTouchLblEl.textContent = drsOpen ? 'OPEN' : 'DRS';
+      }
+    }
+
+    // Show Visor Tear-Off button in Cockpit Helmet Cam (idx 2) or Wet / Dirty Visor conditions
+    if (this.btnTouchTearoffEl) {
+      const moisture = weatherSummary ? (weatherSummary.grooveMoisture || 0) : 0;
+      const showVisor = cameraModeIdx === 2 || moisture > 0.04 || (playerCar.visorDirt || 0) > 0.08;
+      this.btnTouchTearoffEl.style.display = showVisor ? 'flex' : 'none';
+    }
   }
 
   _updateCautionBanner(playerCar) {

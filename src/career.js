@@ -82,6 +82,235 @@ export function formatCredits(amount) {
   return `$${safe.toLocaleString('en-US')}`;
 }
 
+export function formatLapTimeSec(sec) {
+  if (!Number.isFinite(sec) || sec <= 0) return '--:--.---';
+  const mins = Math.floor(sec / 60);
+  const rem = sec - mins * 60;
+  const whole = Math.floor(rem);
+  const ms = Math.round((rem - whole) * 1000);
+  const adjWhole = ms === 1000 ? whole + 1 : whole;
+  const adjMs = ms === 1000 ? 0 : ms;
+  const adjMins = adjWhole >= 60 ? mins + 1 : mins;
+  const finalSec = adjWhole >= 60 ? adjWhole - 60 : adjWhole;
+  return `${adjMins}:${String(finalSec).padStart(2, '0')}.${String(adjMs).padStart(3, '0')}`;
+}
+
+// ============================================================================
+// 0A. DRIVER XP & 5-TIER FIA SUPER LICENSE PROGRESSION
+// ============================================================================
+export const DRIVER_LICENSES_CATALOG = [
+  { id: 'ROOKIE_C',      minLevel: 1,  title: 'ROOKIE C',      color: '#38bdf8', shortBadge: 'C' },
+  { id: 'NATIONAL_B',    minLevel: 3,  title: 'NATIONAL B',    color: '#22c55e', shortBadge: 'B' },
+  { id: 'INTL_A',        minLevel: 6,  title: 'INTL A',        color: '#f59e0b', shortBadge: 'A' },
+  { id: 'FIA_PRO',       minLevel: 9,  title: 'FIA PRO',       color: '#a855f7', shortBadge: 'PRO' },
+  { id: 'SUPER_LICENSE', minLevel: 13, title: 'SUPER LICENSE', color: '#ffd600', shortBadge: 'SUPER' },
+];
+
+function xpStepForLevel(level) {
+  const lv = Math.max(1, Math.floor(finiteOr(level, 1)));
+  return 400 + (lv - 1) * 150;
+}
+
+function computeDriverLevelProfile(rawXp) {
+  const xp = Math.max(0, Math.round(finiteOr(rawXp, 0)));
+  let level = 1;
+  let remaining = xp;
+  let stepNeed = xpStepForLevel(level);
+  while (remaining >= stepNeed && level < 99) {
+    remaining -= stepNeed;
+    level += 1;
+    stepNeed = xpStepForLevel(level);
+  }
+  const xpIntoLevel = remaining;
+  const xpForNextLevel = stepNeed;
+  const progress01 = clamp(xpIntoLevel / Math.max(1, xpForNextLevel), 0, 1);
+
+  let license = DRIVER_LICENSES_CATALOG[0];
+  let nextLicense = null;
+  for (let i = 0; i < DRIVER_LICENSES_CATALOG.length; i++) {
+    if (level >= DRIVER_LICENSES_CATALOG[i].minLevel) {
+      license = DRIVER_LICENSES_CATALOG[i];
+      nextLicense = DRIVER_LICENSES_CATALOG[i + 1] || null;
+    }
+  }
+
+  return {
+    xp,
+    level,
+    xpIntoLevel,
+    xpForNextLevel,
+    progress01,
+    licenseId: license.id,
+    licenseTitle: license.title,
+    rankTitle: license.title,
+    licenseColor: license.color,
+    licenseBadge: license.shortBadge,
+    nextLicenseTitle: nextLicense ? nextLicense.title : null,
+  };
+}
+
+// ============================================================================
+// 0B. 12 FIA CAREER & ARCADE ACHIEVEMENT MILESTONES (+R&D CREDIT REWARDS)
+// ============================================================================
+export const ACHIEVEMENTS_CATALOG = [
+  {
+    id: 'FIRST_PODIUM',
+    title: 'FIRST PODIUM',
+    name: 'First Podium',
+    desc: 'Finish on the Grand Prix podium (P1–P3) in any race.',
+    icon: '🏆',
+    bonus: 25000,
+  },
+  {
+    id: 'FIRST_VICTORY',
+    title: 'FIRST VICTORY',
+    name: 'First Victory',
+    desc: 'Take the checkered flag in P1 to claim a Grand Prix victory.',
+    icon: '🥇',
+    bonus: 50000,
+  },
+  {
+    id: 'LIGHTNING_START',
+    title: 'LIGHTNING START',
+    name: 'Lightning Start',
+    desc: 'Nail a <0.23s lights-out clutch reaction off the starting grid.',
+    icon: '⚡',
+    bonus: 20000,
+  },
+  {
+    id: 'OVERTAKE_ACE',
+    title: 'OVERTAKE ACE',
+    name: 'Overtake Ace',
+    desc: 'Complete 5 or more on-track passes in a single race.',
+    icon: '🚀',
+    bonus: 25000,
+  },
+  {
+    id: 'CLEAN_DRIVER',
+    title: 'CLEAN DRIVER',
+    name: 'Clean Driver',
+    desc: 'Score a top-10 points finish with zero wing or suspension damage.',
+    icon: '🛡️',
+    bonus: 25000,
+  },
+  {
+    id: 'SPEED_DEMON',
+    title: 'SPEED DEMON',
+    name: 'Speed Demon',
+    desc: 'Break the 325+ km/h slipstream/DRS speed barrier.',
+    icon: '🔥',
+    bonus: 20000,
+  },
+  {
+    id: 'SUB_22_PIT',
+    title: 'SUB-2.25S CREW',
+    name: 'Sub-2.25s Pit Stop',
+    desc: 'Execute a world-record <2.25s pit stop service.',
+    icon: '🔧',
+    bonus: 30000,
+  },
+  {
+    id: 'RAIN_MASTER',
+    title: 'RAIN MASTER',
+    name: 'Rain Master',
+    desc: 'Claim a P1–P3 podium finish in wet-weather conditions.',
+    icon: '🌧️',
+    bonus: 35000,
+  },
+  {
+    id: 'TIME_TRIAL_GOLD',
+    title: 'CHRONO GOLD',
+    name: 'Time Trial Gold',
+    desc: 'Unlock a Gold Medal lap target on any Time Trial circuit.',
+    icon: '⏱️',
+    bonus: 40000,
+  },
+  {
+    id: 'RND_ENGINEER',
+    title: 'CHIEF ENGINEER',
+    name: 'R&D Engineer',
+    desc: 'Upgrade any factory R&D engineering department to Level 3.',
+    icon: '⚙️',
+    bonus: 25000,
+  },
+  {
+    id: 'POLE_SITTER',
+    title: 'POLE SITTER',
+    name: 'Pole Sitter',
+    desc: 'Qualify P1 on Pole Position.',
+    icon: '🎯',
+    bonus: 20000,
+  },
+  {
+    id: 'WORLD_CHAMPION',
+    title: 'WORLD CHAMPION',
+    name: 'World Champion',
+    desc: 'Win the FIA Drivers World Championship trophy.',
+    icon: '👑',
+    bonus: 120000,
+  },
+];
+
+// ============================================================================
+// 0C. TIME TRIAL CIRCUIT MEDAL TARGETS (GOLD / SILVER / BRONZE) & BONUSES
+// ============================================================================
+export const TIME_TRIAL_MEDAL_BONUSES = {
+  BRONZE: 15000,
+  SILVER: 30000,
+  GOLD: 60000,
+};
+
+export const TIME_TRIAL_MEDALS = {
+  FUJI_1982: {
+    trackId: 'FUJI_1982',
+    name: "Fuji Speedway '82",
+    gold: 58.50,
+    silver: 62.00,
+    bronze: 67.50,
+    bonuses: { bronze: 15000, silver: 30000, gold: 60000 },
+  },
+  MONACO_HARBOR: {
+    trackId: 'MONACO_HARBOR',
+    name: 'Monte Carlo Harbor',
+    gold: 57.80,
+    silver: 61.50,
+    bronze: 67.00,
+    bonuses: { bronze: 15000, silver: 30000, gold: 60000 },
+  },
+  VEGAS_NEON: {
+    trackId: 'VEGAS_NEON',
+    name: 'Las Vegas Neon Strip',
+    gold: 57.50,
+    silver: 61.00,
+    bronze: 66.50,
+    bonuses: { bronze: 15000, silver: 30000, gold: 60000 },
+  },
+  MONZA_TEMPLE: {
+    trackId: 'MONZA_TEMPLE',
+    name: 'Monza Temple of Speed',
+    gold: 56.80,
+    silver: 60.20,
+    bronze: 65.50,
+    bonuses: { bronze: 15000, silver: 30000, gold: 60000 },
+  },
+  SUZUKA_130R: {
+    trackId: 'SUZUKA_130R',
+    name: 'Suzuka GP Circuit',
+    gold: 66.50,
+    silver: 70.50,
+    bronze: 76.50,
+    bonuses: { bronze: 15000, silver: 30000, gold: 60000 },
+  },
+  SILVERSTONE_GP: {
+    trackId: 'SILVERSTONE_GP',
+    name: 'Silverstone Abbey',
+    gold: 60.50,
+    silver: 64.20,
+    bronze: 69.80,
+    bonuses: { bronze: 15000, silver: 30000, gold: 60000 },
+  },
+};
+
 // ============================================================================
 // 1. 6 PLAYABLE CONSTRUCTOR WORKS TEAMS (LIVERIES & ENGINEERING DNA)
 // ============================================================================
@@ -1019,26 +1248,34 @@ const ARCHETYPE_PACE_WEIGHT = {
   ROOKIE_WILDCARD: 0.92,
 };
 
-function createSponsorBonusItem(def) {
-  const formattedBonus = `+${formatCredits(def.bonus)}`;
-  const shortCash = `+$${Math.round(def.bonus / 1000)}K`;
+function createSponsorBonusItem(def, isPinned = false) {
+  const multiplier = isPinned ? 1.5 : 1.0;
+  const payout = Math.round(def.bonus * multiplier);
+  const formattedBonus = `+${formatCredits(payout)}`;
+  const shortCash = `+$${Math.round(payout / 1000)}K`;
+  const chipPrefix = isPinned ? '★ ' : '';
   return {
     id: def.id,
-    title: def.title,
+    title: isPinned ? `${def.title} (1.5x TITLE CONTRACT)` : def.title,
     name: def.title,
     label: def.title,
     shortLabel: def.shortLabel,
-    chipText: `${def.shortLabel} ${shortCash}`,
+    chipText: `${chipPrefix}${def.shortLabel} ${shortCash}`,
     desc: def.desc,
-    bonus: def.bonus,
-    payout: def.bonus,
-    cash: def.bonus,
-    amount: def.bonus,
-    reward: def.bonus,
+    baseBonus: def.bonus,
+    bonus: payout,
+    payout,
+    cash: payout,
+    amount: payout,
+    reward: payout,
+    multiplier,
+    isPinned: Boolean(isPinned),
+    boosted: Boolean(isPinned),
     formattedBonus,
     achieved: true,
+    earned: true,
     toString() {
-      return `${def.title} ${formattedBonus}`;
+      return `${def.title}${isPinned ? ' (1.5x)' : ''} ${formattedBonus}`;
     },
   };
 }
@@ -1051,6 +1288,14 @@ function createFreshDriverPointsMap() {
   return map;
 }
 
+function createFreshMedalsByTrackMap() {
+  const out = {};
+  for (const trackId of Object.keys(TIME_TRIAL_MEDALS)) {
+    out[trackId] = { bronze: false, silver: false, gold: false, highest: 'NONE' };
+  }
+  return out;
+}
+
 function createDefaultCareerState() {
   return {
     schemaVersion: CAREER_SCHEMA_VERSION,
@@ -1060,6 +1305,11 @@ function createDefaultCareerState() {
     seasonNumber: 1,
     currentRoundIdx: 0,
     credits: STARTING_RND_CREDITS,
+    driverXp: 0,
+    unlockedAchievements: {},
+    bestLapByTrack: {},
+    medalsByTrack: createFreshMedalsByTrackMap(),
+    activeSponsorContractId: 'PODIUM_SWEEP',
     driverPoints: createFreshDriverPointsMap(),
     roundHistory: [],
     seasonHistory: [],
@@ -1073,6 +1323,7 @@ function createDefaultCareerState() {
       championships: 0,
       totalEarnings: 0,
       bestFinish: null,
+      bestLapSec: null,
     },
     partLevels: {
       powertrain: 1,
@@ -1096,6 +1347,8 @@ export class CareerManager {
   constructor(storageKey = CAREER_STORAGE_KEY) {
     this.storageKey = storageKey || CAREER_STORAGE_KEY;
     this._memoryStore = null;
+    this._lastCareerWeekendRecordAt = 0;
+    this._lastCareerWeekendXpResult = null;
     this.state = this._loadAndMigrate();
     this._save();
   }
@@ -1225,7 +1478,91 @@ export class CareerManager {
         Number(rawStats.bestFinish) >= 1
           ? Math.round(Number(rawStats.bestFinish))
           : null,
+      bestLapSec:
+        rawStats.bestLapSec !== null &&
+        rawStats.bestLapSec !== undefined &&
+        Number.isFinite(Number(rawStats.bestLapSec)) &&
+        Number(rawStats.bestLapSec) > 10
+          ? Number(rawStats.bestLapSec)
+          : null,
     };
+
+    // Migrate Driver XP (gracefully seeding veteran v2 saves that predate driverXp)
+    let driverXp = 0;
+    if (parsed.driverXp !== undefined && parsed.driverXp !== null && Number.isFinite(Number(parsed.driverXp))) {
+      driverXp = Math.max(0, Math.round(Number(parsed.driverXp)));
+    } else if (stats.races > 0) {
+      driverXp =
+        stats.races * 180 +
+        stats.wins * 240 +
+        stats.podiums * 110 +
+        stats.poles * 40 +
+        stats.overtakes * 12 +
+        stats.championships * 800;
+    }
+
+    // Migrate Unlocked Achievements map
+    const validAchIds = new Set(ACHIEVEMENTS_CATALOG.map((a) => a.id));
+    const unlockedAchievements = {};
+    if (parsed.unlockedAchievements && typeof parsed.unlockedAchievements === 'object') {
+      for (const [achId, tsOrFlag] of Object.entries(parsed.unlockedAchievements)) {
+        if (validAchIds.has(achId) && tsOrFlag) {
+          unlockedAchievements[achId] =
+            typeof tsOrFlag === 'number' && Number.isFinite(tsOrFlag) ? tsOrFlag : Date.now();
+        }
+      }
+    }
+
+    // Migrate Time Trial Personal Bests & Earned Medals per Circuit
+    const bestLapByTrack = {};
+    if (parsed.bestLapByTrack && typeof parsed.bestLapByTrack === 'object') {
+      for (const [tId, val] of Object.entries(parsed.bestLapByTrack)) {
+        const sec = Number(val);
+        if (TIME_TRIAL_MEDALS[tId] && Number.isFinite(sec) && sec > 10 && sec < 600) {
+          bestLapByTrack[tId] = sec;
+        }
+      }
+    }
+
+    const medalsByTrack = createFreshMedalsByTrackMap();
+    if (parsed.medalsByTrack && typeof parsed.medalsByTrack === 'object') {
+      for (const [tId, mVal] of Object.entries(parsed.medalsByTrack)) {
+        if (!TIME_TRIAL_MEDALS[tId] || !mVal) continue;
+        if (typeof mVal === 'string') {
+          const upper = mVal.toUpperCase();
+          const gold = upper === 'GOLD';
+          const silver = gold || upper === 'SILVER';
+          const bronze = silver || upper === 'BRONZE';
+          medalsByTrack[tId] = {
+            bronze,
+            silver,
+            gold,
+            highest: gold ? 'GOLD' : (silver ? 'SILVER' : (bronze ? 'BRONZE' : 'NONE')),
+          };
+        } else if (typeof mVal === 'object') {
+          const gold = Boolean(mVal.gold || mVal.highest === 'GOLD');
+          const silver = Boolean(gold || mVal.silver || mVal.highest === 'SILVER');
+          const bronze = Boolean(silver || mVal.bronze || mVal.highest === 'BRONZE');
+          medalsByTrack[tId] = {
+            bronze,
+            silver,
+            gold,
+            highest: gold ? 'GOLD' : (silver ? 'SILVER' : (bronze ? 'BRONZE' : 'NONE')),
+          };
+        }
+      }
+    }
+
+    // Migrate Active Title Sponsor Contract (1.5x payout boost)
+    let activeSponsorContractId = defaults.activeSponsorContractId;
+    if (parsed.activeSponsorContractId === null) {
+      activeSponsorContractId = null;
+    } else if (
+      typeof parsed.activeSponsorContractId === 'string' &&
+      SPONSOR_OBJECTIVES_CATALOG.some((o) => o.id === parsed.activeSponsorContractId)
+    ) {
+      activeSponsorContractId = parsed.activeSponsorContractId;
+    }
 
     const roundHistory = Array.isArray(parsed.roundHistory) ? parsed.roundHistory.slice(0, 12) : [];
     const seasonHistory = Array.isArray(parsed.seasonHistory) ? parsed.seasonHistory.slice(-10) : [];
@@ -1238,6 +1575,11 @@ export class CareerManager {
       seasonNumber,
       currentRoundIdx,
       credits,
+      driverXp,
+      unlockedAchievements,
+      bestLapByTrack,
+      medalsByTrack,
+      activeSponsorContractId,
       driverPoints,
       roundHistory,
       seasonHistory,
@@ -1248,7 +1590,7 @@ export class CareerManager {
   }
 
   // --------------------------------------------------------------------------
-  // PROFILE, TEAM SELECTION & CALENDAR HELPERS
+  // PROFILE, DRIVER XP / FIA LICENSE, ACHIEVEMENTS, TIME TRIAL & SPONSOR CONTRACTS
   // --------------------------------------------------------------------------
   getState() {
     return {
@@ -1259,6 +1601,13 @@ export class CareerManager {
       seasonNumber: this.state.seasonNumber,
       currentRoundIdx: this.state.currentRoundIdx,
       credits: this.state.credits,
+      driverXp: this.state.driverXp,
+      unlockedAchievements: { ...this.state.unlockedAchievements },
+      bestLapByTrack: { ...this.state.bestLapByTrack },
+      medalsByTrack: Object.fromEntries(
+        Object.entries(this.state.medalsByTrack || {}).map(([k, v]) => [k, { ...v }])
+      ),
+      activeSponsorContractId: this.state.activeSponsorContractId,
       driverPoints: { ...this.state.driverPoints },
       roundHistory: this.state.roundHistory.map((r) => ({ ...r })),
       seasonHistory: this.state.seasonHistory.map((s) => ({ ...s })),
@@ -1266,6 +1615,355 @@ export class CareerManager {
       partLevels: { ...this.state.partLevels },
       carSetup: { ...this.state.carSetup },
     };
+  }
+
+  getDriverProfile() {
+    const base = computeDriverLevelProfile(this.state.driverXp);
+    return {
+      ...base,
+      driverName: this.state.driverName,
+      driverNumber: this.state.driverNumber,
+    };
+  }
+
+  getAchievementsStatus() {
+    const unlockedMap = this.state.unlockedAchievements || {};
+    let unlockedCount = 0;
+    let totalBonusEarned = 0;
+
+    const list = ACHIEVEMENTS_CATALOG.map((ach) => {
+      const rawUnlock = unlockedMap[ach.id];
+      const unlocked = Boolean(rawUnlock);
+      if (unlocked) {
+        unlockedCount += 1;
+        totalBonusEarned += ach.bonus;
+      }
+      return {
+        id: ach.id,
+        title: ach.title,
+        name: ach.name,
+        desc: ach.desc,
+        description: ach.desc,
+        icon: ach.icon,
+        bonus: ach.bonus,
+        rewardCredits: ach.bonus,
+        formattedBonus: `+${formatCredits(ach.bonus)}`,
+        unlocked,
+        unlockedAt: typeof rawUnlock === 'number' ? rawUnlock : (unlocked ? 1 : null),
+      };
+    });
+
+    const totalCount = ACHIEVEMENTS_CATALOG.length;
+    const progress01 = totalCount > 0 ? clamp(unlockedCount / totalCount, 0, 1) : 0;
+    const timeTrialSummary = this.getAllTimeTrialMedals();
+
+    Object.defineProperties(list, {
+      unlockedCount: { value: unlockedCount, enumerable: false },
+      totalCount: { value: totalCount, enumerable: false },
+      progress01: { value: progress01, enumerable: false },
+      totalBonusEarned: { value: totalBonusEarned, enumerable: false },
+      formattedTotalBonusEarned: { value: formatCredits(totalBonusEarned), enumerable: false },
+      items: { value: list, enumerable: false },
+      achievements: { value: list, enumerable: false },
+      timeTrialSummary: { value: timeTrialSummary, enumerable: false },
+    });
+
+    return list;
+  }
+
+  getTimeTrialInfo(trackId = 'FUJI_1982') {
+    const safeTrackId = TIME_TRIAL_MEDALS[trackId] ? trackId : 'FUJI_1982';
+    const def = TIME_TRIAL_MEDALS[safeTrackId];
+    const bestRaw = this.state.bestLapByTrack?.[safeTrackId];
+    const bestLapSec = Number.isFinite(bestRaw) && bestRaw > 0 ? bestRaw : null;
+    const storedMedals = this.state.medalsByTrack?.[safeTrackId] || {
+      bronze: false,
+      silver: false,
+      gold: false,
+      highest: 'NONE',
+    };
+
+    const gold = Boolean(storedMedals.gold);
+    const silver = Boolean(gold || storedMedals.silver);
+    const bronze = Boolean(silver || storedMedals.bronze);
+    const highest = gold ? 'GOLD' : (silver ? 'SILVER' : (bronze ? 'BRONZE' : 'NONE'));
+
+    const nextTargetMedal = !bronze ? 'BRONZE' : (!silver ? 'SILVER' : (!gold ? 'GOLD' : null));
+    const nextTargetSec = !bronze ? def.bronze : (!silver ? def.silver : def.gold);
+
+    return {
+      trackId: safeTrackId,
+      name: def.name,
+      targets: {
+        gold: def.gold,
+        silver: def.silver,
+        bronze: def.bronze,
+      },
+      gold: def.gold,
+      silver: def.silver,
+      bronze: def.bronze,
+      goldSec: def.gold,
+      silverSec: def.silver,
+      bronzeSec: def.bronze,
+      formattedTargets: {
+        gold: formatLapTimeSec(def.gold),
+        silver: formatLapTimeSec(def.silver),
+        bronze: formatLapTimeSec(def.bronze),
+      },
+      bonuses: { ...def.bonuses },
+      bestLapSec,
+      formattedBestLap: formatLapTimeSec(bestLapSec),
+      medals: { bronze, silver, gold, highest },
+      medal: highest,
+      highestMedal: highest,
+      bestMedal: highest,
+      nextTargetMedal,
+      nextTargetSec,
+      formattedNextTarget: formatLapTimeSec(nextTargetSec),
+    };
+  }
+
+  getAllTimeTrialMedals() {
+    const tracks = Object.keys(TIME_TRIAL_MEDALS).map((tId) => this.getTimeTrialInfo(tId));
+    let goldCount = 0;
+    let silverCount = 0;
+    let bronzeCount = 0;
+    for (const t of tracks) {
+      if (t.medals.gold) goldCount++;
+      if (t.medals.silver) silverCount++;
+      if (t.medals.bronze) bronzeCount++;
+    }
+    return {
+      tracks,
+      goldCount,
+      silverCount,
+      bronzeCount,
+      totalTracks: tracks.length,
+    };
+  }
+
+  recordTimeTrialLap(trackId = 'FUJI_1982', lapSec) {
+    const safeTrackId = TIME_TRIAL_MEDALS[trackId] ? trackId : 'FUJI_1982';
+    const def = TIME_TRIAL_MEDALS[safeTrackId];
+    const cleanLapSec = Number(lapSec);
+
+    if (!Number.isFinite(cleanLapSec) || cleanLapSec <= 10.0 || cleanLapSec >= 600.0) {
+      const curInfo = this.getTimeTrialInfo(safeTrackId);
+      return {
+        valid: false,
+        trackId: safeTrackId,
+        lapSec: cleanLapSec,
+        bestLapSec: curInfo.bestLapSec,
+        isPersonalBest: false,
+        isNewBest: false,
+        lapMedal: 'NONE',
+        medal: curInfo.highestMedal,
+        highestMedal: curInfo.highestMedal,
+        bestMedal: curInfo.highestMedal,
+        medalEarned: null,
+        newMedalUnlocked: false,
+        newlyUnlockedMedals: [],
+        newlyEarnedMedals: [],
+        medalBonusCredits: 0,
+        achievementBonusCredits: 0,
+        bonusCredits: 0,
+        creditsAwarded: 0,
+        xpGained: 0,
+        leveledUp: false,
+        newLevel: this.getDriverProfile().level,
+        newlyUnlockedAchievements: [],
+        targets: curInfo.targets,
+        driverProfile: this.getDriverProfile(),
+        creditsAfter: this.state.credits,
+      };
+    }
+
+    if (!this.state.bestLapByTrack) this.state.bestLapByTrack = {};
+    if (!this.state.medalsByTrack) this.state.medalsByTrack = createFreshMedalsByTrackMap();
+    if (!this.state.medalsByTrack[safeTrackId]) {
+      this.state.medalsByTrack[safeTrackId] = { bronze: false, silver: false, gold: false, highest: 'NONE' };
+    }
+
+    const prevBest = Number.isFinite(this.state.bestLapByTrack[safeTrackId])
+      ? this.state.bestLapByTrack[safeTrackId]
+      : null;
+    const isPersonalBest = prevBest === null || cleanLapSec < prevBest;
+    const deltaToPrevBest = prevBest !== null ? cleanLapSec - prevBest : null;
+
+    if (isPersonalBest) {
+      this.state.bestLapByTrack[safeTrackId] = cleanLapSec;
+    }
+    if (
+      this.state.stats.bestLapSec === null ||
+      this.state.stats.bestLapSec === undefined ||
+      cleanLapSec < this.state.stats.bestLapSec
+    ) {
+      this.state.stats.bestLapSec = cleanLapSec;
+    }
+
+    const entry = this.state.medalsByTrack[safeTrackId];
+    const newlyUnlockedMedals = [];
+    let medalBonusCredits = 0;
+    let rawXp = 35 + (isPersonalBest ? 25 : 0);
+
+    let lapMedal = 'NONE';
+    if (cleanLapSec <= def.gold) lapMedal = 'GOLD';
+    else if (cleanLapSec <= def.silver) lapMedal = 'SILVER';
+    else if (cleanLapSec <= def.bronze) lapMedal = 'BRONZE';
+
+    if (cleanLapSec <= def.bronze && !entry.bronze) {
+      entry.bronze = true;
+      newlyUnlockedMedals.push('BRONZE');
+      medalBonusCredits += def.bonuses.bronze;
+      rawXp += 60;
+    }
+    if (cleanLapSec <= def.silver && !entry.silver) {
+      entry.silver = true;
+      newlyUnlockedMedals.push('SILVER');
+      medalBonusCredits += def.bonuses.silver;
+      rawXp += 110;
+    }
+    if (cleanLapSec <= def.gold && !entry.gold) {
+      entry.gold = true;
+      newlyUnlockedMedals.push('GOLD');
+      medalBonusCredits += def.bonuses.gold;
+      rawXp += 200;
+    }
+
+    entry.highest = entry.gold ? 'GOLD' : (entry.silver ? 'SILVER' : (entry.bronze ? 'BRONZE' : 'NONE'));
+
+    if (medalBonusCredits > 0) {
+      this.state.credits += medalBonusCredits;
+      this.state.stats.totalEarnings += medalBonusCredits;
+    }
+
+    const xpRes = this._awardDriverXp(rawXp);
+    const achRes = this._evaluateAndUnlockAchievements({
+      mode: 'TIME_TRIAL',
+      trackId: safeTrackId,
+      lapSec: cleanLapSec,
+      medalEarned: entry.gold ? 'GOLD' : entry.highest,
+    });
+
+    this._save();
+
+    const highestNewMedal =
+      newlyUnlockedMedals.length > 0 ? newlyUnlockedMedals[newlyUnlockedMedals.length - 1] : null;
+    const totalCreditsAwarded = medalBonusCredits + achRes.bonusCredits;
+
+    return {
+      valid: true,
+      trackId: safeTrackId,
+      lapSec: cleanLapSec,
+      formattedLap: formatLapTimeSec(cleanLapSec),
+      prevBestLapSec: prevBest,
+      bestLapSec: this.state.bestLapByTrack[safeTrackId],
+      formattedBestLap: formatLapTimeSec(this.state.bestLapByTrack[safeTrackId]),
+      deltaToPrevBest,
+      isPersonalBest,
+      isNewBest: isPersonalBest,
+      lapMedal,
+      medal: entry.highest,
+      highestMedal: entry.highest,
+      bestMedal: entry.highest,
+      medalEarned: highestNewMedal,
+      newMedal: highestNewMedal,
+      newMedalUnlocked: newlyUnlockedMedals.length > 0,
+      newlyUnlockedMedals,
+      newlyEarnedMedals: newlyUnlockedMedals,
+      medalBonusCredits,
+      achievementBonusCredits: achRes.bonusCredits,
+      bonusCredits: totalCreditsAwarded,
+      creditsAwarded: totalCreditsAwarded,
+      xpGained: xpRes.xpGained,
+      leveledUp: xpRes.leveledUp,
+      prevLevel: xpRes.prevLevel,
+      newLevel: xpRes.newLevel,
+      newlyUnlockedAchievements: achRes.unlocked,
+      targets: { gold: def.gold, silver: def.silver, bronze: def.bronze },
+      driverProfile: xpRes.profile,
+      creditsAfter: this.state.credits,
+    };
+  }
+
+  selectSponsorContract(contractId) {
+    if (contractId === null || contractId === '') {
+      this.state.activeSponsorContractId = null;
+      this._save();
+      return { ok: true, contractId: null, activeContract: null };
+    }
+    const found = SPONSOR_OBJECTIVES_CATALOG.find((o) => o.id === contractId);
+    if (!found) {
+      return {
+        ok: false,
+        reason: 'INVALID_CONTRACT',
+        contractId: this.state.activeSponsorContractId,
+        activeContract: this.getActiveSponsorContract(),
+      };
+    }
+    this.state.activeSponsorContractId = found.id;
+    this._save();
+    return {
+      ok: true,
+      contractId: found.id,
+      activeContract: this.getActiveSponsorContract(),
+    };
+  }
+
+  getActiveSponsorContract() {
+    const id = this.state.activeSponsorContractId;
+    if (!id) return null;
+    const def = SPONSOR_OBJECTIVES_CATALOG.find((o) => o.id === id);
+    if (!def) return null;
+    const boostedBonus = Math.round(def.bonus * 1.5);
+    return {
+      ...def,
+      name: def.title,
+      objective: def.desc,
+      active: true,
+      selected: true,
+      isPinned: true,
+      multiplier: 1.5,
+      baseBonus: def.bonus,
+      bonus: boostedBonus,
+      bonusCredits: boostedBonus,
+      payout: boostedBonus,
+      amount: boostedBonus,
+      boostedBonus,
+      boostedAmount: boostedBonus,
+      formattedBaseBonus: `+${formatCredits(def.bonus)}`,
+      formattedBonus: `+${formatCredits(boostedBonus)}`,
+      formattedBoostedBonus: `+${formatCredits(boostedBonus)}`,
+    };
+  }
+
+  getSponsorContracts() {
+    const activeId = this.state.activeSponsorContractId;
+    return SPONSOR_OBJECTIVES_CATALOG.map((o) => {
+      const isPinned = o.id === activeId;
+      const boostedBonus = Math.round(o.bonus * 1.5);
+      return {
+        ...o,
+        name: o.title,
+        objective: o.desc,
+        selected: isPinned,
+        active: isPinned,
+        isPinned,
+        multiplier: 1.5,
+        baseBonus: o.bonus,
+        bonus: boostedBonus,
+        bonusCredits: boostedBonus,
+        payout: boostedBonus,
+        amount: boostedBonus,
+        boostedBonus,
+        formattedBaseBonus: `+${formatCredits(o.bonus)}`,
+        formattedBonus: `+${formatCredits(boostedBonus)}`,
+      };
+    });
+  }
+
+  getAllSponsorContracts() {
+    return this.getSponsorContracts();
   }
 
   getSelectedTeam() {
@@ -1304,14 +2002,27 @@ export class CareerManager {
       resolvedTrackId,
       usedFallbackTrack: resolvedTrackId !== entry.trackId,
       sponsorObjectives: this.getWeekendSponsorObjectives(),
+      activeSponsorContract: this.getActiveSponsorContract(),
     };
   }
 
   getWeekendSponsorObjectives() {
-    return SPONSOR_OBJECTIVES_CATALOG.map((o) => ({
-      ...o,
-      formattedBonus: `+${formatCredits(o.bonus)}`,
-    }));
+    const activeId = this.state.activeSponsorContractId;
+    return SPONSOR_OBJECTIVES_CATALOG.map((o) => {
+      const isPinned = o.id === activeId;
+      const effectiveBonus = isPinned ? Math.round(o.bonus * 1.5) : o.bonus;
+      return {
+        ...o,
+        baseBonus: o.bonus,
+        bonus: effectiveBonus,
+        effectiveBonus,
+        isPinned,
+        active: isPinned,
+        multiplier: isPinned ? 1.5 : 1.0,
+        formattedBaseBonus: `+${formatCredits(o.bonus)}`,
+        formattedBonus: `+${formatCredits(effectiveBonus)}`,
+      };
+    });
   }
 
   // --------------------------------------------------------------------------
@@ -1436,6 +2147,8 @@ export class CareerManager {
     this.state.credits -= info.nextCost;
     const newLevel = info.currentLevel + 1;
     this.state.partLevels[branchId] = newLevel;
+    const achRes = this._evaluateAndUnlockAchievements({ upgradedBranch: branchId, upgradedLevel: newLevel });
+    const xpRes = this._awardDriverXp(30 + newLevel * 15);
     this._save();
 
     const unlockedPart = CAR_PARTS_CATALOG[branchId].levels[newLevel - 1];
@@ -1452,6 +2165,10 @@ export class CareerManager {
       costPaid: info.nextCost,
       credits: this.state.credits,
       remainingCredits: this.state.credits,
+      newlyUnlockedAchievements: achRes.unlocked,
+      achievementBonusCredits: achRes.bonusCredits,
+      xpGained: xpRes.xpGained,
+      driverProfile: xpRes.profile,
       ratings: this.getCarTelemetryRatings(),
       modifiers: this.getPhysicsModifiers(),
     };
@@ -1879,15 +2596,259 @@ export class CareerManager {
     });
   }
 
-  _evaluateSponsorBonuses({ finishPos, gridPos, gotFastestLap, overtakes, cleanRace, damage }) {
-    const bonuses = [];
+  _awardDriverXp(amount) {
+    const safeAdd = Math.max(0, Math.round(finiteOr(amount, 0)));
+    const before = computeDriverLevelProfile(this.state.driverXp);
+    this.state.driverXp = Math.max(0, Math.round(finiteOr(this.state.driverXp, 0)) + safeAdd);
+    const after = computeDriverLevelProfile(this.state.driverXp);
+    return {
+      xpGained: safeAdd,
+      prevLevel: before.level,
+      newLevel: after.level,
+      leveledUp: after.level > before.level,
+      prevLicenseTitle: before.licenseTitle,
+      newLicenseTitle: after.licenseTitle,
+      licensePromoted: after.licenseId !== before.licenseId,
+      profile: {
+        ...after,
+        driverName: this.state.driverName,
+        driverNumber: this.state.driverNumber,
+      },
+    };
+  }
 
-    // 1. Podium Sweep (+$20,000)
-    if (finishPos <= 3) {
-      bonuses.push(createSponsorBonusItem(SPONSOR_OBJECTIVES_CATALOG[0]));
+  _computeSessionXp(summary = {}) {
+    const mode = String(summary.mode || summary.sessionMode || '').toUpperCase();
+    const isTimeTrial = mode === 'TIME_TRIAL' || Boolean(summary.isTimeTrial);
+    if (isTimeTrial) {
+      const laps = Math.max(1, Math.round(finiteOr(summary.lapsCompleted ?? summary.laps, 1)));
+      const pbBonus = summary.isPersonalBest || summary.isNewBest ? 30 : 0;
+      return 60 + Math.min(120, laps * 20) + pbBonus;
     }
 
-    // 2. Clean Chassis Bonus (+$18,000)
+    const rawPos = summary.finishPos ?? summary.playerFinishPos ?? summary.position ?? summary.pos;
+    const pos = Number.isFinite(Number(rawPos)) && Number(rawPos) >= 1 ? Math.round(Number(rawPos)) : null;
+    const gridRaw = summary.gridPos ?? summary.qualiPos ?? summary.qualifyingPos ?? summary.startPos;
+    const grid = Number.isFinite(Number(gridRaw)) && Number(gridRaw) >= 1 ? Math.round(Number(gridRaw)) : null;
+    const passes = Math.max(
+      0,
+      Math.round(finiteOr(summary.cleanOvertakes ?? summary.overtakes ?? summary.overtakesCount ?? summary.passes, 0))
+    );
+    const laps = Math.max(1, Math.round(finiteOr(summary.lapsCompleted ?? summary.totalLaps ?? summary.laps, 3)));
+
+    let xp = 120 + Math.min(120, laps * 8);
+    if (pos !== null) {
+      if (pos === 1) xp += 220;
+      else if (pos === 2) xp += 165;
+      else if (pos === 3) xp += 130;
+      else if (pos <= 10) xp += (11 - pos) * 14;
+      else xp += 20;
+    }
+    xp += Math.min(120, passes * 15);
+    if (grid === 1 || summary.gotPole) xp += 30;
+    if (summary.fastestLap === true || summary.gotFastestLap === true) xp += 35;
+    if (summary.cleanRace === true || summary.zeroDamage === true) xp += 40;
+    return Math.max(40, Math.round(xp));
+  }
+
+  _evaluateAndUnlockAchievements(ctx = {}) {
+    if (!this.state.unlockedAchievements || typeof this.state.unlockedAchievements !== 'object') {
+      this.state.unlockedAchievements = {};
+    }
+
+    const rawPos = ctx.finishPos ?? ctx.playerFinishPos ?? ctx.position ?? ctx.pos;
+    const pos = Number.isFinite(Number(rawPos)) && Number(rawPos) >= 1 ? Math.round(Number(rawPos)) : null;
+    const rawGrid = ctx.gridPos ?? ctx.qualiPos ?? ctx.qualifyingPos ?? ctx.startPos;
+    const grid = Number.isFinite(Number(rawGrid)) && Number(rawGrid) >= 1 ? Math.round(Number(rawGrid)) : null;
+    const passes = Math.max(
+      0,
+      Math.round(finiteOr(ctx.cleanOvertakes ?? ctx.overtakes ?? ctx.overtakesCount ?? ctx.passes, 0))
+    );
+
+    // Launch reaction time in seconds (supports reactionSec, launchReactionSec, reactionMs, or PERFECT grade)
+    let reactionSec = null;
+    if (ctx.reactionSec !== undefined && ctx.reactionSec !== null && Number.isFinite(Number(ctx.reactionSec))) {
+      reactionSec = Number(ctx.reactionSec);
+    } else if (
+      ctx.launchReactionSec !== undefined &&
+      ctx.launchReactionSec !== null &&
+      Number.isFinite(Number(ctx.launchReactionSec))
+    ) {
+      reactionSec = Number(ctx.launchReactionSec);
+    } else if (ctx.reactionMs !== undefined && ctx.reactionMs !== null && Number.isFinite(Number(ctx.reactionMs))) {
+      reactionSec = Number(ctx.reactionMs) / 1000.0;
+    }
+
+    // Damage / zero-damage check
+    const rawDamage =
+      ctx.maxDamage ?? ctx.totalDamage ?? ctx.wingDamage ?? ctx.damage ?? null;
+    const hasNumericZeroDamage =
+      rawDamage !== null && Number.isFinite(Number(rawDamage)) && Number(rawDamage) <= 0.015;
+    const isZeroDamageSession =
+      ctx.zeroDamage === true ||
+      hasNumericZeroDamage ||
+      (ctx.cleanRace === true && (rawDamage === null || Number(rawDamage) <= 0.015));
+
+    // Peak speed km/h
+    const maxSpeedKmh = finiteOr(
+      ctx.maxSpeedKmh ?? ctx.topSpeedKmh ?? ctx.peakSpeedKmh ?? ctx.speedKmh,
+      0
+    );
+
+    // Fastest pit stop duration in seconds
+    const rawPitSec =
+      ctx.bestPitStopSec ?? ctx.bestPitSec ?? ctx.fastestPitSec ?? ctx.minPitStopSec ?? ctx.pitStopSec;
+    const bestPitSec =
+      rawPitSec !== undefined && rawPitSec !== null && Number.isFinite(Number(rawPitSec)) && Number(rawPitSec) > 0
+        ? Number(rawPitSec)
+        : null;
+
+    // Wet weather check
+    const weatherId = String(ctx.weatherId ?? ctx.weatherRegime ?? ctx.weather ?? '').toUpperCase();
+    const moisture = finiteOr(ctx.moisture ?? ctx.weatherMoisture ?? ctx.grooveMoisture, 0);
+    const isWetConditions =
+      ctx.isWet === true ||
+      ctx.wetRace === true ||
+      moisture >= 0.20 ||
+      weatherId === 'LIGHT_DRIZZLE' ||
+      weatherId === 'MONSOON_STORM';
+
+    // Time Trial Gold check across any circuit
+    const hasAnyGoldMedal =
+      ctx.medalEarned === 'GOLD' ||
+      Object.values(this.state.medalsByTrack || {}).some((m) => Boolean(m && m.gold));
+
+    // R&D Level 3+ check across any engineering branch
+    const hasLv3Part = Object.values(this.state.partLevels || {}).some((lv) => finiteOr(lv, 1) >= 3);
+
+    const conditions = {
+      FIRST_PODIUM: (pos !== null && pos <= 3) || (this.state.stats?.podiums || 0) >= 1,
+      FIRST_VICTORY: pos === 1 || (this.state.stats?.wins || 0) >= 1,
+      LIGHTNING_START:
+        (reactionSec !== null && reactionSec > 0 && reactionSec < 0.23) ||
+        String(ctx.launchReactionGrade || '').toUpperCase() === 'PERFECT',
+      OVERTAKE_ACE: passes >= 5,
+      CLEAN_DRIVER: pos !== null && pos <= 10 && isZeroDamageSession,
+      SPEED_DEMON: maxSpeedKmh >= 325.0,
+      SUB_22_PIT: bestPitSec !== null && bestPitSec < 2.25,
+      RAIN_MASTER: pos !== null && pos <= 3 && isWetConditions,
+      TIME_TRIAL_GOLD: hasAnyGoldMedal,
+      RND_ENGINEER: hasLv3Part,
+      POLE_SITTER: grid === 1 || ctx.gotPole === true || (this.state.stats?.poles || 0) >= 1,
+      WORLD_CHAMPION:
+        ctx.crownedWorldChampion === true || (this.state.stats?.championships || 0) >= 1,
+    };
+
+    const unlocked = [];
+    let bonusCredits = 0;
+    const nowTs = Date.now();
+
+    for (let i = 0; i < ACHIEVEMENTS_CATALOG.length; i++) {
+      const ach = ACHIEVEMENTS_CATALOG[i];
+      if (this.state.unlockedAchievements[ach.id]) continue;
+      if (conditions[ach.id]) {
+        this.state.unlockedAchievements[ach.id] = nowTs;
+        this.state.credits += ach.bonus;
+        this.state.stats.totalEarnings += ach.bonus;
+        bonusCredits += ach.bonus;
+        unlocked.push({
+          id: ach.id,
+          title: ach.title,
+          name: ach.name,
+          desc: ach.desc,
+          icon: ach.icon,
+          bonus: ach.bonus,
+          formattedBonus: `+${formatCredits(ach.bonus)}`,
+          unlocked: true,
+          unlockedAt: nowTs,
+        });
+      }
+    }
+
+    return { unlocked, bonusCredits };
+  }
+
+  recordSessionSummary(summary = {}) {
+    const safeSummary = summary && typeof summary === 'object' ? summary : {};
+    const mode = String(safeSummary.mode || safeSummary.sessionMode || '').toUpperCase();
+    const isCareerLinked =
+      Boolean(safeSummary.isCareerRound || safeSummary.isCareerWeekend || mode === 'CAREER') &&
+      this._lastCareerWeekendRecordAt > 0 &&
+      Date.now() - this._lastCareerWeekendRecordAt < 2500;
+
+    let xpRes;
+    let combinedUnlocked = [];
+    let combinedBonusCredits = 0;
+
+    if (isCareerLinked && this._lastCareerWeekendXpResult) {
+      // Career weekend already awarded base race XP in recordRaceWeekendResult;
+      // still evaluate rich telemetry milestones (reactionSec, maxSpeedKmh, bestPitStopSec, isWet) idempotently!
+      xpRes = this._lastCareerWeekendXpResult;
+      const extraAch = this._evaluateAndUnlockAchievements(safeSummary);
+      const prevAch = Array.isArray(this._lastCareerWeekendAchievements)
+        ? this._lastCareerWeekendAchievements
+        : [];
+      combinedUnlocked = [...prevAch, ...extraAch.unlocked];
+      combinedBonusCredits = (this._lastCareerWeekendAchBonus || 0) + extraAch.bonusCredits;
+      this._lastCareerWeekendRecordAt = 0;
+    } else {
+      const rawPos = safeSummary.finishPos ?? safeSummary.playerFinishPos ?? safeSummary.position ?? safeSummary.pos;
+      const pos = Number.isFinite(Number(rawPos)) && Number(rawPos) >= 1 ? Math.round(Number(rawPos)) : null;
+
+      // Update bestLapByTrack if a valid bestLapTime / bestLapSec was clocked in this session
+      const rawLap = safeSummary.bestLapSec ?? safeSummary.bestLapTime;
+      if (
+        safeSummary.trackId &&
+        TIME_TRIAL_MEDALS[safeSummary.trackId] &&
+        Number.isFinite(Number(rawLap)) &&
+        Number(rawLap) > 10 &&
+        Number(rawLap) < 600
+      ) {
+        const lapVal = Number(rawLap);
+        const curTrackBest = this.state.bestLapByTrack?.[safeSummary.trackId];
+        if (!Number.isFinite(curTrackBest) || lapVal < curTrackBest) {
+          this.state.bestLapByTrack[safeSummary.trackId] = lapVal;
+        }
+        if (!Number.isFinite(this.state.stats.bestLapSec) || lapVal < this.state.stats.bestLapSec) {
+          this.state.stats.bestLapSec = lapVal;
+        }
+      }
+
+      const sessionXp = this._computeSessionXp({ ...safeSummary, finishPos: pos });
+      xpRes = this._awardDriverXp(sessionXp);
+      const achRes = this._evaluateAndUnlockAchievements(safeSummary);
+      combinedUnlocked = achRes.unlocked;
+      combinedBonusCredits = achRes.bonusCredits;
+    }
+
+    this._save();
+
+    return {
+      xpGained: xpRes.xpGained,
+      leveledUp: xpRes.leveledUp,
+      prevLevel: xpRes.prevLevel,
+      newLevel: xpRes.newLevel,
+      licensePromoted: xpRes.licensePromoted,
+      licenseTitle: xpRes.profile.licenseTitle,
+      licenseColor: xpRes.profile.licenseColor,
+      newlyUnlockedAchievements: combinedUnlocked,
+      totalBonusCredits: combinedBonusCredits,
+      driverProfile: xpRes.profile,
+      creditsAfter: this.state.credits,
+    };
+  }
+
+  _evaluateSponsorBonuses({ finishPos, gridPos, gotFastestLap, overtakes, cleanRace, damage }) {
+    const bonuses = [];
+    const pinnedId = this.state.activeSponsorContractId;
+
+    // 1. Podium Sweep (+$20,000 base / +$30,000 if pinned 1.5x)
+    if (finishPos <= 3) {
+      const def = SPONSOR_OBJECTIVES_CATALOG[0];
+      bonuses.push(createSponsorBonusItem(def, def.id === pinnedId));
+    }
+
+    // 2. Clean Chassis Bonus (+$18,000 base / +$27,000 if pinned 1.5x)
     const isClean =
       cleanRace !== undefined
         ? !!cleanRace
@@ -1895,22 +2856,26 @@ export class CareerManager {
           ? Number(damage) <= 0.20
           : finishPos <= 8);
     if (isClean) {
-      bonuses.push(createSponsorBonusItem(SPONSOR_OBJECTIVES_CATALOG[1]));
+      const def = SPONSOR_OBJECTIVES_CATALOG[1];
+      bonuses.push(createSponsorBonusItem(def, def.id === pinnedId));
     }
 
-    // 3. Overtake Hunter 3+ Passes (+$15,000)
+    // 3. Overtake Hunter 3+ Passes (+$15,000 base / +$22,500 if pinned 1.5x)
     if (overtakes >= 3) {
-      bonuses.push(createSponsorBonusItem(SPONSOR_OBJECTIVES_CATALOG[2]));
+      const def = SPONSOR_OBJECTIVES_CATALOG[2];
+      bonuses.push(createSponsorBonusItem(def, def.id === pinnedId));
     }
 
-    // 4. Fastest Lap Bounty (+$15,000)
+    // 4. Fastest Lap Bounty (+$15,000 base / +$22,500 if pinned 1.5x)
     if (gotFastestLap) {
-      bonuses.push(createSponsorBonusItem(SPONSOR_OBJECTIVES_CATALOG[3]));
+      const def = SPONSOR_OBJECTIVES_CATALOG[3];
+      bonuses.push(createSponsorBonusItem(def, def.id === pinnedId));
     }
 
-    // 5. Front-Row Qualifier P1–P2 (+$12,000)
+    // 5. Front-Row Qualifier P1–P2 (+$12,000 base / +$18,000 if pinned 1.5x)
     if (gridPos <= 2) {
-      bonuses.push(createSponsorBonusItem(SPONSOR_OBJECTIVES_CATALOG[4]));
+      const def = SPONSOR_OBJECTIVES_CATALOG[4];
+      bonuses.push(createSponsorBonusItem(def, def.id === pinnedId));
     }
 
     return bonuses;
@@ -1919,10 +2884,13 @@ export class CareerManager {
   recordRaceWeekendResult(result = {}) {
     const {
       trackId,
-      finishPos = 8,
-      gridPos = 5,
+      finishPos,
+      position,
+      gridPos,
+      qualifyingPos,
       fastestLap = false,
-      overtakes = 0,
+      overtakes,
+      overtakesCount,
       arcadeScore = 0,
       standings = null,
       cleanRace,
@@ -1937,9 +2905,9 @@ export class CareerManager {
     const roundDef = CHAMPIONSHIP_CALENDAR[roundIdxBefore];
     const effectiveTrackId = trackId || roundDef.trackId;
 
-    const pos = clamp(Math.round(finiteOr(finishPos, 8)), 1, 20);
-    const grid = clamp(Math.round(finiteOr(gridPos, 5)), 1, 20);
-    const passes = Math.max(0, Math.round(finiteOr(overtakes, 0)));
+    const pos = clamp(Math.round(finiteOr(finishPos ?? position, 8)), 1, 20);
+    const grid = clamp(Math.round(finiteOr(gridPos ?? qualifyingPos, 5)), 1, 20);
+    const passes = Math.max(0, Math.round(finiteOr(overtakes ?? overtakesCount, 0)));
     const score = Math.max(0, Math.round(finiteOr(arcadeScore, 0)));
     const gotPole = grid === 1;
 
@@ -2035,7 +3003,7 @@ export class CareerManager {
         Math.max(0, finiteOr(this.state.driverPoints[flAi], 0)) + FIA_POINTS_SYSTEM.fastestLap;
     }
 
-    // 3. Calculate Weekend Prize Purse ($120,000 – $650,000) + Dynamic Sponsor Bonuses
+    // 3. Calculate Weekend Prize Purse ($120,000 – $650,000) + Dynamic Sponsor Bonuses (with 1.5x Title Contract!)
     const FINISH_PURSE_TABLE = [
       480000, // P1
       370000, // P2
@@ -2162,6 +3130,34 @@ export class CareerManager {
     const totalPayout = racePrizeMoney + sponsorBonusTotal + trophyBonus;
     this.state.credits += totalPayout;
     this.state.stats.totalEarnings += totalPayout;
+
+    // 6. Award Career Weekend Driver XP & Automatically Evaluate Achievements!
+    const weekendXpAmount =
+      this._computeSessionXp({
+        ...result,
+        finishPos: pos,
+        gridPos: grid,
+        gotPole,
+        gotFastestLap,
+        overtakes: passes,
+      }) + (crownedWorldChampion ? 350 : 50);
+    const xpRes = this._awardDriverXp(weekendXpAmount);
+    const achRes = this._evaluateAndUnlockAchievements({
+      ...result,
+      trackId: effectiveTrackId,
+      finishPos: pos,
+      gridPos: grid,
+      gotPole,
+      gotFastestLap,
+      overtakes: passes,
+      crownedWorldChampion,
+    });
+
+    this._lastCareerWeekendRecordAt = Date.now();
+    this._lastCareerWeekendXpResult = xpRes;
+    this._lastCareerWeekendAchievements = achRes.unlocked;
+    this._lastCareerWeekendAchBonus = achRes.bonusCredits;
+
     this._save();
 
     return {
@@ -2189,8 +3185,15 @@ export class CareerManager {
       prizeMoney: racePrizeMoney,
       sponsorBonuses,
       sponsorBonusTotal,
+      activeSponsorContract: this.getActiveSponsorContract(),
       trophyBonus,
-      totalPayout,
+      achievementBonusCredits: achRes.bonusCredits,
+      newlyUnlockedAchievements: achRes.unlocked,
+      xpGained: xpRes.xpGained,
+      leveledUp: xpRes.leveledUp,
+      newLevel: xpRes.newLevel,
+      driverProfile: xpRes.profile,
+      totalPayout: totalPayout + achRes.bonusCredits,
       payoutBreakdown: {
         finishPurse,
         poleBonus: polePurse,
@@ -2200,7 +3203,8 @@ export class CareerManager {
         racePrizeMoney,
         sponsorBonusTotal,
         trophyBonus,
-        totalPayout,
+        achievementBonusCredits: achRes.bonusCredits,
+        totalPayout: totalPayout + achRes.bonusCredits,
       },
       creditsAfter: this.state.credits,
       seasonCompleted,

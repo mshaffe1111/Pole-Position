@@ -762,6 +762,8 @@ export class RaceSystemsController {
       leader.damage.rearWing = Math.min(1.0, (leader.damage.rearWing || 0) + severity * 0.52);
       if (leader.damage.rearWing >= 0.35) {
         leader.drsActive = false;
+        leader.drsManualOpen = false;
+        leader.drsAvailable = false;
       }
 
       const midSpd = (trailer.speedKmh + leader.speedKmh) * 0.5;

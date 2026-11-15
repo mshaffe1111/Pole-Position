@@ -667,11 +667,43 @@ const FOM_BROADCAST_CSS = `
   background: #ff2a2a;
 }
 
-/* Clean Feed Toggle Button & Clean-Feed Active State */
+/* Clean Feed Toggle Button, Photo Snapshot Button & Shutter Flash Overlay */
 #btn-replay-cleanfeed.clean-on {
   border-color: rgba(255, 216, 77, 0.75);
   background: rgba(255, 216, 77, 0.16);
   color: #ffd84d;
+}
+
+#btn-replay-photo {
+  border-color: rgba(56, 189, 248, 0.55);
+  background: linear-gradient(180deg, rgba(14, 116, 144, 0.36) 0%, rgba(8, 47, 73, 0.52) 100%);
+  color: #e0f2fe;
+  font-weight: 900;
+}
+
+#btn-replay-photo:hover {
+  border-color: rgba(125, 211, 252, 0.9);
+  background: linear-gradient(180deg, rgba(2, 132, 199, 0.55) 0%, rgba(12, 74, 110, 0.7) 100%);
+  color: #ffffff;
+}
+
+#btn-replay-photo:active {
+  transform: scale(0.96);
+}
+
+#fom-photo-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  background: #ffffff;
+  opacity: 0;
+  transition: opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+#fom-photo-flash.flash-active {
+  opacity: 0.88;
+  transition: none;
 }
 
 #replay-overlay.fom-clean-feed .replay-top-row,
@@ -686,7 +718,7 @@ const FOM_BROADCAST_CSS = `
 }
 
 #replay-overlay.fom-clean-feed #replay-transport-bar {
-  opacity: 0.34;
+  opacity: 0.42;
   transition: opacity 0.2s ease;
 }
 
@@ -874,9 +906,16 @@ export class ReplayDirector {
     this._tmpVecA = new THREE.Vector3();
     this._tmpVecB = new THREE.Vector3();
 
-    // Self-contained FOM Broadcast DOM state
+    // Self-contained FOM Broadcast DOM & Photo Mode state
     this._domRefs = null;
     this._keyHandlerBound = null;
+    this._lastRenderer = null;
+    this._lastScene = null;
+    this._lastCamera = null;
+    this._lastTrack = null;
+    this._lastFocusCar = null;
+    this._lastCallbacks = null;
+    this._photoFlashTimer = null;
 
     this.reset();
   }
@@ -1632,6 +1671,8 @@ export class ReplayDirector {
   // 4. SUB-FRAME SPLINE INTERPOLATION, FULL SIM RIG SYNC & 8-CAMERA DIRECTOR
   // --------------------------------------------------------------------------
   updatePlayback(rawDt, {
+    renderer,
+    scene,
     track,
     camera,
     carRigs,
@@ -1639,6 +1680,13 @@ export class ReplayDirector {
     elapsedSec = 0,
     callbacks,
   } = {}) {
+    const fallbackGame = typeof window !== 'undefined' ? window.__RACE_PHANATIC_GAME__ : null;
+    if (renderer || fallbackGame?.renderer) this._lastRenderer = renderer || fallbackGame.renderer;
+    if (scene || fallbackGame?.scene) this._lastScene = scene || fallbackGame.scene;
+    if (camera || fallbackGame?.camera) this._lastCamera = camera || fallbackGame.camera;
+    if (track || fallbackGame?.track) this._lastTrack = track || fallbackGame.track;
+    if (callbacks) this._lastCallbacks = callbacks;
+
     if (!this.isPlaying || this.frames.length === 0) {
       return {
         active: false,
@@ -1799,6 +1847,9 @@ export class ReplayDirector {
     const focusCar = this._interpCarPool[safeFocusIdx];
     const focusFrame = this._interpFramesScratch[safeFocusIdx];
     const focusRig = focusCar ? this._resolveRig(carRigs, focusCar.id, safeFocusIdx) : null;
+    if (focusCar) {
+      this._lastFocusCar = focusCar;
+    }
 
     if (track && camera && focusCar && focusFrame) {
       this._updateBroadcastCamera(safeRawDt, {
@@ -3111,15 +3162,15 @@ export class ReplayDirector {
       overlay.appendChild(hudRoot);
     }
 
-    // 3. Clean-Feed Toggle Button ("TV HUD: ON/OFF") inside #replay-transport-bar + 'H' hotkey
+    // 3. Clean-View Toggle Button ("👁️ CLEAN VIEW") & Broadcast Photo Snapshot Button ("📸 PHOTO")
     let cleanBtn = document.getElementById('btn-replay-cleanfeed');
     if (!cleanBtn && transportBar) {
       cleanBtn = document.createElement('button');
       cleanBtn.id = 'btn-replay-cleanfeed';
       cleanBtn.className = 'replay-btn';
       cleanBtn.type = 'button';
-      cleanBtn.title = 'Toggle TV Broadcast Graphics Clean Feed (Shortcut: H)';
-      cleanBtn.textContent = '📺 TV HUD: ON';
+      cleanBtn.title = 'Toggle Clean Broadcast View — Hides HUD Graphics (Shortcut: H)';
+      cleanBtn.textContent = '👁️ CLEAN VIEW';
       cleanBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         this.toggleCleanFeed();
@@ -3132,6 +3183,36 @@ export class ReplayDirector {
       }
     }
 
+    let photoBtn = document.getElementById('btn-replay-photo');
+    if (!photoBtn && transportBar) {
+      photoBtn = document.createElement('button');
+      photoBtn.id = 'btn-replay-photo';
+      photoBtn.className = 'replay-btn';
+      photoBtn.type = 'button';
+      photoBtn.title = 'Capture & Download Broadcast Photo Snapshot PNG (Shortcut: P)';
+      photoBtn.textContent = '📸 PHOTO';
+      photoBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.capturePhotoSnapshot();
+      });
+      const exitBtn = document.getElementById('btn-replay-exit');
+      if (cleanBtn && cleanBtn.parentElement === transportBar && cleanBtn.nextSibling) {
+        transportBar.insertBefore(photoBtn, cleanBtn.nextSibling);
+      } else if (exitBtn && exitBtn.parentElement === transportBar) {
+        transportBar.insertBefore(photoBtn, exitBtn);
+      } else {
+        transportBar.appendChild(photoBtn);
+      }
+    }
+
+    let photoFlashEl = document.getElementById('fom-photo-flash');
+    if (!photoFlashEl && document.body) {
+      photoFlashEl = document.createElement('div');
+      photoFlashEl.id = 'fom-photo-flash';
+      photoFlashEl.setAttribute('aria-hidden', 'true');
+      document.body.appendChild(photoFlashEl);
+    }
+
     if (!this._keyHandlerBound && typeof window !== 'undefined') {
       this._keyHandlerBound = (e) => {
         if (!this.isPlaying) return;
@@ -3139,6 +3220,9 @@ export class ReplayDirector {
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
         if (e.code === 'KeyH' && !e.ctrlKey && !e.metaKey && !e.altKey) {
           this.toggleCleanFeed();
+        } else if (e.code === 'KeyP' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+          this.capturePhotoSnapshot();
         }
       };
       window.addEventListener('keydown', this._keyHandlerBound);
@@ -3169,6 +3253,8 @@ export class ReplayDirector {
       tireTempDot,
       tireTempTxt,
       cleanBtn,
+      photoBtn,
+      photoFlashEl,
       cache: {},
     };
 
@@ -3184,9 +3270,178 @@ export class ReplayDirector {
     }
     const cleanBtn = document.getElementById('btn-replay-cleanfeed');
     if (cleanBtn) {
-      cleanBtn.textContent = this.cleanFeed ? '📺 TV HUD: OFF' : '📺 TV HUD: ON';
+      cleanBtn.textContent = this.cleanFeed ? '👁️ CLEAN VIEW: ON' : '👁️ CLEAN VIEW';
       cleanBtn.classList.toggle('clean-on', this.cleanFeed);
     }
+  }
+
+  capturePhotoSnapshot() {
+    if (typeof document === 'undefined') {
+      return { ok: false, reason: 'NO_DOM' };
+    }
+
+    const gameRef = typeof window !== 'undefined' ? window.__RACE_PHANATIC_GAME__ : null;
+    const renderer = this._lastRenderer || gameRef?.renderer || null;
+    const scene = this._lastScene || gameRef?.scene || null;
+    const camera = this._lastCamera || gameRef?.camera || null;
+    const track = this._lastTrack || gameRef?.track || null;
+    const focusCar = this._lastFocusCar || this._interpCarPool?.[0] || gameRef?.playerCar || null;
+
+    // 1. Trigger shutter sound callback + crisp white camera shutter flash overlay
+    if (typeof this._lastCallbacks?.onPhotoShutter === 'function') {
+      this._lastCallbacks.onPhotoShutter();
+    } else if (typeof gameRef?.audio?.playCameraShutter === 'function') {
+      gameRef.audio.playCameraShutter();
+    } else if (typeof gameRef?.audio?.playPhotoShutter === 'function') {
+      gameRef.audio.playPhotoShutter();
+    }
+
+    this._ensureBroadcastDOM();
+    const flashEl = document.getElementById('fom-photo-flash');
+    if (flashEl) {
+      flashEl.classList.add('flash-active');
+      if (this._photoFlashTimer) clearTimeout(this._photoFlashTimer);
+      this._photoFlashTimer = setTimeout(() => {
+        flashEl.classList.remove('flash-active');
+      }, 55);
+    }
+
+    // 2. Render a fresh WebGL frame synchronously before reading canvas pixels
+    const isRetroActive =
+      gameRef?.config?.visualStyle === '1982_ORIGINAL' &&
+      gameRef?.retro1982?.canvas &&
+      gameRef.retro1982.canvas.style.display !== 'none';
+
+    let srcCanvas = null;
+    if (isRetroActive) {
+      srcCanvas = gameRef.retro1982.canvas;
+    } else if (renderer && scene && camera && typeof renderer.render === 'function') {
+      renderer.render(scene, camera);
+      srcCanvas = renderer.domElement || null;
+    } else if (renderer?.domElement) {
+      srcCanvas = renderer.domElement;
+    } else {
+      srcCanvas = document.querySelector('canvas');
+    }
+
+    if (!srcCanvas) {
+      return { ok: false, reason: 'NO_SOURCE_CANVAS' };
+    }
+
+    // 3. Composite onto offscreen canvas with sleek corner motorsport crest
+    const rawW = srcCanvas.width || 1280;
+    const rawH = srcCanvas.height || 720;
+    const scaleMult = isRetroActive && rawW < 640 ? Math.max(2, Math.floor(1280 / rawW)) : 1;
+    const outW = Math.max(320, rawW * scaleMult);
+    const outH = Math.max(180, rawH * scaleMult);
+
+    const offscreen = document.createElement('canvas');
+    offscreen.width = outW;
+    offscreen.height = outH;
+    const ctx = offscreen.getContext('2d');
+    if (!ctx) {
+      return { ok: false, reason: 'NO_2D_CONTEXT' };
+    }
+
+    ctx.imageSmoothingEnabled = !isRetroActive;
+    ctx.drawImage(srcCanvas, 0, 0, outW, outH);
+
+    // Build Broadcast Motorsport Crest metadata
+    const circuitLabel = formatCircuitBroadcastTitle(track);
+    const rawDrvName = String(focusCar?.name || focusCar?.short || 'PHANATIC')
+      .replace(/\s*#\d+\s*/g, '')
+      .replace(/\(.*?\)/g, '')
+      .trim()
+      .toUpperCase();
+    const drvNum = focusCar?.carNum ? `#${focusCar.carNum} ` : '';
+    const driverLabel = `${drvNum}${rawDrvName}`;
+    const useMph = gameRef?.prefs?.speedUnit === 'MPH';
+    const spdVal = Math.round((finiteOr(focusCar?.speedKmh, 0)) * (useMph ? 0.621371 : 1.0));
+    const spdUnit = useMph ? 'MPH' : 'KM/H';
+    const metaLine = `${circuitLabel} • ${driverLabel} • ${spdVal} ${spdUnit}`;
+    const titleLine = 'POLE POSITION 2026';
+
+    const uiScale = clamp(outW / 1280, 0.65, 2.5);
+    const padOuter = Math.round(22 * uiScale);
+    const padX = Math.round(14 * uiScale);
+    const padY = Math.round(10 * uiScale);
+    const titlePx = Math.max(11, Math.round(15 * uiScale));
+    const metaPx = Math.max(10, Math.round(11.5 * uiScale));
+    const accentW = Math.max(3, Math.round(4 * uiScale));
+
+    ctx.save();
+    ctx.font = `900 italic ${titlePx}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    const titleW = ctx.measureText(titleLine).width;
+    ctx.font = `700 ${metaPx}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    const metaW = ctx.measureText(metaLine).width;
+
+    const boxW = Math.ceil(Math.max(titleW, metaW) + padX * 2 + accentW + 6 * uiScale);
+    const boxH = Math.ceil(titlePx + metaPx + padY * 2 + 6 * uiScale);
+    const bx = Math.max(8, outW - boxW - padOuter);
+    const by = Math.max(8, outH - boxH - padOuter);
+
+    // Subtle dark frosted crest plate
+    ctx.fillStyle = 'rgba(7, 11, 18, 0.80)';
+    ctx.fillRect(bx, by, boxW, boxH);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+    ctx.lineWidth = Math.max(1, Math.round(1 * uiScale));
+    ctx.strokeRect(bx + 0.5, by + 0.5, boxW - 1, boxH - 1);
+
+    // FIA Crimson left accent stripe + Gold micro-pip
+    ctx.fillStyle = focusCar?.liveryHex || '#e10600';
+    ctx.fillRect(bx, by, accentW, boxH);
+    ctx.fillStyle = '#ffd600';
+    ctx.fillRect(bx, by, accentW, Math.round(boxH * 0.28));
+
+    const textX = bx + accentW + padX;
+    ctx.textBaseline = 'top';
+    ctx.font = `900 italic ${titlePx}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(titleLine, textX, by + padY);
+
+    ctx.font = `700 ${metaPx}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText(metaLine, textX, by + padY + titlePx + Math.round(4 * uiScale));
+    ctx.restore();
+
+    // 4. Download PNG as `pole-position-2026-photo.png`
+    const filename = 'pole-position-2026-photo.png';
+    const triggerDownloadUrl = (href, revokeAfter = false) => {
+      const link = document.createElement('a');
+      link.download = filename;
+      link.href = href;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      if (revokeAfter && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+        setTimeout(() => URL.revokeObjectURL(href), 2500);
+      }
+    };
+
+    try {
+      if (typeof offscreen.toBlob === 'function') {
+        offscreen.toBlob((blob) => {
+          if (blob && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+            triggerDownloadUrl(URL.createObjectURL(blob), true);
+          } else {
+            triggerDownloadUrl(offscreen.toDataURL('image/png'), false);
+          }
+        }, 'image/png');
+      } else {
+        triggerDownloadUrl(offscreen.toDataURL('image/png'), false);
+      }
+    } catch (_) {
+      // Ignore canvas taint / sandbox download errors gracefully
+    }
+
+    return {
+      ok: true,
+      filename,
+      width: outW,
+      height: outH,
+      caption: `${titleLine} • ${metaLine}`,
+    };
   }
 
   _updateBroadcastHUD({ track, numCars, focusCar, activeCamLabel, lap, totalLaps }) {

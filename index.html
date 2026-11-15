@@ -6,11 +6,12 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <meta name="theme-color" content="#080c14" />
+  <meta name="theme-color" content="#e10600" />
   <title>Pole Position 2026 — Grand Prix Motorsport Sim</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e10600'/%3E%3Ctext x='16' y='22' font-family='sans-serif' font-weight='900' font-size='16' fill='%23ffffff' text-anchor='middle'%3EF1%3C/text%3E%3C/svg%3E" />
+  <link rel="icon" type="image/svg+xml" href="./assets/icons/icon-192.svg" />
+  <link rel="apple-touch-icon" href="./assets/icons/icon-192.svg" />
   <link rel="manifest" href="./manifest.webmanifest" />
-  <link rel="stylesheet" href="./styles.css?v=20261114fix" />
+  <link rel="stylesheet" href="./styles.css?v=20261114aaa" />
   <script type="importmap">
     {
       "imports": {
@@ -253,9 +254,15 @@
           </div>
         </div>
 
-        <button id="btn-launch-race" class="launch-btn" type="button">
-          <span class="launch-txt">START RACE</span>
-        </button>
+        <div class="showroom-launch-actions">
+          <button id="btn-launch-timetrial" class="timetrial-cta-btn" type="button" title="Solo Flying-Lap Time Trial — Compete for Gold, Silver &amp; Bronze Circuit Medals">
+            <span class="tt-cta-kicker">HOT LAP</span>
+            <span class="tt-cta-txt">⏱ TIME TRIAL</span>
+          </button>
+          <button id="btn-launch-race" class="launch-btn" type="button">
+            <span class="launch-txt">START RACE</span>
+          </button>
+        </div>
         <button id="btn-start-race" type="button" hidden aria-hidden="true" tabindex="-1">START RACE</button>
       </div>
     </footer>
@@ -375,6 +382,18 @@
             </div>
 
             <div class="garage-group">
+              <div class="cfg-label">3D Dynamic Racing Line</div>
+              <div class="pill-row">
+                <button class="cfg-btn" data-cfg-raceline="OFF" type="button">OFF</button>
+                <button class="cfg-btn selected" data-cfg-raceline="CORNERS" type="button">CORNERS ONLY</button>
+                <button class="cfg-btn" data-cfg-raceline="FULL" type="button">FULL CIRCUIT</button>
+              </div>
+              <div class="cfg-note" id="raceline-mode-desc">
+                Dynamic speed-colored apex &amp; braking chevron ribbon (Green = Full Throttle, Amber = Lift, Red = Braking Zone).
+              </div>
+            </div>
+
+            <div class="garage-group">
               <div class="cfg-label">Simulation Era</div>
               <div class="pill-row">
                 <button class="cfg-btn selected" data-cfg-mode="2026_UPDATED" type="button">2026 SIM GP</button>
@@ -489,6 +508,18 @@
             </div>
 
             <div class="garage-group">
+              <div class="cfg-label">Graphics Quality &amp; 60 FPS Target</div>
+              <div class="pill-row">
+                <button class="cfg-btn selected" data-cfg-gfx="AUTO" type="button">AUTO (60 FPS)</button>
+                <button class="cfg-btn" data-cfg-gfx="ULTRA" type="button">ULTRA PBR</button>
+                <button class="cfg-btn" data-cfg-gfx="60FPS" type="button">LOCKED 60 FPS</button>
+              </div>
+              <div class="cfg-note" id="gfx-mode-desc">
+                AUTO monitors frame pacing in real time and scales pixel ratio &amp; shadows smoothly to sustain 60 FPS.
+              </div>
+            </div>
+
+            <div class="garage-group">
               <div class="cfg-label">Visual Render Pipeline</div>
               <div class="pill-row">
                 <button class="cfg-btn selected" data-cfg-shader="2026_PBR" type="button">2026 PRO SIM PBR (MSAA)</button>
@@ -524,11 +555,25 @@
           </div>
         </div>
 
+        <div id="career-driver-profile" class="career-driver-profile">
+          <div class="cdp-left">
+            <span class="cdp-lvl-badge" id="career-driver-lvl">LV 1</span>
+            <span class="cdp-license" id="career-driver-license">FIA GRADE C • ROOKIE</span>
+          </div>
+          <div class="cdp-xp-wrap">
+            <div class="cdp-xp-track">
+              <div class="cdp-xp-fill" id="career-driver-xp-fill" style="width:0%;"></div>
+            </div>
+            <span class="cdp-xp-txt" id="career-driver-xp-txt">0 / 500 XP</span>
+          </div>
+        </div>
+
         <div class="career-tabs" role="tablist">
           <button class="career-tab selected" data-career-tab="TEAMS" type="button">TEAMS</button>
           <button class="career-tab" data-career-tab="RND" type="button">CAR R&amp;D</button>
           <button class="career-tab" data-career-tab="STRATEGY" type="button">CAR SETUP</button>
           <button class="career-tab" data-career-tab="STANDINGS" type="button">STANDINGS</button>
+          <button class="career-tab" data-career-tab="ACHIEVEMENTS" type="button">TROPHIES</button>
         </div>
 
         <div class="garage-scroll career-scroll">
@@ -562,13 +607,27 @@
             <div id="career-standings" class="career-standings"></div>
             <button id="btn-career-reset" class="cfg-btn career-reset-btn" type="button">RESET CHAMPIONSHIP SEASON</button>
           </section>
+
+          <section class="career-panel" data-career-panel="ACHIEVEMENTS" hidden>
+            <div id="career-sponsors-section" class="career-sponsors-section" hidden>
+              <div class="cfg-label">Active Title Sponsor Contract</div>
+              <div id="career-sponsors-grid" class="career-sponsors-grid"></div>
+            </div>
+            <div class="cfg-label">Circuit Time Trial Medals (6 World Tracks)</div>
+            <div id="career-timetrial-medals" class="career-timetrial-medals"></div>
+            <div class="cfg-label" style="margin-top:10px;">Driver Trophy Cabinet &amp; Milestones</div>
+            <div id="career-achievements-grid" class="career-achievements-grid"></div>
+          </section>
         </div>
 
         <div class="garage-foot career-foot">
           <button id="btn-career-race-round" class="launch-btn" type="button">
             <span class="launch-txt" id="career-race-round-label">START ROUND 1: JAPANESE GP</span>
           </button>
-          <button id="btn-career-test" class="cfg-btn career-test-btn" type="button">TRACK TEST SESSION (NON-CHAMPIONSHIP)</button>
+          <div class="career-foot-subrow">
+            <button id="btn-career-timetrial" class="cfg-btn career-test-btn career-tt-btn" type="button">⏱ TIME TRIAL HOT LAP</button>
+            <button id="btn-career-test" class="cfg-btn career-test-btn" type="button">TRACK TEST SESSION</button>
+          </div>
         </div>
       </aside>
     </div>
@@ -674,57 +733,79 @@
       <canvas id="gps-minimap" width="240" height="176"></canvas>
     </div>
 
+    <!-- Collapsible F1 Broadcast Live Timing Tower (Left below Minimap) -->
+    <aside id="live-timing-tower" class="live-timing-tower" aria-label="Live Standings">
+      <button id="btn-toggle-timing-tower" class="timing-tower-head" type="button" title="Collapse / Expand Live Timing Tower" aria-expanded="true">
+        <span class="tt-f1-tag">F1</span>
+        <span class="tt-head-lbl">STANDINGS</span>
+        <span class="tt-chevron" id="timing-tower-chevron">▾</span>
+      </button>
+      <div id="live-timing-rows" class="live-timing-rows"></div>
+    </aside>
+
+    <!-- Time Trial Medal Targets Banner -->
+    <div id="timetrial-hud-banner" class="timetrial-hud-banner" style="display:none;">
+      <span class="tth-mode">⏱ TIME TRIAL</span>
+      <span class="tth-chip gold" id="tth-gold">🥇 --:--.--</span>
+      <span class="tth-chip silver" id="tth-silver">🥈 --:--.--</span>
+      <span class="tth-chip bronze" id="tth-bronze">🥉 --:--.--</span>
+      <span class="tth-pb" id="tth-pb">PB --:--.--</span>
+    </div>
+
     <!-- Right-Side 2026 Sim Car MFD (4-Tire Temp/Wear/Flat-Spot + Wing/Suspension Silhouette + Pit) -->
     <div id="right-telemetry-dock">
       <aside id="telemetry-2026-panel">
-        <div class="tel-row-head">
+        <div class="tel-row-head mfd-header-row">
           <span class="mfd-title">TYRE &amp; CHASSIS</span>
           <div class="mfd-badges">
             <span class="assist-mini-pill" id="tel-assist-badge">AST MIN</span>
             <span class="comp-pill" id="tel-compound-badge">SOFT</span>
+            <button id="btn-toggle-mfd" class="mfd-collapse-btn" type="button" title="Collapse / Expand Telemetry MFD" aria-expanded="true">▾</button>
           </div>
         </div>
 
-        <div class="mfd-chassis-matrix">
-          <div class="tires-4grid">
-            <div class="tire-cell" id="tire-box-FL"></div>
-            <div class="tire-cell" id="tire-box-FR"></div>
-            <div class="tire-cell" id="tire-box-RL"></div>
-            <div class="tire-cell" id="tire-box-RR"></div>
+        <div id="mfd-collapsible-body" class="mfd-collapsible-body">
+          <div class="mfd-chassis-matrix">
+            <div class="tires-4grid">
+              <div class="tire-cell" id="tire-box-FL"></div>
+              <div class="tire-cell" id="tire-box-FR"></div>
+              <div class="tire-cell" id="tire-box-RL"></div>
+              <div class="tire-cell" id="tire-box-RR"></div>
+            </div>
+
+            <!-- Top-Down F1 Aero & Suspension Damage Silhouette -->
+            <svg id="mfd-car-svg" class="mfd-car-svg" viewBox="0 0 44 88" aria-label="Chassis Damage Diagram">
+              <!-- Front Wing Left / Right -->
+              <rect id="dmg-svg-fw-l" x="4" y="5" width="17" height="6" rx="1.5" fill="#10b981" />
+              <rect id="dmg-svg-fw-r" x="23" y="5" width="17" height="6" rx="1.5" fill="#10b981" />
+              <!-- Front Wishbones -->
+              <line id="dmg-svg-susp-f" x1="8" y1="20" x2="36" y2="20" stroke="#10b981" stroke-width="2.4" />
+              <!-- Monocoque & Sidepods -->
+              <path id="dmg-svg-body" d="M19,11 L25,11 L27,28 L33,35 L32,62 L26,68 L25,77 L19,77 L18,68 L12,62 L11,35 L17,28 Z" fill="#334155" stroke="#64748b" stroke-width="1.2" />
+              <!-- Rear Wishbones -->
+              <line id="dmg-svg-susp-r" x1="8" y1="68" x2="36" y2="68" stroke="#10b981" stroke-width="2.4" />
+              <!-- Rear Wing -->
+              <rect id="dmg-svg-rw" x="9" y="78" width="26" height="6" rx="1.5" fill="#10b981" />
+            </svg>
           </div>
 
-          <!-- Top-Down F1 Aero & Suspension Damage Silhouette -->
-          <svg id="mfd-car-svg" class="mfd-car-svg" viewBox="0 0 44 88" aria-label="Chassis Damage Diagram">
-            <!-- Front Wing Left / Right -->
-            <rect id="dmg-svg-fw-l" x="4" y="5" width="17" height="6" rx="1.5" fill="#10b981" />
-            <rect id="dmg-svg-fw-r" x="23" y="5" width="17" height="6" rx="1.5" fill="#10b981" />
-            <!-- Front Wishbones -->
-            <line id="dmg-svg-susp-f" x1="8" y1="20" x2="36" y2="20" stroke="#10b981" stroke-width="2.4" />
-            <!-- Monocoque & Sidepods -->
-            <path id="dmg-svg-body" d="M19,11 L25,11 L27,28 L33,35 L32,62 L26,68 L25,77 L19,77 L18,68 L12,62 L11,35 L17,28 Z" fill="#334155" stroke="#64748b" stroke-width="1.2" />
-            <!-- Rear Wishbones -->
-            <line id="dmg-svg-susp-r" x1="8" y1="68" x2="36" y2="68" stroke="#10b981" stroke-width="2.4" />
-            <!-- Rear Wing -->
-            <rect id="dmg-svg-rw" x="9" y="78" width="26" height="6" rx="1.5" fill="#10b981" />
-          </svg>
-        </div>
+          <div class="tel-row-head" style="margin-top:2px;">
+            <span>FUEL</span>
+            <span id="tel-fuel-val">7.0 LAPS</span>
+          </div>
+          <div class="fuel-bar-wrap"><div id="tel-fuel-fill"></div></div>
 
-        <div class="tel-row-head" style="margin-top:2px;">
-          <span>FUEL</span>
-          <span id="tel-fuel-val">7.0 LAPS</span>
-        </div>
-        <div class="fuel-bar-wrap"><div id="tel-fuel-fill"></div></div>
+          <div class="weather-mini">
+            <div class="weather-cur-row"><strong id="tel-weather-cur">DRY • CLEAR</strong> <span id="tel-weather-next"></span></div>
+            <div id="tel-moisture-val">TRACK WET: 0%</div>
+          </div>
 
-        <div class="weather-mini">
-          <div class="weather-cur-row"><strong id="tel-weather-cur">DRY • CLEAR</strong> <span id="tel-weather-next"></span></div>
-          <div id="tel-moisture-val">TRACK WET: 0%</div>
-        </div>
-
-        <div class="dmg-row">
-          <span class="dmg-chip" id="dmg-part-fw">FW</span>
-          <span class="dmg-chip" id="dmg-part-susp">SUSP</span>
-          <span class="dmg-chip" id="dmg-part-rw">RW</span>
-          <span class="dmg-chip" id="dmg-part-punc">FLAT</span>
+          <div class="dmg-row">
+            <span class="dmg-chip" id="dmg-part-fw">FW</span>
+            <span class="dmg-chip" id="dmg-part-susp">SUSP</span>
+            <span class="dmg-chip" id="dmg-part-rw">RW</span>
+            <span class="dmg-chip" id="dmg-part-punc">FLAT</span>
+          </div>
         </div>
       </aside>
 
@@ -739,6 +820,50 @@
     <div id="pit-approach-hint">PIT LANE ENTRY RIGHT — 80 KM/H SPEED LIMIT</div>
     <div id="center-callout"></div>
     <div id="engineer-radio-toast"></div>
+
+    <!-- Lights-Out Launch Rev & Grid Flyover Skip HUD -->
+    <div id="launch-reaction-hud" class="launch-reaction-hud" style="display:none;">
+      <div class="lrh-top">
+        <span class="lrh-title" id="launch-status-lbl">HOLD 55–90% THROTTLE FOR OPTIMAL LAUNCH</span>
+        <button id="btn-skip-grid-intro" class="lrh-skip-btn" type="button">SKIP INTRO ▸</button>
+      </div>
+      <div class="lrh-bar-outer">
+        <div class="lrh-sweet-zone"></div>
+        <div class="lrh-fill" id="launch-rev-fill"></div>
+        <div class="lrh-cursor" id="launch-rev-cursor"></div>
+      </div>
+    </div>
+
+    <!-- Rival Proximity / Blind-Spot Radar (GT7 / ACC Style) -->
+    <div id="proximity-radar-layer" class="proximity-radar-layer" aria-hidden="true">
+      <div id="radar-arrow-left" class="radar-chevron radar-left">
+        <svg viewBox="0 0 28 32" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M16 6L7 16L16 26" />
+          <path d="M23 9L15 16L23 23" />
+        </svg>
+        <span class="radar-dist" id="radar-dist-left"></span>
+      </div>
+      <div id="radar-arrow-rear" class="radar-chevron radar-rear">
+        <svg viewBox="0 0 36 22" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M7 5L18 14L29 5" />
+          <path d="M11 12L18 18L25 12" />
+        </svg>
+        <span class="radar-dist" id="radar-dist-rear"></span>
+      </div>
+      <div id="radar-arrow-right" class="radar-chevron radar-right">
+        <svg viewBox="0 0 28 32" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 6L21 16L12 26" />
+          <path d="M5 9L13 16L5 23" />
+        </svg>
+        <span class="radar-dist" id="radar-dist-right"></span>
+      </div>
+    </div>
+
+    <!-- Subtle Dismissible Narrow-Portrait Orientation Recommendation -->
+    <button id="portrait-rotate-pill" class="portrait-rotate-pill" type="button" style="display:none;">
+      <span>↻ Landscape Recommended</span>
+      <b class="prp-x" aria-hidden="true">✕</b>
+    </button>
 
     <!-- Pre-Pit Strategy Drawer -->
     <div id="pit-strategy-drawer">
@@ -843,6 +968,23 @@
       </div>
     </div>
 
+    <!-- Tactical ERS / DRS / Visor Tear-Off Thumb Cluster -->
+    <div id="touch-tactical-cluster" class="touch-tactical-cluster">
+      <button id="btn-touch-drs" class="tactical-touch-btn drs-btn drs-disabled" type="button" title="Toggle DRS Rear Wing Flap (E / Shift)">
+        <span class="tac-kicker">WING</span>
+        <span class="tac-main" id="drs-touch-lbl">DRS</span>
+      </button>
+      <button id="btn-touch-ers" class="tactical-touch-btn ers-btn" style="--ers-pct: 100%;" type="button" title="Hold / Toggle MGU-K Overtake ERS Boost (K)">
+        <span class="ers-bar-bg" aria-hidden="true"><i class="ers-bar-fill"></i></span>
+        <span class="tac-kicker">⚡ ERS</span>
+        <span class="tac-main" id="ers-touch-pct">100%</span>
+      </button>
+      <button id="btn-touch-tearoff" class="tactical-touch-btn tearoff-btn" type="button" title="Peel Helmet Visor Tear-Off (X)">
+        <span class="tac-kicker">CLEAN</span>
+        <span class="tac-main">VISOR</span>
+      </button>
+    </div>
+
     <!-- Analog Gas/Brake Pedals + Optional Manual Shifter Assembly -->
     <div id="touch-pedal-assembly">
       <button id="touch-shifter-btn" type="button" style="display:none;">
@@ -906,6 +1048,8 @@
         <div class="podium-step p3-step" id="podium-p3"></div>
       </div>
 
+      <div id="podium-full-table" class="podium-full-table"></div>
+
       <div class="results-table">
         <div class="res-cell">
           <div class="res-lbl">Session Points / Score</div>
@@ -938,6 +1082,7 @@
         <div id="res-pit-stints" style="margin-top:4px;">—</div>
       </div>
 
+      <div id="podium-xp-banner" class="podium-xp-banner" style="display:none;"></div>
       <div id="podium-career-banner" class="podium-career-banner" style="display:none;"></div>
 
       <div class="modal-actions">
@@ -996,6 +1141,6 @@
     </div>
   </div>
 
-  <script type="module" src="./src/main.js?v=20261114fix"></script>
+  <script type="module" src="./src/main.js?v=20261114aaa"></script>
 </body>
 </html>

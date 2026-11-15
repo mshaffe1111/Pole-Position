@@ -462,11 +462,88 @@ export class Retro1982Renderer {
     return this.active;
   }
 
+  _probeSafeAreaInsets() {
+    const fallback = { top: 0, right: 0, bottom: 0, left: 0 };
+    if (typeof window === 'undefined' || typeof document === 'undefined' || !document.body) {
+      this._safeAreaCss = fallback;
+      return fallback;
+    }
+    try {
+      if (!this._safeAreaProbeEl) {
+        const el = document.createElement('div');
+        el.setAttribute('aria-hidden', 'true');
+        el.style.cssText = [
+          'position:fixed',
+          'top:0',
+          'left:0',
+          'width:0',
+          'height:0',
+          'pointer-events:none',
+          'visibility:hidden',
+          'z-index:-1',
+          'padding-top:env(safe-area-inset-top, 0px)',
+          'padding-right:env(safe-area-inset-right, 0px)',
+          'padding-bottom:env(safe-area-inset-bottom, 0px)',
+          'padding-left:env(safe-area-inset-left, 0px)',
+        ].join(';');
+        document.body.appendChild(el);
+        this._safeAreaProbeEl = el;
+      }
+      const cs = window.getComputedStyle(this._safeAreaProbeEl);
+      const safe = {
+        top: Math.max(0, parseFloat(cs.paddingTop) || 0),
+        right: Math.max(0, parseFloat(cs.paddingRight) || 0),
+        bottom: Math.max(0, parseFloat(cs.paddingBottom) || 0),
+        left: Math.max(0, parseFloat(cs.paddingLeft) || 0),
+      };
+      this._safeAreaCss = safe;
+      return safe;
+    } catch (_) {
+      this._safeAreaCss = fallback;
+      return fallback;
+    }
+  }
+
+  _computeHudSafePadding(W, H) {
+    const aspect = W / Math.max(1, H);
+    const isNarrowPortrait = aspect < 0.65;
+    const isNotchedLandscape = aspect > 1.85;
+    const sa = this._safeAreaCss || { top: 0, right: 0, bottom: 0, left: 0 };
+    const scaleX = W / Math.max(1, this._lastHostW || W);
+    const scaleY = H / Math.max(1, this._lastHostH || H);
+
+    const cssPadL = sa.left > 0.5 ? Math.ceil(sa.left * scaleX) + 3 : 0;
+    const cssPadR = sa.right > 0.5 ? Math.ceil(sa.right * scaleX) + 3 : 0;
+    const cssPadTop = sa.top > 0.5 ? Math.ceil(sa.top * scaleY) + 3 : 0;
+
+    const minPadX = isNarrowPortrait ? 6 : (isNotchedLandscape ? 12 : 4);
+    const minTopY = isNarrowPortrait ? 8 : (H > 275 ? 5 : (isNotchedLandscape ? 4 : 3));
+    const maxPadX = Math.max(minPadX, Math.floor(W * 0.11));
+    const maxTopY = Math.max(minTopY, Math.floor(H * 0.08));
+
+    return {
+      aspect,
+      isNarrowPortrait,
+      isNotchedLandscape,
+      padL: clamp(Math.max(minPadX, cssPadL), 4, maxPadX),
+      padR: clamp(Math.max(minPadX, cssPadR), 4, maxPadX),
+      topY: clamp(Math.max(minTopY, cssPadTop), 3, maxTopY),
+    };
+  }
+
+  _formatArcadeSixDigitScore(rawVal) {
+    const v = Math.max(0, Math.floor(Number.isFinite(rawVal) ? rawVal : 0));
+    if (v <= 999999) return String(v).padStart(6, '0');
+    const k = Math.min(99999, Math.floor(v / 1000));
+    return `${k}K`.padStart(6, '0');
+  }
+
   resize(width, height) {
     const safeW = Number.isFinite(width) && width > 0 ? width : 426;
     const safeH = Number.isFinite(height) && height > 0 ? height : 240;
     this._lastHostW = safeW;
     this._lastHostH = safeH;
+    this._probeSafeAreaInsets();
 
     const rawAspect = safeW / safeH;
     let nextW;
@@ -3689,8 +3766,23 @@ export class Retro1982Renderer {
       return;
     }
 
-    // Brief Shift-Cut Backfire Pop Only (No fake continuous exhaust flame cones!)
-    if ((playerCar?.shiftCooldown > 0.05 || playerCar?.revBlipTimer > 0.03) && speedKmh > 95) {
+    // Launch Reaction Boost Afterburner Plume + Crisp 'TURBO!' Car Accent OR Brief Shift-Cut Pop
+    const launchBoostRem = Number.isFinite(playerCar?.launchBoostTimer) ? playerCar.launchBoostTimer : 0;
+    if (launchBoostRem > 0 && !isPitServiceActive) {
+      const fx = baseCarX + (steerFrameIdx - 2);
+      const fy = dy + Math.round(dstH * 0.78);
+      const boostPulse = (((nowSec * 24) | 0) & 1) === 0;
+      const flameLen = boostPulse ? 6 : 4;
+      ctx.fillStyle = boostPulse ? '#00f4ff' : '#fce400';
+      ctx.fillRect(fx - 6, fy, 4, flameLen);
+      ctx.fillRect(fx + 2, fy, 4, flameLen);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(fx - 5, fy, 2, 2);
+      ctx.fillRect(fx + 3, fy, 2, 2);
+      if (dy >= 12) {
+        this._drawAtlasText('TURBO!', baseCarX, dy - 10, boostPulse ? 'CYAN' : 'YELLOW', 1, 'center', 5);
+      }
+    } else if ((playerCar?.shiftCooldown > 0.05 || playerCar?.revBlipTimer > 0.03) && speedKmh > 95) {
       const fx = baseCarX + (steerFrameIdx - 2);
       const fy = dy + Math.round(dstH * 0.78);
       ctx.fillStyle = '#fce400';
@@ -4651,9 +4743,9 @@ export class Retro1982Renderer {
   }
 
   // Unified 1982 Sim-Parity Arcade Telemetry Pod (4-Corner Tires + Flat-Spot Dot + L/R Wing & Susp + FUEL Gauge + Boost/ERS!)
-  _renderTelemetryArcadeWidget(W, wy, playerCar, drsActive, nowSec) {
+  _renderTelemetryArcadeWidget(W, wy, playerCar, drsActive, nowSec, padL = 4) {
     const ctx = this.ctx;
-    const wx = 4;
+    const wx = Math.max(4, padL | 0);
     const podW = 44;
     const podH = 34;
 
@@ -4666,6 +4758,8 @@ export class Retro1982Renderer {
     const dmg = this._readDamageProfile(playerCar);
     const flatInfo = this._readFlatSpotInfo(playerCar);
     const fuelInfo = this._readFuelProfile(playerCar);
+    const launchBoostActive = (playerCar?.launchBoostTimer || 0) > 0;
+    const launchBlink = (((nowSec * 14) | 0) & 1) === 0;
 
     // 1. Top-Down Aero / Suspension Silhouette + 4 Corner Tires (x = wx+2 .. wx+21, y = wy+2 .. wy+22)
     // Split Left/Right Front Wing Endplates
@@ -4718,13 +4812,17 @@ export class Retro1982Renderer {
       ctx.fillRect(wx + 25, wy + 17, 6, 3);
     }
 
-    const boostVal = is2Spd
-      ? clamp((playerCar?.turboBoostBar || 0) / 1.8, 0, 1)
-      : clamp(Number.isFinite(playerCar?.ersCharge) ? playerCar.ersCharge : 0.85, 0, 1);
+    const boostVal = launchBoostActive
+      ? 1.0
+      : (is2Spd
+        ? clamp((playerCar?.turboBoostBar || 0) / 1.8, 0, 1)
+        : clamp(Number.isFinite(playerCar?.ersCharge) ? playerCar.ersCharge : 0.85, 0, 1));
     const bstBarH = Math.round(16 * boostVal);
     ctx.fillStyle = '#141e30';
     ctx.fillRect(wx + 34, wy + 4, 6, 16);
-    ctx.fillStyle = is2Spd ? '#fce400' : (playerCar?.ersDeploying ? '#ffffff' : '#38b8ff');
+    ctx.fillStyle = launchBoostActive
+      ? (launchBlink ? '#00f4ff' : '#fce400')
+      : (is2Spd ? '#fce400' : (playerCar?.ersDeploying ? '#ffffff' : '#38b8ff'));
     ctx.fillRect(wx + 34, wy + 4 + (16 - bstBarH), 6, bstBarH);
 
     // 3. Bottom Badge Row: Compound Letter + F (Fuel) + B/E (Boost/ERS)
@@ -4734,15 +4832,23 @@ export class Retro1982Renderer {
     this._drawAtlasText(compChar, wx + 2, wy + 24, compPalette, 1, 'left', 5);
     if (drsActive) {
       this._drawAtlasText('DRS', wx + 9, wy + 24, 'GREEN', 1, 'left', 5);
+    } else if (launchBoostActive) {
+      this._drawAtlasText('TRB', wx + 9, wy + 24, launchBlink ? 'CYAN' : 'YELLOW', 1, 'left', 5);
     } else if (flatInfo.maxFlat > 0.16 && blinkFlat) {
       this._drawAtlasText('FLT', wx + 9, wy + 24, 'ORANGE', 1, 'left', 5);
     }
     this._drawAtlasText('F', wx + 25, wy + 24, fuelInfo.lowFuel ? 'RED' : 'CYAN', 1, 'left', 5);
     this._drawAtlasText(is2Spd ? 'B' : 'E', wx + 34, wy + 24, 'YELLOW', 1, 'left', 5);
 
-    // Blinking LOW FUEL Warning Badge below Pod when < 1.1 laps remain!
+    // Blinking LOW FUEL Warning OR Crisp Launch Boost 'TURBO!' Badge below Pod!
     if (fuelInfo.lowFuel && lowBlink) {
       this._drawAtlasText('LOW FUEL!', wx, wy + podH + 2, 'RED', 1, 'left', 5);
+    } else if (launchBoostActive) {
+      ctx.fillStyle = 'rgba(0, 12, 28, 0.82)';
+      ctx.fillRect(wx, wy + podH + 1, 36, 10);
+      ctx.fillStyle = launchBlink ? '#00f4ff' : '#fce400';
+      ctx.fillRect(wx, wy + podH + 1, 36, 1);
+      this._drawAtlasText('TURBO!', wx + 3, wy + podH + 2, launchBlink ? 'CYAN' : 'YELLOW', 1, 'left', 5);
     }
   }
 
@@ -4797,8 +4903,14 @@ export class Retro1982Renderer {
 
   _renderArcadeTopHUD(W, H, hud) {
     const ctx = this.ctx;
-    const scoreStr = String(Math.max(0, Math.floor(hud.score || 0))).padStart(6, '0');
-    const topStr = String(Math.max(0, Math.floor(hud.topScore || 25000))).padStart(6, '0');
+    const safePad = this._computeHudSafePadding(W, H);
+    const { padL, padR, topY, isNarrowPortrait } = safePad;
+    const usableW = Math.max(120, W - padL - padR);
+    const midX = padL + (usableW >> 1);
+    const rightX = W - padR;
+
+    const scoreStr = this._formatArcadeSixDigitScore(hud.score || 0);
+    const topStr = this._formatArcadeSixDigitScore(hud.topScore || 25000);
     const timeInt = Math.max(0, Math.ceil(Number.isFinite(hud.timerSec) ? hud.timerSec : 0));
     const timeStr = String(timeInt).padStart(2, '0');
     const timeLowFlash = timeInt <= 15 && (((hud.nowSec * 6) | 0) & 1) === 0;
@@ -4806,61 +4918,70 @@ export class Retro1982Renderer {
     const spdStr = String(Math.round(hud.speedKmh)).padStart(3, ' ');
     const isClassic2Spd = hud.gearboxMode === 'CLASSIC_2SPD';
     const gearTxt = isClassic2Spd ? (hud.gear > 1 ? 'HIGH' : 'LOW') : `G${hud.gear}`;
+    const gearShort = isClassic2Spd ? (hud.gear > 1 ? 'HI' : 'LO') : `G${hud.gear}`;
     const gearColor = isClassic2Spd
       ? (hud.gear > 1 ? 'GREEN' : 'YELLOW')
       : (hud.gear >= 7 ? 'CYAN' : 'YELLOW');
     const posStr = `${String(hud.playerPos).padStart(2, '0')}/${String(hud.totalCars).padStart(2, '0')}`;
 
-    const isPortraitHud = H > 275 || W < 275;
-    const topY = H > 275 ? 5 : 3;
+    const isPortraitHud = H > 275 || usableW < 268;
+    const barBottomY = isPortraitHud ? topY + 23 : topY + 24;
 
-    // Clean top arcade scanline bar
+    // Clean top arcade scanline bar (expands cleanly around mobile safe-area top inset)
     ctx.fillStyle = 'rgba(0, 4, 20, 0.48)';
-    ctx.fillRect(0, 0, W, isPortraitHud ? topY + 23 : 27);
+    ctx.fillRect(0, 0, W, barBottomY);
 
     if (!isPortraitHud) {
-      const step = W < 320 ? 5 : 6;
-      this._drawAtlasText('1UP', 4, 3, 'RED', 1, 'left', step);
-      this._drawAtlasText(scoreStr, 4 + step * 4, 3, 'WHITE', 1, 'left', step);
-      this._drawAtlasText('TOP', 4, 14, 'YELLOW', 1, 'left', step);
-      this._drawAtlasText(topStr, 4 + step * 4, 14, 'YELLOW', 1, 'left', step);
+      const step = usableW < 316 ? 5 : 6;
+      const row2Y = topY + 11;
+      this._drawAtlasText('1UP', padL, topY, 'RED', 1, 'left', step);
+      this._drawAtlasText(scoreStr, padL + step * 4, topY, 'WHITE', 1, 'left', step);
+      this._drawAtlasText('TOP', padL, row2Y, 'YELLOW', 1, 'left', step);
+      this._drawAtlasText(topStr, padL + step * 4, row2Y, 'YELLOW', 1, 'left', step);
 
-      const col2X = Math.max(4 + step * 11, Math.round(W * 0.27));
-      this._drawAtlasText(`LAP ${hud.currentLap}/${hud.totalLaps}`, col2X, 3, 'WHITE', 1, 'left', step);
-      this._drawAtlasText(lapTimeStr, col2X, 14, 'GREEN', 1, 'left', step);
+      const col2X = Math.max(padL + step * 11, padL + Math.round(usableW * 0.27));
+      this._drawAtlasText(`LAP ${hud.currentLap}/${hud.totalLaps}`, col2X, topY, 'WHITE', 1, 'left', step);
+      this._drawAtlasText(lapTimeStr, col2X, row2Y, 'GREEN', 1, 'left', step);
 
-      const midX = W >> 1;
-      this._drawAtlasText('TIME', midX, 2, 'YELLOW', 1, 'center', step);
-      this._drawAtlasText(timeStr, midX, 10, timeLowFlash ? 'RED' : 'WHITE', 2, 'center', 11);
+      this._drawAtlasText('TIME', midX, Math.max(1, topY - 1), 'YELLOW', 1, 'center', step);
+      this._drawAtlasText(timeStr, midX, topY + 7, timeLowFlash ? 'RED' : 'WHITE', 2, 'center', 11);
 
-      if (W >= 330) {
-        const col4X = Math.round(W * 0.65);
-        this._drawAtlasText('POS', col4X, 3, 'CYAN', 1, 'left', step);
-        this._drawAtlasText(posStr, col4X, 14, hud.playerPos === 1 ? 'YELLOW' : 'CYAN', 1, 'left', step);
+      if (usableW >= 322) {
+        const col4X = padL + Math.round(usableW * 0.65);
+        this._drawAtlasText('POS', col4X, topY, 'CYAN', 1, 'left', step);
+        this._drawAtlasText(posStr, col4X, row2Y, hud.playerPos === 1 ? 'YELLOW' : 'CYAN', 1, 'left', step);
       }
 
-      this._drawAtlasText(`${spdStr}KM/H`, W - 4, 3, 'WHITE', 1, 'right', step);
-      this._drawAtlasText(gearTxt, W - 4, 14, gearColor, 1, 'right', step);
-      if (W < 330) {
-        this._drawAtlasText(`P${hud.playerPos}`, W - 34, 14, 'CYAN', 1, 'right', step);
+      this._drawAtlasText(`${spdStr}KM/H`, rightX, topY, 'WHITE', 1, 'right', step);
+      this._drawAtlasText(gearTxt, rightX, row2Y, gearColor, 1, 'right', step);
+      if (usableW < 322) {
+        this._drawAtlasText(`P${hud.playerPos}`, rightX - 30, row2Y, 'CYAN', 1, 'right', step);
       }
     } else {
-      this._drawAtlasText(`1UP ${scoreStr}`, 4, topY, 'RED', 1, 'left', 5);
-      this._drawAtlasText(`TIME ${timeStr}`, W >> 1, topY, timeLowFlash ? 'RED' : 'YELLOW', 1, 'center', 5);
-      this._drawAtlasText(`${Math.round(hud.speedKmh)}K ${gearTxt}`, W - 4, topY, gearColor, 1, 'right', 5);
+      const compactSpeedGear = isNarrowPortrait || usableW < 192
+        ? `${Math.round(hud.speedKmh)}K ${gearShort}`
+        : `${Math.round(hud.speedKmh)}K ${gearTxt}`;
+      const compactPosLap = isNarrowPortrait || usableW < 192
+        ? `P${hud.playerPos}/${hud.totalCars} L${hud.currentLap}`
+        : `P${posStr} L${hud.currentLap}`;
+
+      this._drawAtlasText(`1UP ${scoreStr}`, padL, topY, 'RED', 1, 'left', 5);
+      this._drawAtlasText(`TIME ${timeStr}`, midX, topY, timeLowFlash ? 'RED' : 'YELLOW', 1, 'center', 5);
+      this._drawAtlasText(compactSpeedGear, rightX, topY, gearColor, 1, 'right', 5);
 
       const row2Y = topY + 11;
-      this._drawAtlasText(`TOP ${topStr}`, 4, row2Y, 'YELLOW', 1, 'left', 5);
-      this._drawAtlasText(lapTimeStr, W >> 1, row2Y, 'GREEN', 1, 'center', 5);
-      this._drawAtlasText(`P${hud.playerPos}/${hud.totalCars} L${hud.currentLap}`, W - 4, row2Y, 'CYAN', 1, 'right', 5);
+      this._drawAtlasText(`TOP ${topStr}`, padL, row2Y, 'YELLOW', 1, 'left', 5);
+      this._drawAtlasText(lapTimeStr, midX, row2Y, 'GREEN', 1, 'center', 5);
+      this._drawAtlasText(compactPosLap, rightX, row2Y, 'CYAN', 1, 'right', 5);
     }
 
-    // Unified 1982 Sim-Parity Telemetry Pod at Upper-Left
-    this._renderTelemetryArcadeWidget(W, isPortraitHud ? topY + 25 : 29, hud.playerCar, hud.drsActive, hud.nowSec);
+    // Unified 1982 Sim-Parity Telemetry Pod at Upper-Left (respecting padL & topY)
+    const podY = barBottomY + 2;
+    this._renderTelemetryArcadeWidget(W, podY, hud.playerCar, hud.drsActive, hud.nowSec, padL);
 
     // Camera Mode Switch Toast
     if (this._camBannerTimer > 0) {
-      this._drawAtlasText(hud.camLabel || CAMERA_RIGS_1982[0].label, W - 4, isPortraitHud ? topY + 26 : 30, 'CYAN', 1, 'right', 5);
+      this._drawAtlasText(hud.camLabel || CAMERA_RIGS_1982[0].label, rightX, podY + 1, 'CYAN', 1, 'right', 5);
     }
 
     // Sector Split Delta Popup
@@ -4885,15 +5006,15 @@ export class Retro1982Renderer {
       sectorGreen = this._autoSectorGreen;
     }
     if (sectorTxt) {
-      this._drawAtlasText(sectorTxt, W - 4, isPortraitHud ? topY + 37 : 40, sectorGreen ? 'GREEN' : 'RED', 1, 'right', 5);
+      this._drawAtlasText(sectorTxt, rightX, podY + 12, sectorGreen ? 'GREEN' : 'RED', 1, 'right', 5);
     }
 
     // Compact Floating "PASSING BONUS +50" Popup (never blocks road horizon!)
     if (this._passingBonusTimer > 0 && (((hud.nowSec * 10) | 0) & 1) === 0) {
-      this._drawNamcoBannerText('PASSING BONUS +50', W >> 1, isPortraitHud ? topY + 48 : 30, '#b8ffb8', '#00fc58', '#00a838', 1, 'center', 5);
+      this._drawNamcoBannerText('PASSING BONUS +50', midX, isPortraitHud ? podY + 23 : podY + 1, '#b8ffb8', '#00fc58', '#00a838', 1, 'center', 5);
     }
 
-    const bannerBaseY = H > 275 ? Math.min(Math.round(H * 0.21), 86) : 38;
+    const bannerBaseY = H > 275 ? Math.min(Math.round(H * 0.21), 88) : Math.max(38, barBottomY + 11);
 
     // Native 1982 Pit Stop & Clutch Launch Bar takes priority when Stopped in Pit Box!
     if (hud.isPitServiceActive) {
@@ -4904,6 +5025,8 @@ export class Retro1982Renderer {
     // Structured / Sanitized Iconic 1982 Namco 2x Gradient Arcade Banners!
     let headline = '';
     let bannerKind = 'GOLD'; // 'GOLD' | 'CYAN' | 'GREEN' | 'GOAL'
+    const launchBoostRem = Number.isFinite(hud.playerCar?.launchBoostTimer) ? hud.playerCar.launchBoostTimer : 0;
+    const isPerfectLaunch = hud.playerCar?.launchReactionGrade === 'PERFECT' || launchBoostRem > 1.05;
 
     if (hud.arcadeBanner && typeof hud.arcadeBanner === 'object' && hud.arcadeBanner.headline) {
       headline = String(hud.arcadeBanner.headline).toUpperCase().trim();
@@ -4917,6 +5040,11 @@ export class Retro1982Renderer {
     } else if (hud.state === GAME_STATES.QUALIFYING && hud.speedKmh < 5.0 && hud.lapTimeSec < 1.5) {
       headline = 'PREPARE TO QUALIFY';
       bannerKind = 'GOLD';
+    } else if (launchBoostRem > 0) {
+      headline = isPerfectLaunch
+        ? (usableW >= 260 ? 'PERFECT START! TURBO!' : 'PERFECT START!')
+        : (usableW >= 240 ? 'TURBO LAUNCH BOOST!' : 'TURBO START!');
+      bannerKind = (((hud.nowSec * 12) | 0) & 1) === 0 ? 'CYAN' : 'GOLD';
     } else {
       let rawCall = '';
       if (typeof hud.centerCallout === 'string') rawCall = hud.centerCallout;
@@ -4951,10 +5079,10 @@ export class Retro1982Renderer {
     }
 
     if (headline) {
-      const canScale2 = !isPortraitHud && headline.length * 12 <= W - 64;
+      const canScale2 = !isPortraitHud && headline.length * 12 <= usableW - 56;
       const bScale = canScale2 ? 2 : 1;
-      const cStep = bScale === 2 ? 12 : (W < 230 ? 5 : 6);
-      const maxChars = Math.max(12, Math.floor((W - 16) / cStep));
+      const cStep = bScale === 2 ? 12 : (usableW < 216 ? 5 : 6);
+      const maxChars = Math.max(12, Math.floor((usableW - 8) / cStep));
       const clipped = headline.length > maxChars ? headline.slice(0, maxChars) : headline;
 
       let topC = '#fff878', midC = '#fce400', botC = '#fc5800';
@@ -4966,7 +5094,7 @@ export class Retro1982Renderer {
         topC = '#fff878'; midC = '#fce400'; botC = '#ff1c38';
       }
 
-      this._drawNamcoBannerText(clipped, W >> 1, bannerBaseY, topC, midC, botC, bScale, 'center', cStep);
+      this._drawNamcoBannerText(clipped, midX, bannerBaseY, topC, midC, botC, bScale, 'center', cStep);
     }
 
     // 1982 Checkered-Flag Top Border Flash on Finish Crossing

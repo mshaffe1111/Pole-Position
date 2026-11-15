@@ -390,6 +390,60 @@ export function computeCornerPhysicsBrakeAssist(car, track, rawMode, manualThrot
   };
 }
 
+/**
+ * Fast analytical corner target speed (km/h) for Dynamic 3D Racing Line & HUD cues.
+ * Scans a short lookahead window from s so braking zones transition smoothly from green -> amber -> red.
+ */
+export function computeIdealCornerSpeedKmh(track, s, car = null) {
+  if (!track) return 325.0;
+  const mPerG = Math.max(
+    0.5,
+    finiteOr(track.metersPerGameUnit, finiteOr(track.realMetersPerGameMeter, REAL_METERS_PER_GAME_METER))
+  );
+  const k0 = Math.abs(readRealCurvaturePerMeter(track, s, null));
+  const kAhead1 = Math.abs(readRealCurvaturePerMeter(track, wrapTrackS(s + 18.0 / mPerG), null));
+  const kAhead2 = Math.abs(readRealCurvaturePerMeter(track, wrapTrackS(s + 42.0 / mPerG), null));
+  const kEff = Math.max(k0, kAhead1 * 0.92, kAhead2 * 0.78);
+  if (kEff < 0.0014) return 330.0;
+
+  const rCenter = 1.0 / kEff;
+  const rEff = rCenter + 7.5;
+  const baseMu = car ? clamp(finiteOr(car._cachedMuLat, 1.58), 0.75, 1.95) : 1.58;
+  const massKg = car ? clamp(finiteOr(car.totalMassKg, 820.0), 750.0, 910.0) : 820.0;
+  const kDf = F1_BASE_DOWNFORCE_KL;
+  const aeroDenom = Math.max(0.30, 1.0 - baseMu * 0.89 * (kDf / massKg) * rEff);
+  const vMaxMps = Math.sqrt((baseMu * 0.89 * F1_GRAVITY * rEff) / aeroDenom);
+  return clamp(vMaxMps * 3.6, 68.0, 330.0);
+}
+
+/**
+ * Apply Lights-Out Launch Control reaction boost based on player reaction time (ms).
+ * Returns grade: 'JUMP' | 'PERFECT' | 'GREAT' | 'GOOD'
+ */
+export function applyLaunchReactionBoost(car, reactionMs) {
+  if (!car) return 'GOOD';
+  if (reactionMs < 0) {
+    car.launchReactionGrade = 'JUMP';
+    car.launchBoostTimer = 0.0;
+    return 'JUMP';
+  }
+  if (reactionMs <= 230) {
+    car.launchReactionGrade = 'PERFECT';
+    car.launchBoostTimer = 1.65;
+    car.cornerExitTorqueTimer = Math.max(finiteOr(car.cornerExitTorqueTimer, 0), 0.85);
+    return 'PERFECT';
+  }
+  if (reactionMs <= 420) {
+    car.launchReactionGrade = 'GREAT';
+    car.launchBoostTimer = 1.05;
+    car.cornerExitTorqueTimer = Math.max(finiteOr(car.cornerExitTorqueTimer, 0), 0.45);
+    return 'GREAT';
+  }
+  car.launchReactionGrade = 'GOOD';
+  car.launchBoostTimer = 0.35;
+  return 'GOOD';
+}
+
 export function createVehicleState(opts = {}) {
   const compound = TIRE_COMPOUNDS[opts.compound] ? opts.compound : 'SOFT';
   const compDef = TIRE_COMPOUNDS[compound] || TIRE_COMPOUNDS.SOFT;
@@ -442,10 +496,17 @@ export function createVehicleState(opts = {}) {
     turboBoostBar: 0.0, // 0.0..2.4 bar V6 split-turbo / 1982 twin-turbo boost pressure
     ersCharge: 1.0,     // 0.0..1.0 MGU-K battery state of charge
     ersDeploying: false,
+    ersOvertakeActive: false,
+    ersOvertakeRequested: false,
+    ersHarvesting: false,
     inSlipstream: false,
     slipstreamFactor: 0,
     towReservoir: 0,
+    drsAvailable: false,
+    drsManualOpen: false,
     drsActive: false,
+    launchBoostTimer: 0.0,
+    launchReactionGrade: null,
 
     // Control inputs [0..1] / [-1..1], Authoritative Brake Assist Telemetry & Pneumatic-Trail SAT
     steerInput: 0,
@@ -1172,7 +1233,13 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
   const baseTopRefKmh = is8Speed ? 316.0 : (is6Speed ? 312.0 : 308.0);
   const aeroTopKmh = Math.max(
     120.0,
-    baseTopRefKmh + activeTow * towGainKmh + modTopKmh + 16.0 - totalDamageTopLossKmh
+    baseTopRefKmh +
+      activeTow * towGainKmh +
+      (car.drsActive ? 10.5 : 0.0) +
+      (car.ersOvertakeActive ? 7.5 : 0.0) +
+      modTopKmh +
+      16.0 -
+      totalDamageTopLossKmh
   );
   const kDragEff =
     F1_BASE_DRAG_KD *
@@ -1498,6 +1565,29 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
   if (car.cornerExitTorqueTimer > 0) {
     car.cornerExitTorqueTimer = Math.max(0, finiteOr(car.cornerExitTorqueTimer, 0) - safeDt);
   }
+  if (car.launchBoostTimer > 0) {
+    car.launchBoostTimer = Math.max(0, finiteOr(car.launchBoostTimer, 0) - safeDt);
+  }
+
+  // Tactical MGU-K ERS Overtake Boost request (from Touch ERS button, Keyboard E/Shift, or AI attack)
+  const ersBtnHeld = car.isPlayer
+    ? Boolean(
+        car.ersOvertakeRequested ||
+        ctx.ersOvertakeActive ||
+        ctx.controls?.ersOvertakeActive
+      )
+    : Boolean(car.ersOvertakeRequested);
+  const prevErsOvertake = Boolean(car.ersOvertakeActive);
+  car.ersOvertakeActive =
+    !isClassic &&
+    !car.inPitLane &&
+    !vscActive &&
+    ersBtnHeld &&
+    finiteOr(car.ersCharge, 1.0) > 0.025 &&
+    effBrakeIn < 0.15;
+  if (car.ersOvertakeActive && !prevErsOvertake && callbacks.onErsBoostActivated) {
+    callbacks.onErsBoostActivated(car);
+  }
 
   let gearTopKmh = 316.0;
   let torqueMult = 1.0;
@@ -1507,8 +1597,9 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
     gearTopKmh = EIGHT_SPEED_TOPS[gIdx];
     const prevTop = gIdx > 0 ? EIGHT_SPEED_TOPS[gIdx - 1] : 0;
     const exitPunch = car.cornerExitTorqueTimer > 0 ? 1.08 : 1.0;
-    const ersPunch = car.ersDeploying ? 1.04 : 1.0;
-    torqueMult = (1.38 - gIdx * 0.045) * exitPunch * ersPunch;
+    const launchPunch = car.launchBoostTimer > 0 ? (1.0 + 0.16 * Math.min(1.0, car.launchBoostTimer)) : 1.0;
+    const ersPunch = car.ersOvertakeActive ? 1.14 : (car.ersDeploying ? 1.04 : 1.0);
+    torqueMult = (1.38 - gIdx * 0.045) * exitPunch * launchPunch * ersPunch;
     if (car.gearboxMode === 'MANUAL_8SPD' && car.speedKmh < prevTop * 0.65 && car.gear > 1) {
       torqueMult *= 0.56;
     }
@@ -1523,18 +1614,15 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
   } else {
     // Classic 1982 2-Speed Twin-Turbo Ground-Effect Rules: LOW (172 km/h) / HIGH (308 km/h)
     const turboSpoolFactor = 0.88 + 0.16 * clamp(finiteOr(car.turboBoostBar, 0.0) / 2.4, 0.0, 1.0);
+    const launchPunch82 = car.launchBoostTimer > 0 ? 1.12 : 1.0;
     if (car.gear === 1) {
       gearTopKmh = 172.0;
-      torqueMult = 1.38 * turboSpoolFactor;
+      torqueMult = 1.38 * turboSpoolFactor * launchPunch82;
     } else {
       gearTopKmh = 308.0;
       torqueMult = (car.speedKmh < 130 ? 0.58 : 1.02) * turboSpoolFactor;
     }
   }
-
-  const slipBoostKmh = car.gear >= maxTopGear - 1 ? activeTow * towGainKmh : activeTow * 6.5;
-  const careerCapBonusKmh = car.gear >= maxTopGear ? modTopKmh : modTopKmh * 0.25;
-  const effectiveGearCapKmh = Math.max(85.0, gearTopKmh + slipBoostKmh + careerCapBonusKmh - totalDamageTopLossKmh);
 
   // Fuel consumption (active in both 2026 & 1982 Sim-Parity)
   if (!coinOpInfinite && !isQualifying && !car.inPitLane && effThrottleIn > 0.02 && speedMps > 1.0) {
@@ -1542,6 +1630,57 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
     const dsEst = (speedMps * safeDt) / mPerGameM;
     car.fuelLaps = Math.max(0.0, car.fuelLaps - dsEst * lapsPerGameMeter * wearFuelMult * (0.78 + 0.30 * effThrottleIn));
   }
+
+  // FIA DRS Zone & Availability (any true straightaway across all 6 circuits + Slipstream + Quali/Hot-Lap)
+  const kAhead45m = track?.getRealCurvature
+    ? track.getRealCurvature(wrapTrackS(car.s + 45.0 / mPerGameM))
+    : kReal;
+  const inDrsStraightZone =
+    (Math.abs(kReal) < 0.0011 && Math.abs(kAhead45m) < 0.0014) ||
+    (car.s >= 890.0 || car.s <= 170.0) ||
+    (car.s >= 435.0 && car.s <= 565.0);
+  const straightEnoughForDrs = Math.abs(kReal) < 0.0014 && Math.abs(steerIn) < 0.16;
+  car.drsAvailable =
+    drsFunctional &&
+    !car.inPitLane &&
+    !vscActive &&
+    localW < 0.15 &&
+    straightEnoughForDrs &&
+    car.speedKmh > 165.0 &&
+    (inDrsStraightZone || car.inSlipstream || car.slipstreamFactor > 0.10 || !!isQualifying);
+
+  // Auto-close manual DRS the moment driver touches brakes or turns into a corner!
+  if (!car.drsAvailable || effBrakeIn > 0.05 || Math.abs(kReal) >= 0.0017 || Math.abs(steerIn) >= 0.18) {
+    car.drsManualOpen = false;
+    if (car.isPlayer && ctx.controls && ctx.controls.drsManualOpen) {
+      ctx.controls.drsManualOpen = false;
+    }
+  } else if (car.isPlayer && ctx.controls?.drsManualOpen) {
+    car.drsManualOpen = true;
+  }
+
+  const prevDrsActive = Boolean(car.drsActive);
+  car.drsActive =
+    car.drsAvailable &&
+    effThrottleIn > 0.65 &&
+    effBrakeIn < 0.05 &&
+    (Boolean(car.drsManualOpen) ||
+      car.inSlipstream ||
+      car.slipstreamFactor > 0.12 ||
+      (!!isQualifying && car.speedKmh > 215.0));
+
+  if (car.drsActive && !prevDrsActive && callbacks.onDrsOpened) {
+    callbacks.onDrsOpened(car);
+  }
+
+  const ersTopBonusKmh = car.ersOvertakeActive ? (car.gear >= maxTopGear - 1 ? 9.5 : 4.5) : 0.0;
+  const drsOpenBonusKmh = car.drsActive ? (car.gear >= maxTopGear - 1 ? (11.5 + effDrsBonusKmh) : 4.0) : 0.0;
+  const slipBoostKmh = car.gear >= maxTopGear - 1 ? activeTow * towGainKmh : activeTow * 6.5;
+  const careerCapBonusKmh = car.gear >= maxTopGear ? modTopKmh : modTopKmh * 0.25;
+  const effectiveGearCapKmh = Math.max(
+    85.0,
+    gearTopKmh + slipBoostKmh + drsOpenBonusKmh + ersTopBonusKmh + careerCapBonusKmh - totalDamageTopLossKmh
+  );
 
   let accelMps2 = 0.0;
   let effectiveCap = effectiveGearCapKmh;
@@ -1566,20 +1705,9 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
     effectiveCap = Math.min(effectiveCap, PIT_LANE_CONFIG.speedLimitKmh);
     hardSpeedLimited = true;
   }
-
-  // DRS wing-flap state: disabled automatically if rearWing >= 0.35 or in 1982 mode!
-  car.drsActive =
-    drsFunctional &&
-    !car.inPitLane &&
-    !vscActive &&
-    !hardSpeedLimited &&
-    localW < 0.15 &&
-    effThrottleIn > 0.72 &&
-    effBrakeIn < 0.05 &&
-    Math.abs(kReal) < 0.0012 &&
-    Math.abs(steerIn) < 0.10 &&
-    car.speedKmh > 195.0 &&
-    (car.inSlipstream || car.slipstreamFactor > 0.12 || (!!isQualifying && car.speedKmh > 235.0));
+  if (hardSpeedLimited) {
+    car.drsActive = false;
+  }
 
   // Longitudinal Acceleration F_drive / m(t)
   if (effThrottleIn > 0.01) {
@@ -1831,9 +1959,14 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
             car.lateralVel = otherLatV - relLatV * 0.16 + pushSign * 1.05;
           }
           car.speedKmh = Math.max(45.0, car.speedKmh - overlap * 8.5 * safeDt);
+          if (car.isPlayer && callbacks.onWheelRub && !(car._rubCallbackCd > 0)) {
+            car._rubCallbackCd = 0.25;
+            callbacks.onWheelRub(car, other, overlap);
+          }
         }
       }
     }
+    if (car._rubCallbackCd > 0) car._rubCallbackCd = Math.max(0, car._rubCallbackCd - safeDt);
 
     // Pit-Wall & Armco Guardrail Clamping with dt-continuous friction scrub (ZERO single-tick velocity step!)
     const inPitWallZone = car.s >= 948.0 || car.s <= 75.0;
@@ -2079,17 +2212,32 @@ export function stepVehiclePhysics240Hz(car, dt, ctx) {
 
   car.ersCharge = finiteOr(car.ersCharge, 1.0);
   if (!isClassic && !car.inPitLane) {
-    if (effBrakeIn > 0.14 && car.speedKmh > 65.0) {
-      car.ersCharge = Math.min(1.0, car.ersCharge + effBrakeIn * 0.11 * safeDt);
-      car.ersDeploying = false;
-    } else if (effThrottleIn > 0.78 && car.speedKmh > 85.0 && car.ersCharge > 0.02) {
-      car.ersCharge = Math.max(0.0, car.ersCharge - 0.042 * safeDt);
+    if (car.ersOvertakeActive && car.ersCharge > 0.01) {
+      car.ersCharge = Math.max(0.0, car.ersCharge - 0.135 * safeDt);
       car.ersDeploying = true;
+      car.ersHarvesting = false;
+      if (car.ersCharge <= 0.01) car.ersOvertakeActive = false;
+    } else if (effBrakeIn > 0.12 && car.speedKmh > 55.0) {
+      car.ersCharge = Math.min(1.0, car.ersCharge + effBrakeIn * 0.145 * safeDt);
+      car.ersDeploying = false;
+      car.ersHarvesting = car.ersCharge < 0.995;
+    } else if (effThrottleIn < 0.12 && car.speedKmh > 95.0) {
+      // MGU-K / MGU-H lift-and-coast kinetic & exhaust harvesting
+      car.ersCharge = Math.min(1.0, car.ersCharge + 0.048 * safeDt);
+      car.ersDeploying = false;
+      car.ersHarvesting = car.ersCharge < 0.995;
+    } else if (effThrottleIn > 0.78 && car.speedKmh > 85.0 && car.ersCharge > 0.02) {
+      car.ersCharge = Math.max(0.0, car.ersCharge - 0.032 * safeDt);
+      car.ersDeploying = true;
+      car.ersHarvesting = false;
     } else {
       car.ersDeploying = false;
+      car.ersHarvesting = false;
     }
   } else {
     car.ersDeploying = false;
+    car.ersOvertakeActive = false;
+    car.ersHarvesting = false;
   }
 
   // --------------------------------------------------------------------------

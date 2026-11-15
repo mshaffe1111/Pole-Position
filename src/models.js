@@ -60,6 +60,29 @@ function getFeatheredShadowTexture() {
   return _sharedShadowTex;
 }
 
+let _sharedSparkEmberTex = null;
+function getSparkEmberTexture() {
+  if (_sharedSparkEmberTex) return _sharedSparkEmberTex;
+  const c = document.createElement('canvas');
+  c.width = 64;
+  c.height = 64;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, 64, 64);
+
+  const g = ctx.createRadialGradient(32, 32, 1.5, 32, 32, 30);
+  g.addColorStop(0.0,  'rgba(255, 255, 255, 1.0)');
+  g.addColorStop(0.22, 'rgba(255, 244, 210, 0.92)');
+  g.addColorStop(0.52, 'rgba(255, 196, 110, 0.46)');
+  g.addColorStop(0.82, 'rgba(255, 130, 40, 0.12)');
+  g.addColorStop(1.0,  'rgba(255, 90, 10, 0.0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 64);
+
+  _sharedSparkEmberTex = new THREE.CanvasTexture(c);
+  _sharedSparkEmberTex.colorSpace = THREE.SRGBColorSpace;
+  return _sharedSparkEmberTex;
+}
+
 let _sharedCarbonMaps = null;
 function getCarbonWeaveMaps() {
   if (_sharedCarbonMaps) return _sharedCarbonMaps;
@@ -1329,15 +1352,19 @@ export class FormulaCarRig {
     ctx.textAlign = 'right';
     ctx.fillText(`${fuelVal.toFixed(1)}L`, 250, 85);
 
-    // 5. BOTTOM BAR (y = 106..123): MGU-K ERS BATTERY SOC & DEPLOY / HARVEST MODE
+    // 5. BOTTOM BAR (y = 106..123): MGU-K ERS BATTERY SOC & DEPLOY / HARVEST / OVERTAKE MODE
     ctx.fillStyle = '#0e1624';
     ctx.fillRect(5, 107, 246, 16);
     const ersClamped = Math.max(0, Math.min(100, d.ersPct));
     const ersBarW = Math.round(242 * (ersClamped / 100));
-    ctx.fillStyle = d.ersDeploying ? '#22c55e' : (d.ersHarvesting ? '#f59e0b' : (ersClamped < 20 ? '#ef4444' : '#eab308'));
+    ctx.fillStyle = d.ersOvertakeActive
+      ? '#00e5ff'
+      : (d.ersDeploying ? '#22c55e' : (d.ersHarvesting ? '#f59e0b' : (ersClamped < 20 ? '#ef4444' : '#eab308')));
     ctx.fillRect(7, 109, Math.max(3, ersBarW), 12);
 
-    const modeTag = d.ersDeploying ? 'DEPLOY' : (d.ersHarvesting ? 'HARVEST' : 'MGU-K');
+    const modeTag = d.ersOvertakeActive
+      ? 'OVERTAKE'
+      : (d.ersDeploying ? 'DEPLOY' : (d.ersHarvesting ? 'HARVEST' : 'MGU-K'));
     ctx.fillStyle = '#f8fafc';
     ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
     ctx.shadowBlur = 2;
@@ -1425,7 +1452,7 @@ export class FormulaCarRig {
 
         if (oname === 'RearWing_DRS') {
           this.parts.drsFlap = obj;
-          this._drsOpenSign = 1;
+          this._drsOpenSign = -1;
         } else if (oname === 'Rear_Wing_DRS_Flap') {
           this.parts.drsFlap = obj;
           this._drsOpenSign = -1;
@@ -1569,12 +1596,18 @@ export class FormulaCarRig {
       rw.position.set(0, 0.72, 1.95);
       rw.castShadow = true;
 
+      const crashBox = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.145, 0.14), this.carbonMat);
+      crashBox.position.set(0, 0.212, 2.02);
+      const rainLedLens = new THREE.Mesh(new THREE.BoxGeometry(0.056, 0.112, 0.018), this.rainLightMat);
+      rainLedLens.position.set(0, 0.212, 2.084);
+      this.parts.rainLight = rainLedLens;
+
       this.parts.fwMain = fwGroup;
       this.parts.fwEndL = endL;
       this.parts.fwEndR = endR;
       this.parts.rwMain = rw;
       for (const obj of [fwGroup, endL, endR, rw]) this._captureBaseTransform(obj);
-      this.chassisTiltGroup.add(body, fwGroup, rw);
+      this.chassisTiltGroup.add(body, fwGroup, rw, crashBox, rainLedLens);
     }
 
     // Grounding under-plank & 4-wheel contact shadow
@@ -1697,14 +1730,37 @@ export class FormulaCarRig {
 
     if (!this.parts.drsFlap) {
       const flapGeo = projectWingBannerUVs(new THREE.BoxGeometry(1.04, 0.022, 0.16));
-      flapGeo.translate(0, 0, -0.08);
+      flapGeo.translate(0, 0, 0.08);
       const fallbackFlap = new THREE.Mesh(flapGeo, this.wingBannerMat);
-      fallbackFlap.position.set(0, 0.865, 2.04);
+      fallbackFlap.position.set(0, 0.865, 1.88);
       this._captureBaseTransform(fallbackFlap);
       this.chassisTiltGroup.add(fallbackFlap);
       this.parts.drsFlap = fallbackFlap;
-      this._drsOpenSign = 1;
+      this._drsOpenSign = -1;
     }
+
+    // Crisp FIA Rear Crash-Structure Rain / MGU-K Harvesting / Overtake Optical LED Array
+    this.rainLightGlowMat = new THREE.MeshBasicMaterial({
+      map: getSparkEmberTexture(),
+      color: 0xff1824,
+      transparent: true,
+      opacity: 0.0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    this.rainLightGlowMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.24, 0.30), this.rainLightGlowMat);
+    this.rainLightGlowMesh.position.set(0, 0.212, 2.095);
+    this.rainLightGlowMesh.visible = false;
+    this.chassisTiltGroup.add(this.rainLightGlowMesh);
+
+    // Modern 2026 FIA Rear-Wing Endplate Trailing-Edge LED Strips (synchronized with central crash-structure LED)
+    const epLedGeo = new THREE.BoxGeometry(0.014, 0.185, 0.016);
+    const epLedL = new THREE.Mesh(epLedGeo, this.rainLightMat);
+    epLedL.position.set(-0.518, 0.745, 2.048);
+    const epLedR = new THREE.Mesh(epLedGeo, this.rainLightMat);
+    epLedR.position.set(0.518, 0.745, 2.048);
+    this.chassisTiltGroup.add(epLedL, epLedR);
   }
 
   // Subtle physical abraded carbon-fiber scuff decals revealed progressively under wing/body/wheel contact damage
@@ -1924,32 +1980,77 @@ export class FormulaCarRig {
     this.sprayGroup.visible = false;
     this.root.add(this.sprayGroup);
 
-    // 2. Grade-5 Titanium Skid-Block Micro-Sparks (Bottoming / Sawtooth Kerbs / Dragging ONLY!)
+    // 2. Grade-5 Titanium Skid-Block Underbody Sparks (Pooled Points Embers + Streak Filaments, Zero GPU Leaks)
     this.sparkGroup = new THREE.Group();
     this.sparks = [];
-    const sparkGeo = new THREE.BoxGeometry(0.007, 0.007, 0.22);
+    const sparkGeo = new THREE.BoxGeometry(0.008, 0.008, 0.25);
     const sparkWhiteGoldMat = new THREE.MeshBasicMaterial({
-      color: 0xffe8b3,
+      color: 0xffeab8,
       blending: THREE.AdditiveBlending,
       transparent: true,
-      opacity: 0.92,
+      opacity: 0.94,
       depthWrite: false,
     });
     const sparkAmberMat = new THREE.MeshBasicMaterial({
-      color: 0xff9e2c,
+      color: 0xff9a24,
       blending: THREE.AdditiveBlending,
       transparent: true,
-      opacity: 0.88,
+      opacity: 0.90,
       depthWrite: false,
     });
 
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 14; i++) {
       const sp = new THREE.Mesh(sparkGeo, i % 2 === 0 ? sparkWhiteGoldMat : sparkAmberMat);
-      const spreadX = (((i * 0.618034) % 1.0) - 0.5) * 0.72;
-      sp.position.set(spreadX, 0.03, 0.8 + (i / 12) * 2.1);
+      const spreadX = (((i * 0.618034) % 1.0) - 0.5) * 0.74;
+      sp.position.set(spreadX, 0.032, 1.55 + (i / 14) * 2.15);
+      sp.visible = false;
       this.sparkGroup.add(sp);
       this.sparks.push({ mesh: sp, seed: i * 0.618, spreadX });
     }
+
+    const sparkCount = 28;
+    this._sparkPool = [];
+    this._sparkPosArr = new Float32Array(sparkCount * 3);
+    this._sparkColArr = new Float32Array(sparkCount * 3);
+    for (let i = 0; i < sparkCount; i++) {
+      this._sparkPosArr[i * 3 + 1] = -10.0;
+      this._sparkPool.push({
+        active: false,
+        age: 0,
+        maxAge: 0.2,
+        x: 0,
+        y: -10,
+        z: 1.8,
+        vx: 0,
+        vy: 0,
+        vz: 14,
+      });
+    }
+    const sparkPtsGeo = new THREE.BufferGeometry();
+    this._sparkPosAttr = new THREE.BufferAttribute(this._sparkPosArr, 3);
+    this._sparkPosAttr.setUsage(THREE.DynamicDrawUsage);
+    this._sparkColAttr = new THREE.BufferAttribute(this._sparkColArr, 3);
+    this._sparkColAttr.setUsage(THREE.DynamicDrawUsage);
+    sparkPtsGeo.setAttribute('position', this._sparkPosAttr);
+    sparkPtsGeo.setAttribute('color', this._sparkColAttr);
+
+    this._sparkPtsMat = new THREE.PointsMaterial({
+      map: getSparkEmberTexture(),
+      size: 0.145,
+      sizeAttenuation: true,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.96,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    this.sparkPoints = new THREE.Points(sparkPtsGeo, this._sparkPtsMat);
+    this.sparkPoints.frustumCulled = false;
+    this.sparkGroup.add(this.sparkPoints);
+    this._sparkSpawnCursor = 0;
+    this._sparkSpawnAccum = 0;
+    this._activeSparkCount = 0;
+
     this.sparkGroup.visible = false;
     this.root.add(this.sparkGroup);
 
@@ -2334,14 +2435,47 @@ export class FormulaCarRig {
       else this.shiftLedMat.color.setHex(0x22c55e);
     }
 
-    // FIA Rear Wet / ERS Harvesting LED Matrix (true LED emitter; off in dry full-throttle)
-    const harvesting = speedKmh > 65 && throttleIn < 0.18;
-    const flashRainLight = moistureW > 0.08 || carState.inPitLane || harvesting;
-    if (flashRainLight) {
-      const pulseOn = ((elapsedSec * 4.5 + (carState.carNum || 0) * 0.27) % 1.0) < 0.50;
-      this.rainLightMat.emissiveIntensity = pulseOn ? 3.2 : 0.08;
+    // FIA Rear Crash-Structure Rain / MGU-K Harvesting (8 Hz Red) & ERS Overtake (Electric Cyan/Violet Pulse) LED
+    const isOvertakeLed = !carState.exploded && Boolean(carState.ersOvertakeActive);
+    const inferredAiHarvest = carState.ersHarvesting === undefined && speedKmh > 68 && brakeIn > 0.28;
+    const isRainOrHarvestLed =
+      !carState.exploded &&
+      ((Number(moistureW) || 0) > 0.12 || Boolean(carState.ersHarvesting) || inferredAiHarvest || Boolean(carState.inPitLane));
+
+    if (isOvertakeLed) {
+      const ovWave = 0.5 + 0.5 * Math.sin((Number(elapsedSec) || 0) * Math.PI * 2.0 * 8.0);
+      const rC = THREE.MathUtils.lerp(0.0, 0.66, ovWave);
+      const gC = THREE.MathUtils.lerp(0.90, 0.33, ovWave);
+      const bC = THREE.MathUtils.lerp(1.0, 0.98, ovWave);
+      this.rainLightMat.color.setRGB(rC * 0.55, gC * 0.55, bC * 0.65);
+      this.rainLightMat.emissive.setRGB(rC, gC, bC);
+      this.rainLightMat.emissiveIntensity = 2.85 + ovWave * 1.55;
+      if (this.rainLightGlowMesh && this.rainLightGlowMat) {
+        this.rainLightGlowMesh.visible = true;
+        this.rainLightGlowMat.color.setRGB(rC, gC, bC);
+        this.rainLightGlowMat.opacity = 0.66 + ovWave * 0.30;
+        this.rainLightGlowMesh.scale.setScalar(0.94 + ovWave * 0.24);
+      }
+    } else if (isRainOrHarvestLed) {
+      const ledPhaseOff = carState.isPlayer ? 0.0 : ((carState.carNum || 0) * 0.13);
+      const blinkOn = ((((Number(elapsedSec) || 0) * 8.0 + ledPhaseOff) % 1.0) + 1.0) % 1.0 < 0.50;
+      this.rainLightMat.color.setHex(blinkOn ? 0xff1e28 : 0x3b060b);
+      this.rainLightMat.emissive.setHex(0xff121e);
+      this.rainLightMat.emissiveIntensity = blinkOn ? 3.65 : 0.06;
+      if (this.rainLightGlowMesh && this.rainLightGlowMat) {
+        this.rainLightGlowMesh.visible = blinkOn;
+        this.rainLightGlowMat.color.setHex(0xff1c26);
+        this.rainLightGlowMat.opacity = blinkOn ? 0.84 : 0.0;
+        this.rainLightGlowMesh.scale.setScalar(1.0);
+      }
     } else {
+      this.rainLightMat.color.setHex(0x3b060b);
+      this.rainLightMat.emissive.setHex(0xff121e);
       this.rainLightMat.emissiveIntensity = 0.0;
+      if (this.rainLightGlowMesh && this.rainLightGlowMat) {
+        this.rainLightGlowMesh.visible = false;
+        this.rainLightGlowMat.opacity = 0.0;
+      }
     }
 
     // Physical Slotted Carbon-Ceramic BrakeDisc Blackbody Thermal Integrator (zero floating halo quads!)
@@ -2451,10 +2585,22 @@ export class FormulaCarRig {
     if (this.parts.drsFlap) {
       const o = this.parts.drsFlap;
       const baseX = o.userData.baseRotX || 0;
-      const targetDrs = baseX + (drsOpen ? 0.32 * this._drsOpenSign : 0.0);
-      const flapAlpha = safeDt > 0 ? (1.0 - Math.exp(-safeDt * 18.0)) : 0.3;
+      const baseY = o.userData.basePosY || 0;
+      const targetDrs = baseX + (drsOpen ? 0.30 * this._drsOpenSign : 0.0);
+      const targetLiftY = baseY + (drsOpen ? 0.011 : 0.0);
+      // Smooth hydraulic opening (~20/s), crisp FIA aero-load snap-close (~32/s) when DRS deactivates
+      const rate = drsOpen ? 20.0 : 32.0;
+      const flapAlpha = safeDt > 0 ? (1.0 - Math.exp(-safeDt * rate)) : 0.45;
       o.rotation.x += (targetDrs - o.rotation.x) * flapAlpha;
+      o.position.y += (targetLiftY - o.position.y) * flapAlpha;
       o.rotation.z = (o.userData.baseRotZ || 0) + (rwDmg > 0.50 ? rwDmg * 0.08 * suspBias : 0.0);
+    } else if (this.parts.rwMain && rwDmg <= 0.12) {
+      const o = this.parts.rwMain;
+      const baseX = o.userData.baseRotX || 0;
+      const targetRwX = baseX + (drsOpen ? -0.30 : 0.0);
+      const rate = drsOpen ? 20.0 : 32.0;
+      const rwAlpha = safeDt > 0 ? (1.0 - Math.exp(-safeDt * rate)) : 0.45;
+      o.rotation.x += (targetRwX - o.rotation.x) * rwAlpha;
     }
 
     // Throttled ~15Hz Cosworth PCU-8D Cockpit OLED Telemetry Update (supports Player + Replay T-Cam AI focus & backward scrubs!)
@@ -2499,8 +2645,9 @@ export class FormulaCarRig {
         brakeBiasPct,
         fuelLaps: carState.fuelLaps ?? 7.0,
         ersPct,
+        ersOvertakeActive: Boolean(carState.ersOvertakeActive),
         ersDeploying: Boolean(carState.ersDeploying || (throttleIn > 0.88 && speedKmh > 120 && ersPct > 5)),
-        ersHarvesting: Boolean(brakeIn > 0.25 && speedKmh > 60),
+        ersHarvesting: Boolean(carState.ersHarvesting || (brakeIn > 0.25 && speedKmh > 60)),
         drsState,
         inPit: Boolean(carState.inPitLane),
       });
@@ -2598,33 +2745,126 @@ export class FormulaCarRig {
       }
     }
 
-    // Titanium Plank Sparks — STRICTLY on real high-load bottoming, sawtooth kerb strikes, or dragging damage!
-    // NEVER continuous sparks just for driving > 285 km/h on smooth tarmac!
-    const bottomingStrike = Math.abs(carState.chassisHeaveM || 0) > 0.014 && speedKmh > 140;
-    const kerbStrike = Boolean(carState.onCurb) && speedKmh > 120;
+    // Titanium Skid-Block Underbody Sparks behind the Rear Diffuser (Aero Bottoming >268 km/h or Serrated Kerb Strike >135 km/h)
+    const aeroBottoming = speedKmh > 268;
+    const kerbStrike = Boolean(carState.onCurb) && speedKmh > 135;
+    const heavyHeaveStrike = Math.abs(carState.chassisHeaveM || 0) > 0.014 && speedKmh > 145;
     const damageDragging = (hasPunc || suspDmg > 0.42 || fwDmg > 0.58 || rwDmg > 0.62) && speedKmh > 45;
 
-    const showSparks = !carState.exploded && (bottomingStrike || kerbStrike || damageDragging);
+    const emitSparks = !carState.exploded && (aeroBottoming || kerbStrike || heavyHeaveStrike || damageDragging);
+    const sparkStepDt = safeDt > 0 ? safeDt : 0.016;
+
+    let sparkPower = 0.0;
+    if (emitSparks) {
+      const aeroEnv = aeroBottoming
+        ? Math.min(1.0, 0.44 + ((speedKmh - 268) / 62) * 0.56) *
+          (0.62 + 0.38 * Math.max(0.0, Math.sin((Number(elapsedSec) || 0) * 31.0 + (carState.carNum || 0) * 1.7)))
+        : 0.0;
+      const kerbEnv = kerbStrike ? Math.min(1.0, 0.52 + ((speedKmh - 135) / 130) * 0.48) : 0.0;
+      const heaveEnv = heavyHeaveStrike ? 0.72 : 0.0;
+      const dragEnv = damageDragging ? 0.90 : 0.0;
+      sparkPower = Math.max(aeroEnv, kerbEnv, heaveEnv, dragEnv);
+    }
+
+    const biasX = kerbStrike
+      ? Math.sign(carState.lateralOffset || 0) * 0.28
+      : (damageDragging && suspDmg > 0.42 ? (suspBias < 0 ? -0.55 : 0.55) : 0.0);
+
+    // Spawn short-lived golden-orange titanium embers into pre-allocated Points pool (zero GC!)
+    if (emitSparks && sparkPower > 0.05 && this._sparkPool) {
+      const spawnRate = 48.0 + sparkPower * 96.0;
+      this._sparkSpawnAccum += spawnRate * sparkStepDt;
+      if (this._activeSparkCount === 0 && this._sparkSpawnAccum < 4.0) {
+        this._sparkSpawnAccum = 4.0;
+      }
+      const toSpawn = Math.min(8, Math.floor(this._sparkSpawnAccum));
+      this._sparkSpawnAccum -= toSpawn;
+
+      const poolLen = this._sparkPool.length;
+      for (let n = 0; n < toSpawn; n++) {
+        const idx = this._sparkSpawnCursor % poolLen;
+        this._sparkSpawnCursor = (this._sparkSpawnCursor + 1) % poolLen;
+        const p = this._sparkPool[idx];
+        const h1 = ((idx * 0.618034 + (Number(elapsedSec) || 0) * 7.13 + n * 0.31) % 1.0 + 1.0) % 1.0;
+        const h2 = ((idx * 0.381966 + (Number(elapsedSec) || 0) * 11.37 + n * 0.19) % 1.0 + 1.0) % 1.0;
+        p.active = true;
+        p.age = 0.0;
+        p.maxAge = 0.13 + h1 * 0.14;
+        p.x = biasX + (h1 - 0.5) * 0.52;
+        p.y = 0.030 + h2 * 0.032;
+        p.z = 1.62 + h2 * 0.44;
+        p.vx = (h1 - 0.5) * (2.6 + sparkPower * 2.2);
+        p.vy = 0.85 + h2 * (1.55 + sparkPower * 1.45);
+        p.vz = 11.5 + sparkPower * 9.5 + h1 * 4.5;
+      }
+    }
+
+    // Integrate active pooled titanium spark embers & update BufferAttributes in-place
+    let liveEmbers = 0;
+    if (this._sparkPool && (this._activeSparkCount > 0 || emitSparks)) {
+      const poolLen = this._sparkPool.length;
+      for (let i = 0; i < poolLen; i++) {
+        const p = this._sparkPool[i];
+        const i3 = i * 3;
+        if (!p.active) {
+          this._sparkPosArr[i3 + 1] = -10.0;
+          this._sparkColArr[i3] = 0.0;
+          this._sparkColArr[i3 + 1] = 0.0;
+          this._sparkColArr[i3 + 2] = 0.0;
+          continue;
+        }
+        p.age += sparkStepDt;
+        if (p.age >= p.maxAge) {
+          p.active = false;
+          this._sparkPosArr[i3 + 1] = -10.0;
+          this._sparkColArr[i3] = 0.0;
+          this._sparkColArr[i3 + 1] = 0.0;
+          this._sparkColArr[i3 + 2] = 0.0;
+          continue;
+        }
+        liveEmbers++;
+        p.vy -= 14.8 * sparkStepDt;
+        p.x += p.vx * sparkStepDt;
+        p.y += p.vy * sparkStepDt;
+        p.z += p.vz * sparkStepDt;
+        if (p.y < 0.022) {
+          p.y = 0.022;
+          p.vy = Math.abs(p.vy) * 0.54;
+          p.vx *= 0.88;
+        }
+
+        const uLife = p.age / p.maxAge;
+        const fade = Math.max(0.0, 1.0 - Math.pow(uLife, 1.35));
+        this._sparkPosArr[i3] = p.x;
+        this._sparkPosArr[i3 + 1] = p.y;
+        this._sparkPosArr[i3 + 2] = p.z;
+        // White-gold ignition -> glowing golden-orange titanium -> warm ember fade
+        this._sparkColArr[i3] = 1.0 * fade;
+        this._sparkColArr[i3 + 1] = THREE.MathUtils.lerp(0.92, 0.42, uLife) * fade;
+        this._sparkColArr[i3 + 2] = THREE.MathUtils.lerp(0.66, 0.05, Math.min(1.0, uLife * 1.4)) * fade;
+      }
+      this._activeSparkCount = liveEmbers;
+      this._sparkPosAttr.needsUpdate = true;
+      this._sparkColAttr.needsUpdate = true;
+    }
+
+    const showSparks = !carState.exploded && (emitSparks || liveEmbers > 0);
     this.sparkGroup.visible = showSparks;
     if (showSparks) {
-      const heaveExcess = Math.max(0, (Math.abs(carState.chassisHeaveM || 0) - 0.014) / 0.012);
-      const sparkPower = damageDragging
-        ? 0.92
-        : (kerbStrike ? Math.min(1.0, (speedKmh - 110) / 160) : Math.min(1.0, 0.45 + heaveExcess * 0.55));
-      const biasX = kerbStrike
-        ? Math.sign(carState.lateralOffset || 0) * 0.28
-        : (damageDragging && suspDmg > 0.42 ? (suspBias < 0 ? -0.55 : 0.55) : 0.0);
-
       for (let i = 0; i < this.sparks.length; i++) {
         const sObj = this.sparks[i];
-        const ph = (elapsedSec * (18.0 + (i % 4) * 3.1) + sObj.seed) % 1.0;
-        sObj.mesh.visible = ph < (0.28 + sparkPower * 0.52);
+        if (!emitSparks) {
+          sObj.mesh.visible = false;
+          continue;
+        }
+        const ph = (((Number(elapsedSec) || 0) * (19.0 + (i % 4) * 3.3) + sObj.seed) % 1.0 + 1.0) % 1.0;
+        sObj.mesh.visible = ph < (0.24 + sparkPower * 0.54);
         if (sObj.mesh.visible) {
-          sObj.mesh.position.z = 0.65 + ph * (2.4 + sparkPower * 1.9);
-          sObj.mesh.position.x = biasX + sObj.spreadX * (0.35 + ph * 0.85);
-          sObj.mesh.position.y = 0.025 + Math.abs(Math.sin(ph * Math.PI * 2.4)) * (0.11 + sparkPower * 0.14);
-          sObj.mesh.rotation.x = -0.06 * Math.cos(ph * Math.PI * 2.4);
-          sObj.mesh.scale.z = 0.65 + sparkPower * 0.85;
+          sObj.mesh.position.z = 1.55 + ph * (2.35 + sparkPower * 1.95);
+          sObj.mesh.position.x = biasX + sObj.spreadX * (0.36 + ph * 0.88);
+          sObj.mesh.position.y = 0.026 + Math.abs(Math.sin(ph * Math.PI * 2.5)) * (0.11 + sparkPower * 0.15);
+          sObj.mesh.rotation.x = -0.06 * Math.cos(ph * Math.PI * 2.5);
+          sObj.mesh.scale.z = 0.68 + sparkPower * 0.92;
         }
       }
     }
@@ -3042,7 +3282,7 @@ export function updatePitCrewTeamRig(rig, pitState = {}, dt = 0.016) {
 }
 
 // ============================================================================
-// HIGH-SPEED CRASH EXPLOSION & SHATTERED CARBON FIBER TRACK DEBRIS POOL
+// HIGH-SPEED CRASH EXPLOSION, PODIUM VICTORY FIREWORKS & CARBON DEBRIS POOL
 // ============================================================================
 export class EffectsManager {
   constructor(scene, track) {
@@ -3050,11 +3290,15 @@ export class EffectsManager {
     this.track = track;
     this.explosions = [];
     this.debrisItems = [];
+    this.celebrations = [];
 
     this._fireSphereGeo = new THREE.SphereGeometry(0.48, 10, 10);
     this._shardBoxGeo = new THREE.BoxGeometry(0.34, 0.032, 0.22);
     this._shockRingGeo = new THREE.RingGeometry(0.45, 0.95, 28);
     this._shockRingGeo.rotateX(-Math.PI / 2);
+    this._confettiGeo = new THREE.PlaneGeometry(0.20, 0.095);
+    this._celDummy = new THREE.Object3D();
+    this._celColor = new THREE.Color();
 
     const carbonMaps = getCarbonWeaveMaps();
     this._debrisCarbonMat = new THREE.MeshStandardMaterial({
@@ -3229,17 +3473,223 @@ export class EffectsManager {
     return item;
   }
 
+  triggerVictoryCelebration(worldPos) {
+    if (!this.scene) return null;
+
+    // Recycle oldest active celebration if triggered repeatedly so GPU memory stays bounded
+    while (this.celebrations.length >= 2) {
+      const oldest = this.celebrations.shift();
+      this.scene.remove(oldest.group);
+      for (const d of oldest.disposables) d.dispose();
+    }
+
+    const gantryFrame = this.track?.sampleAt ? this.track.sampleAt(0, 0) : null;
+    const anchor = new THREE.Vector3();
+    if (worldPos && Number.isFinite(worldPos.x) && Number.isFinite(worldPos.z)) {
+      anchor.set(worldPos.x, Number(worldPos.y) || 0, worldPos.z);
+    } else if (gantryFrame?.pos) {
+      anchor.copy(gantryFrame.pos);
+    }
+
+    const rgt = gantryFrame?.right ? gantryFrame.right.clone().normalize() : new THREE.Vector3(1, 0, 0);
+    const fwd = gantryFrame?.tangent ? gantryFrame.tangent.clone().normalize() : new THREE.Vector3(0, 0, -1);
+
+    const group = new THREE.Group();
+    group.position.copy(anchor);
+    const disposables = [];
+
+    // Multi-burst Championship Gold / Fuji Crimson / Podium Emerald stadium pyrotechnic shells
+    const shellDefs = [
+      { delay: 0.00, lat: -8.5, fwd:  2.0, alt: 16.5, colorHex: 0xffd038, tipHex: 0xfff6c4 }, // Gold Left Gantry
+      { delay: 0.00, lat:  8.5, fwd:  2.0, alt: 16.5, colorHex: 0xf42a35, tipHex: 0xffb3b8 }, // Crimson Right Gantry
+      { delay: 0.28, lat:  0.0, fwd:  4.5, alt: 22.0, colorHex: 0x10e085, tipHex: 0xbefae0 }, // Emerald Crown
+      { delay: 0.56, lat: -12.5, fwd: 6.0, alt: 19.5, colorHex: 0xf42a35, tipHex: 0xffe4a8 }, // Crimson Outer Left
+      { delay: 0.86, lat:  12.5, fwd: 6.0, alt: 19.5, colorHex: 0xffd038, tipHex: 0xffffff }, // Gold Outer Right
+      { delay: 1.18, lat: -5.2, fwd:  8.5, alt: 24.5, colorHex: 0x10e085, tipHex: 0xe6fff5 }, // Emerald High Left
+      { delay: 1.52, lat:  5.2, fwd:  8.5, alt: 24.5, colorHex: 0xffd038, tipHex: 0xfff3b8 }, // Gold High Right
+      { delay: 1.88, lat:  0.0, fwd: 10.0, alt: 27.5, colorHex: 0xf42a35, tipHex: 0xfff5cc }, // Grand Finale Crown
+    ];
+
+    const sparkTex = getSparkEmberTexture();
+    const shells = [];
+    const starsPerShell = 92;
+
+    for (let sIdx = 0; sIdx < shellDefs.length; sIdx++) {
+      const sd = shellDefs[sIdx];
+      const origin = new THREE.Vector3(0, sd.alt, 0)
+        .addScaledVector(rgt, sd.lat)
+        .addScaledVector(fwd, sd.fwd);
+
+      const posArr = new Float32Array(starsPerShell * 3);
+      const colArr = new Float32Array(starsPerShell * 3);
+      const velArr = new Float32Array(starsPerShell * 3);
+      const baseCol = new THREE.Color(sd.colorHex);
+      const tipCol = new THREE.Color(sd.tipHex);
+
+      for (let i = 0; i < starsPerShell; i++) {
+        const i3 = i * 3;
+        // Golden-spiral Fibonacci sphere distribution + crisp organic speed variance
+        const u = (i + 0.5) / starsPerShell;
+        const phi = Math.acos(1.0 - 2.0 * u);
+        const theta = Math.PI * (1.0 + Math.sqrt(5.0)) * i + sIdx * 0.9;
+        const ringTier = i % 3 === 0 ? 0.58 : 1.0;
+        const spd = (11.5 + ((i * 0.618034) % 1.0) * 11.5) * ringTier;
+
+        velArr[i3]     = Math.sin(phi) * Math.cos(theta) * spd;
+        velArr[i3 + 1] = Math.cos(phi) * spd + 2.4;
+        velArr[i3 + 2] = Math.sin(phi) * Math.sin(theta) * spd;
+
+        posArr[i3]     = origin.x;
+        posArr[i3 + 1] = origin.y;
+        posArr[i3 + 2] = origin.z;
+
+        const cRef = i % 4 === 0 ? tipCol : baseCol;
+        colArr[i3]     = cRef.r;
+        colArr[i3 + 1] = cRef.g;
+        colArr[i3 + 2] = cRef.b;
+      }
+
+      const geo = new THREE.BufferGeometry();
+      const posAttr = new THREE.BufferAttribute(posArr, 3);
+      posAttr.setUsage(THREE.DynamicDrawUsage);
+      const colAttr = new THREE.BufferAttribute(colArr, 3);
+      colAttr.setUsage(THREE.DynamicDrawUsage);
+      geo.setAttribute('position', posAttr);
+      geo.setAttribute('color', colAttr);
+      disposables.push(geo);
+
+      const mat = new THREE.PointsMaterial({
+        map: sparkTex,
+        size: 0.92,
+        sizeAttenuation: true,
+        vertexColors: true,
+        transparent: true,
+        opacity: sd.delay === 0 ? 1.0 : 0.0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      disposables.push(mat);
+
+      const pts = new THREE.Points(geo, mat);
+      pts.frustumCulled = false;
+      pts.visible = sd.delay === 0;
+      group.add(pts);
+
+      shells.push({
+        pts,
+        mat,
+        posAttr,
+        colAttr,
+        posArr,
+        colArr,
+        velArr,
+        origin,
+        baseCol,
+        tipCol,
+        delay: sd.delay,
+        duration: 2.35,
+        ignited: sd.delay === 0,
+      });
+    }
+
+    // Dual pyrotechnic gantry flash lights
+    const flashLightL = new THREE.PointLight(0xffd24d, 7.5, 68, 1.7);
+    flashLightL.position.set(0, 17.0, 0).addScaledVector(rgt, -7.0);
+    const flashLightR = new THREE.PointLight(0xff3b47, 7.5, 68, 1.7);
+    flashLightR.position.set(0, 17.0, 0).addScaledVector(rgt, 7.0);
+    group.add(flashLightL, flashLightR);
+
+    // 180-instance metallic Gold / Crimson / Emerald podium confetti shower above the finish gantry
+    const confettiCount = 180;
+    const confettiMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 1.0,
+    });
+    disposables.push(confettiMat);
+
+    const confettiMesh = new THREE.InstancedMesh(this._confettiGeo, confettiMat, confettiCount);
+    confettiMesh.frustumCulled = false;
+    const confettiPalette = [0xffd700, 0xf42a35, 0x10d981, 0xfff8dc, 0xffb703];
+    const confettiState = [];
+
+    for (let i = 0; i < confettiCount; i++) {
+      const h1 = ((i * 0.618034) % 1.0);
+      const h2 = ((i * 0.381966) % 1.0);
+      const h3 = ((i * 0.754877) % 1.0);
+      const latSpan = (h1 - 0.5) * 18.5;
+      const fwdSpan = (h2 - 0.35) * 10.0;
+      const startPos = new THREE.Vector3(0, 7.5 + h3 * 7.5, 0)
+        .addScaledVector(rgt, latSpan)
+        .addScaledVector(fwd, fwdSpan);
+
+      const st = {
+        x: startPos.x,
+        y: startPos.y,
+        z: startPos.z,
+        vx: (h2 - 0.5) * 5.2,
+        vy: 3.5 + h1 * 6.5,
+        vz: (h3 - 0.5) * 5.2,
+        rx: h1 * Math.PI * 2,
+        ry: h2 * Math.PI * 2,
+        rz: h3 * Math.PI * 2,
+        spinX: (h2 - 0.5) * 9.5,
+        spinY: (h3 - 0.5) * 8.5,
+        spinZ: (h1 - 0.5) * 9.0,
+        flutterPhase: i * 0.47,
+      };
+      confettiState.push(st);
+
+      this._celDummy.position.set(st.x, st.y, st.z);
+      this._celDummy.rotation.set(st.rx, st.ry, st.rz);
+      this._celDummy.updateMatrix();
+      confettiMesh.setMatrixAt(i, this._celDummy.matrix);
+      this._celColor.setHex(confettiPalette[i % confettiPalette.length]);
+      confettiMesh.setColorAt(i, this._celColor);
+    }
+    confettiMesh.instanceMatrix.needsUpdate = true;
+    if (confettiMesh.instanceColor) confettiMesh.instanceColor.needsUpdate = true;
+    group.add(confettiMesh);
+
+    this.scene.add(group);
+    const celebration = {
+      group,
+      shells,
+      flashLightL,
+      flashLightR,
+      confettiMesh,
+      confettiMat,
+      confettiState,
+      disposables,
+      age: 0.0,
+      maxAge: 5.6,
+    };
+    this.celebrations.push(celebration);
+    return celebration;
+  }
+
   clearAllDebris() {
     for (const d of this.debrisItems) {
       this.scene.remove(d.group);
     }
     this.debrisItems.length = 0;
+
+    if (this.celebrations) {
+      for (const cel of this.celebrations) {
+        if (this.scene) this.scene.remove(cel.group);
+        for (const d of cel.disposables) d.dispose();
+      }
+      this.celebrations.length = 0;
+    }
   }
 
   update(dt) {
+    const stepDt = Math.max(0.0, Math.min(0.1, Number(dt) || 0.0));
+
     for (let i = this.explosions.length - 1; i >= 0; i--) {
       const ex = this.explosions[i];
-      ex.age += dt;
+      ex.age += stepDt;
       const u = Math.min(1.0, ex.age / ex.maxAge);
 
       const flashU = Math.min(1.0, ex.age / 0.36);
@@ -3253,21 +3703,21 @@ export class EffectsManager {
       ex.blastLight.intensity = Math.max(0, 6.0 * Math.pow(1.0 - Math.min(1.0, ex.age / 0.75), 2.0));
 
       for (const p of ex.particles) {
-        p.mesh.position.x += p.vx * dt;
-        p.mesh.position.y += p.vy * dt;
-        p.mesh.position.z += p.vz * dt;
+        p.mesh.position.x += p.vx * stepDt;
+        p.mesh.position.y += p.vy * stepDt;
+        p.mesh.position.z += p.vz * stepDt;
 
         if (p.kind === 'SMOKE') {
-          p.vx *= 1.0 - 1.6 * dt;
-          p.vz *= 1.0 - 1.6 * dt;
-          p.vy -= 4.5 * dt;
+          p.vx *= 1.0 - 1.6 * stepDt;
+          p.vz *= 1.0 - 1.6 * stepDt;
+          p.vy -= 4.5 * stepDt;
           if (p.mesh.position.y < 0.35) p.mesh.position.y = 0.35;
           p.mesh.scale.setScalar(0.9 + u * 2.8);
           p.mat.opacity = Math.max(0, (1.0 - u) * 0.78);
         } else if (p.kind === 'FIRE') {
-          p.vx *= 1.0 - 1.2 * dt;
-          p.vz *= 1.0 - 1.2 * dt;
-          p.vy -= 14.5 * dt;
+          p.vx *= 1.0 - 1.2 * stepDt;
+          p.vz *= 1.0 - 1.2 * stepDt;
+          p.vy -= 14.5 * stepDt;
           if (p.mesh.position.y < 0.25) {
             p.mesh.position.y = 0.25;
             p.vy *= -0.25;
@@ -3275,16 +3725,16 @@ export class EffectsManager {
           p.mesh.scale.setScalar(0.8 + u * 2.1);
           p.mat.opacity = Math.max(0, 1.0 - Math.pow(u, 0.82));
         } else {
-          p.vy -= 22.0 * dt;
+          p.vy -= 22.0 * stepDt;
           if (p.mesh.position.y < 0.05) {
             p.mesh.position.y = 0.05;
             p.vy = -p.vy * 0.42;
             p.vx *= 0.78;
             p.vz *= 0.78;
           }
-          p.mesh.rotation.x += p.rx * dt;
-          p.mesh.rotation.y += p.ry * dt;
-          p.mesh.rotation.z += p.rz * dt;
+          p.mesh.rotation.x += p.rx * stepDt;
+          p.mesh.rotation.y += p.ry * stepDt;
+          p.mesh.rotation.z += p.rz * stepDt;
           p.mat.opacity = u > 0.7 ? Math.max(0, (1.0 - u) / 0.3) : 1.0;
         }
       }
@@ -3296,8 +3746,107 @@ export class EffectsManager {
       }
     }
 
+    for (let i = this.celebrations.length - 1; i >= 0; i--) {
+      const cel = this.celebrations[i];
+      cel.age += stepDt;
+
+      let flashSumL = 0.0;
+      let flashSumR = 0.0;
+
+      for (let sIdx = 0; sIdx < cel.shells.length; sIdx++) {
+        const sh = cel.shells[sIdx];
+        const localAge = cel.age - sh.delay;
+        if (localAge < 0) {
+          sh.pts.visible = false;
+          continue;
+        }
+        if (localAge >= sh.duration) {
+          sh.pts.visible = false;
+          continue;
+        }
+
+        sh.pts.visible = true;
+        const uS = localAge / sh.duration;
+        const drag = Math.max(0.0, 1.0 - 1.35 * stepDt);
+        const count = sh.velArr.length / 3;
+
+        for (let p = 0; p < count; p++) {
+          const p3 = p * 3;
+          sh.velArr[p3] *= drag;
+          sh.velArr[p3 + 1] = sh.velArr[p3 + 1] * drag - 5.6 * stepDt;
+          sh.velArr[p3 + 2] *= drag;
+
+          sh.posArr[p3] += sh.velArr[p3] * stepDt;
+          sh.posArr[p3 + 1] += sh.velArr[p3 + 1] * stepDt;
+          sh.posArr[p3 + 2] += sh.velArr[p3 + 2] * stepDt;
+
+          // Twinkle shimmer in final 45% of shell life
+          const twinkle = uS > 0.55
+            ? (0.58 + 0.42 * Math.sin(cel.age * 28.0 + p * 1.9))
+            : 1.0;
+          const hotMix = Math.max(0.0, 1.0 - uS * 3.2);
+          const cRef = p % 4 === 0 ? sh.tipCol : sh.baseCol;
+          sh.colArr[p3]     = THREE.MathUtils.lerp(cRef.r, 1.0, hotMix) * twinkle;
+          sh.colArr[p3 + 1] = THREE.MathUtils.lerp(cRef.g, 1.0, hotMix) * twinkle;
+          sh.colArr[p3 + 2] = THREE.MathUtils.lerp(cRef.b, 0.95, hotMix) * twinkle;
+        }
+
+        sh.posAttr.needsUpdate = true;
+        sh.colAttr.needsUpdate = true;
+        sh.mat.opacity = Math.max(0.0, 1.0 - Math.pow(uS, 1.55));
+        sh.mat.size = 0.65 + (1.0 - uS) * 0.45;
+
+        const burstFlash = Math.max(0.0, 1.0 - localAge / 0.42);
+        if (sIdx % 2 === 0) flashSumL += burstFlash * 7.2;
+        else flashSumR += burstFlash * 7.2;
+      }
+
+      cel.flashLightL.intensity = Math.min(11.0, flashSumL);
+      cel.flashLightR.intensity = Math.min(11.0, flashSumR);
+
+      // Update fluttering podium confetti ribbons
+      const confCount = cel.confettiState.length;
+      const confDrag = Math.max(0.0, 1.0 - 1.85 * stepDt);
+      for (let c = 0; c < confCount; c++) {
+        const st = cel.confettiState[c];
+        st.vx = st.vx * confDrag + Math.sin(cel.age * 4.2 + st.flutterPhase) * 3.2 * stepDt;
+        st.vz = st.vz * confDrag + Math.cos(cel.age * 3.7 + st.flutterPhase) * 3.2 * stepDt;
+        st.vy = Math.max(-2.35, st.vy * confDrag - 4.2 * stepDt);
+
+        st.x += st.vx * stepDt;
+        st.y += st.vy * stepDt;
+        st.z += st.vz * stepDt;
+        if (st.y < 0.06) {
+          st.y = 0.06;
+          st.vx *= 0.85;
+          st.vz *= 0.85;
+        } else {
+          st.rx += st.spinX * stepDt;
+          st.ry += st.spinY * stepDt;
+          st.rz += st.spinZ * stepDt;
+        }
+
+        this._celDummy.position.set(st.x, st.y, st.z);
+        this._celDummy.rotation.set(st.rx, st.ry, st.rz);
+        this._celDummy.updateMatrix();
+        cel.confettiMesh.setMatrixAt(c, this._celDummy.matrix);
+      }
+      cel.confettiMesh.instanceMatrix.needsUpdate = true;
+
+      const fadeStart = cel.maxAge - 1.1;
+      cel.confettiMat.opacity = cel.age > fadeStart
+        ? Math.max(0.0, 1.0 - (cel.age - fadeStart) / 1.1)
+        : 1.0;
+
+      if (cel.age >= cel.maxAge) {
+        this.scene.remove(cel.group);
+        for (const d of cel.disposables) d.dispose();
+        this.celebrations.splice(i, 1);
+      }
+    }
+
     for (let i = this.debrisItems.length - 1; i >= 0; i--) {
-      this.debrisItems[i].ttl -= dt;
+      this.debrisItems[i].ttl -= stepDt;
       if (this.debrisItems[i].ttl <= 0) {
         this.scene.remove(this.debrisItems[i].group);
         this.debrisItems.splice(i, 1);
@@ -3305,3 +3854,5 @@ export class EffectsManager {
     }
   }
 }
+
+export { EffectsManager as TrackEffectsManager };

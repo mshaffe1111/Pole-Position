@@ -777,14 +777,64 @@ export class SpatialAIController {
     car.drsRequested = drsEligible;
     car.drsActive = drsEligible;
 
-    car.ersOvertakeRequested =
+    // Tactical Hybrid MGU-K ERS Overtake & Podium Defense Deployment:
+    // Deploy ONLY in 2026 mode when battery > 38% on a straight (|k| < 0.0014, WOT > 0.85, brake < 0.05)
+    // AND either attacking in slipstream within 36m ahead OR defending P1–P3 with player within 22m behind;
+    // otherwise false so AI harvests battery cleanly in braking zones.
+    const ersStraightReady =
       !isClassic &&
+      !isShowroomDemo &&
       !car.inPitLane &&
-      finiteOr(car.ersCharge, 1.0) > 0.16 &&
-      car.brakeInput < 0.02 &&
-      absCurKReal < 0.0075 &&
-      (car.aiPassLockTimer > 0 || car.aiSwitchbackTimer > 0 || car.aiOutLapPushTimer > 0 || car.aiDefenseMovesUsed > 0);
-    if (car.ersOvertakeRequested && car.throttleInput > 0.78) {
+      !this.raceSystems?.vscActive &&
+      finiteOr(car.ersCharge, 1.0) > 0.38 &&
+      Math.abs(curKReal) < 0.0014 &&
+      car.throttleInput > 0.85 &&
+      car.brakeInput < 0.05;
+
+    let shouldDeployErsOvertake = false;
+    if (ersStraightReady) {
+      let attackingSlipstream36m = false;
+      let computedRank = 1;
+      const myProg = finiteOr(car.totalDistanceGameM, finiteOr(car.s, 0));
+
+      if (Array.isArray(allCars)) {
+        for (let i = 0; i < allCars.length; i++) {
+          const other = allCars[i];
+          if (!other || other === car || other.exploded) continue;
+          const otherProg = finiteOr(other.totalDistanceGameM, finiteOr(other.s, 0));
+          if (otherProg > myProg) computedRank += 1;
+          if (other.inPitLane) continue;
+
+          const aheadM = forwardDistGameM(car.s, other.s) * mPerGameM;
+          if (aheadM > 0.5 && aheadM <= 36.0) {
+            const inSlip =
+              Boolean(car.inSlipstream) ||
+              finiteOr(car.slipstreamFactor, 0.0) > 0.12 ||
+              finiteOr(car.towReservoir, 0.0) > 0.14 ||
+              (Math.abs(finiteOr(other.lateralOffset, 0) - curLat) < 2.45 && speedKmh > 125.0);
+            if (inSlip) {
+              attackingSlipstream36m = true;
+            }
+          }
+        }
+      }
+
+      const liveRank =
+        Number.isFinite(car.position) && car.position >= 1 ? Math.round(car.position) : computedRank;
+
+      let defendingPodiumFromPlayer = false;
+      if (liveRank >= 1 && liveRank <= 3 && playerCar && !playerCar.exploded && !playerCar.inPitLane) {
+        const playerBehindM = forwardDistGameM(playerCar.s, car.s) * mPerGameM;
+        if (playerBehindM > 0.5 && playerBehindM <= 22.0) {
+          defendingPodiumFromPlayer = true;
+        }
+      }
+
+      shouldDeployErsOvertake = attackingSlipstream36m || defendingPodiumFromPlayer;
+    }
+
+    car.ersOvertakeRequested = shouldDeployErsOvertake;
+    if (shouldDeployErsOvertake) {
       car.ersDeploying = true;
     }
 

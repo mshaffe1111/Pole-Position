@@ -207,6 +207,7 @@ export class ProceduralAudioEngine {
     this._wheelGunPanIdx = 0;
     this._lastJackDropMs = 0;
     this._lastFlybyMs = 0;
+    this._lastWheelRubMs = 0;
     this._overtakePanFlip = 1;
     this._flybyPanFlip = 1;
     this._activeFanfareNodes = [];
@@ -2367,6 +2368,439 @@ export class ProceduralAudioEngine {
     };
     src.start(now);
     src.stop(now + 1.90);
+  }
+
+  // --------------------------------------------------------------------------
+  // AAA MOBILE COCKPIT, HYBRID ERS/DRS, PROGRESSION & PHOTO MODE SOUND SUITE
+  // --------------------------------------------------------------------------
+  playDrsBeep(isOpen = true) {
+    if (!this.initialized || this.muted || !this.ctx) return;
+    this._ensureRunning();
+    const now = this.ctx.currentTime;
+
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = isOpen ? 2150 : 1900;
+    lp.Q.value = 0.707;
+    lp.connect(this.sfxBus);
+
+    if (isOpen) {
+      // Authentic FIA steering-wheel 2-tone cockpit pip (880 Hz -> 1175 Hz, ~55ms per pip)
+      const pips = [
+        { f: 880.0, tOff: 0.0, dur: 0.048, amp: 0.115 },
+        { f: 1174.66, tOff: 0.044, dur: 0.056, amp: 0.13 },
+      ];
+      pips.forEach((p, idx) => {
+        const t0 = now + p.tOff;
+        const oscSin = this.ctx.createOscillator();
+        oscSin.type = 'sine';
+        this._setVal(oscSin.frequency, this._clampFreq(p.f), t0);
+
+        const oscTri = this.ctx.createOscillator();
+        oscTri.type = 'triangle';
+        this._setVal(oscTri.frequency, this._clampFreq(p.f), t0);
+        const triMix = this.ctx.createGain();
+        triMix.gain.value = 0.35;
+
+        const g = this.ctx.createGain();
+        this._setVal(g.gain, 0.001, t0);
+        this._linRamp(g.gain, p.amp, t0 + 0.005);
+        this._expRamp(g.gain, 0.0008, t0 + p.dur);
+
+        oscSin.connect(g);
+        oscTri.connect(triMix);
+        triMix.connect(g);
+        g.connect(lp);
+
+        oscSin.onended = () => {
+          try { g.disconnect(); } catch (_) {}
+          if (idx === pips.length - 1) {
+            try { lp.disconnect(); } catch (_) {}
+          }
+        };
+        oscSin.start(t0);
+        oscTri.start(t0);
+        oscSin.stop(t0 + p.dur + 0.008);
+        oscTri.stop(t0 + p.dur + 0.008);
+      });
+    } else {
+      // Soft single 988 Hz FIA DRS detection/available notification pip (~55ms)
+      const oscSin = this.ctx.createOscillator();
+      oscSin.type = 'sine';
+      this._setVal(oscSin.frequency, 987.77, now);
+
+      const oscTri = this.ctx.createOscillator();
+      oscTri.type = 'triangle';
+      this._setVal(oscTri.frequency, 987.77, now);
+      const triMix = this.ctx.createGain();
+      triMix.gain.value = 0.28;
+
+      const g = this.ctx.createGain();
+      this._setVal(g.gain, 0.001, now);
+      this._linRamp(g.gain, 0.095, now + 0.005);
+      this._expRamp(g.gain, 0.0008, now + 0.056);
+
+      oscSin.connect(g);
+      oscTri.connect(triMix);
+      triMix.connect(g);
+      g.connect(lp);
+
+      oscSin.onended = () => {
+        try { g.disconnect(); } catch (_) {}
+        try { lp.disconnect(); } catch (_) {}
+      };
+      oscSin.start(now);
+      oscTri.start(now);
+      oscSin.stop(now + 0.064);
+      oscTri.stop(now + 0.064);
+    }
+  }
+
+  playErsDeployPulse(active = true) {
+    if (!this.initialized || this.muted || !this.ctx) return;
+    this._ensureRunning();
+    const now = this.ctx.currentTime;
+
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = active ? 680 : 520;
+    lp.Q.value = 0.75;
+
+    const outGain = this.ctx.createGain();
+    const dur = active ? 0.118 : 0.096;
+    this._setVal(outGain.gain, 0.001, now);
+    this._linRamp(outGain.gain, active ? 0.155 : 0.095, now + 0.016);
+    this._expRamp(outGain.gain, 0.0008, now + dur);
+
+    // Warm MGU-K electric torque swell (180 -> 360 Hz triangle when deploying)
+    const oscTorque = this.ctx.createOscillator();
+    oscTorque.type = 'triangle';
+    this._setVal(oscTorque.frequency, active ? 180.0 : 320.0, now);
+    this._expRamp(oscTorque.frequency, active ? 360.0 : 165.0, now + dur);
+
+    const oscFifth = this.ctx.createOscillator();
+    oscFifth.type = 'sine';
+    this._setVal(oscFifth.frequency, active ? 270.0 : 240.0, now);
+    this._expRamp(oscFifth.frequency, active ? 540.0 : 124.0, now + dur);
+    const fifthGain = this.ctx.createGain();
+    fifthGain.gain.value = 0.34;
+
+    // Tactile sub-bass torque punch (94 -> 56 Hz pure sine)
+    const subOsc = this.ctx.createOscillator();
+    subOsc.type = 'sine';
+    this._setVal(subOsc.frequency, active ? 94.0 : 76.0, now);
+    this._expRamp(subOsc.frequency, active ? 56.0 : 48.0, now + dur * 0.9);
+    const subG = this.ctx.createGain();
+    subG.gain.value = active ? 0.85 : 0.55;
+
+    oscTorque.connect(lp);
+    oscFifth.connect(fifthGain);
+    fifthGain.connect(lp);
+    subOsc.connect(subG);
+    subG.connect(lp);
+    lp.connect(outGain);
+    outGain.connect(this.sfxBus);
+
+    oscTorque.onended = () => {
+      try { outGain.disconnect(); } catch (_) {}
+    };
+    oscTorque.start(now);
+    oscFifth.start(now);
+    subOsc.start(now);
+    oscTorque.stop(now + dur + 0.012);
+    oscFifth.stop(now + dur + 0.012);
+    subOsc.stop(now + dur + 0.012);
+  }
+
+  playAchievementChime(tier = 'GOLD') {
+    if (!this.initialized || this.muted || !this.ctx) return;
+    this._ensureRunning();
+    const now = this.ctx.currentTime;
+
+    const normTier = String(tier || 'GOLD').toUpperCase().trim();
+    const tierScale = normTier === 'BRONZE' ? 0.82 : (normTier === 'SILVER' ? 0.92 : 1.0);
+
+    // Warm GT7 / F1 Mobile Cmaj9 unlock arpeggio (C5 - E5 - G5 - D6 + warm C4 foundation)
+    const masterChime = this.ctx.createGain();
+    masterChime.gain.value = 0.95 * tierScale;
+
+    const warmLp = this.ctx.createBiquadFilter();
+    warmLp.type = 'lowpass';
+    warmLp.frequency.value = 1780;
+    warmLp.Q.value = 0.707;
+
+    masterChime.connect(warmLp);
+    warmLp.connect(this.sfxBus);
+    if (this.reverbSendSfx) {
+      warmLp.connect(this.reverbSendSfx);
+    }
+
+    // Gentle Valley hall bloom send (clean single-shot filtered stereo reflection, zero comb-filtering)
+    let bloomDelay = null;
+    let bloomGain = null;
+    if (typeof this.ctx.createDelay === 'function') {
+      bloomDelay = this.ctx.createDelay(0.25);
+      bloomDelay.delayTime.value = 0.115;
+      const bloomLp = this.ctx.createBiquadFilter();
+      bloomLp.type = 'lowpass';
+      bloomLp.frequency.value = 980;
+      bloomGain = this.ctx.createGain();
+      bloomGain.gain.value = 0.22;
+      warmLp.connect(bloomDelay);
+      bloomDelay.connect(bloomLp);
+      bloomLp.connect(bloomGain);
+      bloomGain.connect(this.sfxBus);
+      if (this.valleyConvolver && this.valleyWetGain) {
+        bloomGain.connect(this.valleyConvolver);
+      }
+    }
+
+    // Warm C4 pad root
+    const padOsc = this.ctx.createOscillator();
+    padOsc.type = 'sine';
+    this._setVal(padOsc.frequency, 261.63, now);
+    const padGain = this.ctx.createGain();
+    this._setVal(padGain.gain, 0.001, now);
+    this._linRamp(padGain.gain, 0.11, now + 0.035);
+    this._expRamp(padGain.gain, 0.0008, now + 0.82);
+    padOsc.connect(padGain);
+    padGain.connect(masterChime);
+    padOsc.start(now);
+    padOsc.stop(now + 0.85);
+
+    const notes = [
+      { f: 523.25, tOff: 0.000, dur: 0.56, amp: 0.14, pan: -0.22 }, // C5
+      { f: 659.25, tOff: 0.056, dur: 0.54, amp: 0.13, pan: -0.07 }, // E5
+      { f: 783.99, tOff: 0.112, dur: 0.54, amp: 0.13, pan: 0.10 },  // G5
+      { f: 1174.66, tOff: 0.172, dur: 0.66, amp: 0.145, pan: 0.24 }, // D6 (Maj9 crown!)
+    ];
+    if (normTier === 'GOLD') {
+      notes.push({ f: 987.77, tOff: 0.142, dur: 0.58, amp: 0.075, pan: 0.16 }); // B5 lush maj7 color
+    }
+
+    notes.forEach((n, idx) => {
+      const t0 = now + n.tOff;
+      const oscSin = this.ctx.createOscillator();
+      oscSin.type = 'sine';
+      this._setVal(oscSin.frequency, this._clampFreq(n.f), t0);
+
+      const oscTri = this.ctx.createOscillator();
+      oscTri.type = 'triangle';
+      this._setVal(oscTri.frequency, this._clampFreq(n.f), t0);
+      oscTri.detune.value = 2.0;
+      const triGain = this.ctx.createGain();
+      triGain.gain.value = 0.26;
+
+      const g = this.ctx.createGain();
+      this._setVal(g.gain, 0.001, t0);
+      this._linRamp(g.gain, n.amp, t0 + 0.010);
+      this._expRamp(g.gain, 0.0008, t0 + n.dur);
+
+      const panner = this._createPanner(n.pan);
+      oscSin.connect(g);
+      oscTri.connect(triGain);
+      triGain.connect(g);
+      g.connect(panner);
+      panner.connect(masterChime);
+
+      if (idx === 3) {
+        oscSin.onended = () => {
+          setTimeout(() => {
+            try { masterChime.disconnect(); } catch (_) {}
+            try { warmLp.disconnect(); } catch (_) {}
+            if (bloomGain) {
+              try { bloomGain.disconnect(); } catch (_) {}
+            }
+          }, 180);
+        };
+      }
+      oscSin.start(t0);
+      oscTri.start(t0);
+      oscSin.stop(t0 + n.dur + 0.02);
+      oscTri.stop(t0 + n.dur + 0.02);
+    });
+  }
+
+  playPerfectLaunchChord() {
+    if (!this.initialized || this.muted || !this.ctx) return;
+    this._ensureRunning();
+    const now = this.ctx.currentTime;
+
+    // 1. Crisp clutch-bite low-end launch punch (138 -> 46 Hz)
+    const subOsc = this.ctx.createOscillator();
+    subOsc.type = 'sine';
+    this._setVal(subOsc.frequency, 138.0, now);
+    this._expRamp(subOsc.frequency, 46.0, now + 0.15);
+    const subGain = this.ctx.createGain();
+    this._setVal(subGain.gain, 0.002, now);
+    this._linRamp(subGain.gain, 0.20, now + 0.006);
+    this._expRamp(subGain.gain, 0.0008, now + 0.165);
+    subOsc.connect(subGain);
+    subGain.connect(this.sfxBus);
+    subOsc.onended = () => {
+      try { subGain.disconnect(); } catch (_) {}
+    };
+    subOsc.start(now);
+    subOsc.stop(now + 0.175);
+
+    // 2. Consonant Aadd9 confirmation hit (locks harmonically with 880 Hz Green Lights-Out beep!)
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 1850;
+    lp.Q.value = 0.707;
+    lp.connect(this.sfxBus);
+
+    const chordVoices = [
+      { f: 440.00, tOff: 0.000, dur: 0.28, type: 'triangle', amp: 0.125 }, // A4
+      { f: 659.25, tOff: 0.018, dur: 0.30, type: 'triangle', amp: 0.115 }, // E5
+      { f: 880.00, tOff: 0.036, dur: 0.34, type: 'sine', amp: 0.130 },     // A5
+      { f: 1108.73, tOff: 0.052, dur: 0.36, type: 'sine', amp: 0.095 },    // C#6
+    ];
+    chordVoices.forEach((v, idx) => {
+      const t0 = now + v.tOff;
+      const osc = this.ctx.createOscillator();
+      osc.type = v.type;
+      this._setVal(osc.frequency, this._clampFreq(v.f), t0);
+
+      const g = this.ctx.createGain();
+      this._setVal(g.gain, 0.001, t0);
+      this._linRamp(g.gain, v.amp, t0 + 0.008);
+      this._expRamp(g.gain, 0.0008, t0 + v.dur);
+
+      osc.connect(g);
+      g.connect(lp);
+      osc.onended = () => {
+        try { g.disconnect(); } catch (_) {}
+        if (idx === chordVoices.length - 1) {
+          try { lp.disconnect(); } catch (_) {}
+        }
+      };
+      osc.start(t0);
+      osc.stop(t0 + v.dur + 0.015);
+    });
+  }
+
+  playWheelRubThud(intensity = 0.5) {
+    if (!this.initialized || this.muted || !this.ctx) return;
+    const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (this._lastWheelRubMs && nowMs - this._lastWheelRubMs < 180) return;
+    this._lastWheelRubMs = nowMs;
+
+    this._ensureRunning();
+    const now = this.ctx.currentTime;
+    const lvl = Math.max(0.15, Math.min(1.0, this._num(intensity, 0.5)));
+
+    // 1. 90 Hz bandpass rubber sidewall / carbon sidepod contact noise
+    const noiseBuf = this._noisePinkBuf || this._noiseWhiteBuf;
+    if (noiseBuf) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = noiseBuf;
+
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 90.0;
+      bp.Q.value = 1.35;
+
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 250.0;
+      lp.Q.value = 0.707;
+
+      const ng = this.ctx.createGain();
+      this._setVal(ng.gain, 0.002, now);
+      this._linRamp(ng.gain, 0.28 * lvl, now + 0.009);
+      this._expRamp(ng.gain, 0.001, now + 0.145);
+
+      src.connect(bp);
+      bp.connect(lp);
+      lp.connect(ng);
+      ng.connect(this.sfxBus);
+      src.onended = () => {
+        try { ng.disconnect(); } catch (_) {}
+      };
+      src.start(now);
+      src.stop(now + 0.155);
+    }
+
+    // 2. 62 Hz sine chassis/sidepod thud transient
+    const thudOsc = this.ctx.createOscillator();
+    thudOsc.type = 'sine';
+    this._setVal(thudOsc.frequency, 62.0, now);
+    this._expRamp(thudOsc.frequency, 36.0, now + 0.13);
+
+    const tg = this.ctx.createGain();
+    this._setVal(tg.gain, 0.002, now);
+    this._linRamp(tg.gain, 0.28 * lvl, now + 0.005);
+    this._expRamp(tg.gain, 0.001, now + 0.138);
+
+    thudOsc.connect(tg);
+    tg.connect(this.sfxBus);
+    thudOsc.onended = () => {
+      try { tg.disconnect(); } catch (_) {}
+    };
+    thudOsc.start(now);
+    thudOsc.stop(now + 0.148);
+  }
+
+  playCameraShutter() {
+    if (!this.initialized || this.muted || !this.ctx) return;
+    this._ensureRunning();
+    const now = this.ctx.currentTime;
+
+    // Two-curtain mechanical DSLR shutter click (front curtain open + mirror/rear curtain return)
+    const curtains = [
+      { tOff: 0.000, bpFreq: 1650, clickStart: 920, clickEnd: 260, amp: 0.17 },
+      { tOff: 0.048, bpFreq: 1280, clickStart: 640, clickEnd: 150, amp: 0.14 },
+    ];
+
+    curtains.forEach((c) => {
+      const t0 = now + c.tOff;
+      if (this._noiseWhiteBuf) {
+        const src = this.ctx.createBufferSource();
+        src.buffer = this._noiseWhiteBuf;
+
+        const bp = this.ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.value = c.bpFreq;
+        bp.Q.value = 1.85;
+
+        const lp = this.ctx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.value = 3100;
+
+        const ng = this.ctx.createGain();
+        this._setVal(ng.gain, 0.002, t0);
+        this._linRamp(ng.gain, c.amp, t0 + 0.003);
+        this._expRamp(ng.gain, 0.0008, t0 + 0.024);
+
+        src.connect(bp);
+        bp.connect(lp);
+        lp.connect(ng);
+        ng.connect(this.sfxBus);
+        src.onended = () => {
+          try { ng.disconnect(); } catch (_) {}
+        };
+        src.start(t0);
+        src.stop(t0 + 0.028);
+      }
+
+      const detentOsc = this.ctx.createOscillator();
+      detentOsc.type = 'triangle';
+      this._setVal(detentOsc.frequency, c.clickStart, t0);
+      this._expRamp(detentOsc.frequency, c.clickEnd, t0 + 0.020);
+
+      const dg = this.ctx.createGain();
+      this._setVal(dg.gain, c.amp * 0.85, t0);
+      this._expRamp(dg.gain, 0.0008, t0 + 0.022);
+
+      detentOsc.connect(dg);
+      dg.connect(this.sfxBus);
+      detentOsc.onended = () => {
+        try { dg.disconnect(); } catch (_) {}
+      };
+      detentOsc.start(t0);
+      detentOsc.stop(t0 + 0.026);
+    });
   }
 
   speakAnnouncement(text, isRadio = false, force = false) {

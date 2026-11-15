@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d1322" />
+      <stop offset="55%" stop-color="#070a11" />
+      <stop offset="100%" stop-color="#05070c" />
+    </linearGradient>
+    <linearGradient id="redWing" x1="0%" y1="0%" x2="100%" y2="25%">
+      <stop offset="0%" stop-color="#ff2a1f" />
+      <stop offset="60%" stop-color="#e10600" />
+      <stop offset="100%" stop-color="#9e0400" />
+    </linearGradient>
+    <linearGradient id="cyanGlow" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00f5dc" />
+      <stop offset="100%" stop-color="#00a3ff" />
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" rx="38" fill="url(#bgGrad)" />
+  <rect x="8" y="8" width="176" height="176" rx="32" fill="none" stroke="#1e293b" stroke-width="2" />
+  <!-- Racing Kerb & Telemetry Speed Streaks (inside 80% maskable safe zone) -->
+  <path d="M30 136 L154 136 L146 146 L24 146 Z" fill="url(#cyanGlow)" opacity="0.9" />
+  <path d="M34 52 L164 52 L152 70 L68 70 L54 98 L30 98 Z" fill="url(#redWing)" />
+  <path d="M62 80 L144 80 L135 95 L53 95 Z" fill="url(#redWing)" />
+  <!-- Bold Motorsport F1 Monogram -->
+  <g fill="#ffffff">
+    <path d="M42 126 L58 76 H104 L99 90 H70 L67 99 H93 L89 111 H63 L58 126 Z" />
+    <path d="M114 76 H142 L126 126 H109 L121 89 H110 Z" />
+  </g>
+  <text x="96" y="164" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-weight="800" font-size="12" letter-spacing="3.2" fill="#cbd5e1" text-anchor="middle">POLE POSITION 26</text>
+</svg>

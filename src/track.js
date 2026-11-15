@@ -15,6 +15,7 @@ import {
   PIT_LANE_CONFIG,
   BILLBOARD_BRANDS,
 } from './config.js';
+import { computeIdealCornerSpeedKmh } from './physics.js';
 
 const SAMPLES = 2000;
 const ARC_LUT_SIZE = 8192;
@@ -225,6 +226,7 @@ export class FujiTrack {
   static _pbrVariantCache = new Map();
   static _pbrAllTexSet = new Set();
   static _texLoader = null;
+  static _targetAnisotropy = 8;
 
   // Load & cache verified 1024x1024 CC0 Poly Haven PBR texture sets with per-(repX, repY) UV repeat clones
   static _getPbrSet(family, repX = 1, repY = 1) {
@@ -246,13 +248,14 @@ export class FujiTrack {
           tex = FujiTrack._texLoader.load(url, (loaded) => {
             loaded.wrapS = THREE.RepeatWrapping;
             loaded.wrapT = THREE.RepeatWrapping;
-            loaded.anisotropy = 8;
+            loaded.anisotropy = FujiTrack._targetAnisotropy || 8;
             loaded.colorSpace = isSrgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
             loaded.needsUpdate = true;
             for (let i = 0; i < clones.length; i++) {
               const cl = clones[i];
               cl.image = loaded.image;
               if (loaded.source) cl.source = loaded.source;
+              cl.anisotropy = FujiTrack._targetAnisotropy || 8;
               cl.needsUpdate = true;
             }
           });
@@ -261,7 +264,7 @@ export class FujiTrack {
         }
         tex.wrapS = THREE.RepeatWrapping;
         tex.wrapT = THREE.RepeatWrapping;
-        tex.anisotropy = 8;
+        tex.anisotropy = FujiTrack._targetAnisotropy || 8;
         tex.colorSpace = isSrgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
         FujiTrack._pbrAllTexSet.add(tex);
         return { tex, clones, isSrgb };
@@ -287,7 +290,7 @@ export class FujiTrack {
       cl.wrapS = THREE.RepeatWrapping;
       cl.wrapT = THREE.RepeatWrapping;
       cl.repeat.set(repX, repY);
-      cl.anisotropy = 8;
+      cl.anisotropy = FujiTrack._targetAnisotropy || 8;
       cl.colorSpace = slotObj.isSrgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
       slotObj.clones.push(cl);
       FujiTrack._pbrAllTexSet.add(cl);
@@ -335,6 +338,14 @@ export class FujiTrack {
     // Calm natural stadium baseline (0.0); swells naturally ONLY on triggerCrowdExcitement!
     this.crowdExcitement = 0.0;
     this._lastElapsedSec = 0;
+    this._lastVisualStyle = '2026_PBR';
+    this.racingLineMode = 'CORNERS'; // 'OFF' | 'CORNERS' | 'FULL'
+    this.graphicsQuality = 'ULTRA';  // 'ULTRA' | 'HIGH' | 'PERFORMANCE'
+    this.racingLineMesh = null;
+    this._racingLineTex = null;
+    this._racingLineSegs = 400;
+    this._racingLineBaseVIdeal = null;
+    this._racingLineCornerProx = null;
     this._checkeredFlagActive = false;
     this._lastGantryState = { redCount: 0, greenOn: false, yellowFlash: false };
     this._forcePuddles1982 = false;
@@ -356,6 +367,73 @@ export class FujiTrack {
 
     this.loadCircuit('FUJI_1982');
     this._ensureBlenderEnvAssetsLoaded();
+  }
+
+  setRacingLineMode(mode = 'CORNERS') {
+    const m = String(mode || '').trim().toUpperCase();
+    if (m === 'OFF' || m === 'NONE' || mode === false) {
+      this.racingLineMode = 'OFF';
+    } else if (m === 'FULL' || m === 'ALL' || m === 'ALWAYS') {
+      this.racingLineMode = 'FULL';
+    } else {
+      this.racingLineMode = 'CORNERS';
+    }
+    if (this.racingLineMode === 'OFF' && this.racingLineMesh) {
+      this.racingLineMesh.visible = false;
+    }
+    return this.racingLineMode;
+  }
+
+  setGraphicsQuality(tier = 'HIGH') {
+    const raw = String(tier || 'HIGH').trim().toUpperCase();
+    let q = 'HIGH';
+    if (raw === 'ULTRA' || raw === 'MAX') {
+      q = 'ULTRA';
+    } else if (raw === 'PERFORMANCE' || raw === '60FPS' || raw === 'LOW' || raw === 'FAST') {
+      q = 'PERFORMANCE';
+    }
+    this.graphicsQuality = q;
+    this._applyGraphicsQualityToCircuit();
+    return this.graphicsQuality;
+  }
+
+  _applyGraphicsQualityToCircuit() {
+    const q = this.graphicsQuality || 'HIGH';
+    const targetAniso = q === 'ULTRA' ? 8 : (q === 'HIGH' ? 4 : 2);
+    FujiTrack._targetAnisotropy = targetAniso;
+
+    for (const tex of FujiTrack._pbrAllTexSet) {
+      if (tex && tex.anisotropy !== targetAniso) {
+        tex.anisotropy = targetAniso;
+        if (tex.image) tex.needsUpdate = true;
+      }
+    }
+
+    if (!this.group) return;
+    this.group.traverse((obj) => {
+      if (obj === this.group) return;
+      const role = obj.userData?.gfxRole;
+      if (role === 'CROWD_DETAIL' || role === 'DISTANT_SCENIC') {
+        obj.visible = q !== 'PERFORMANCE';
+      }
+      if (obj.userData?.gfxTreeShadow) {
+        obj.castShadow = q === 'ULTRA';
+      }
+      if (obj.material) {
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for (let i = 0; i < mats.length; i++) {
+          const m = mats[i];
+          if (!m) continue;
+          for (let s = 0; s < TEXTURE_SLOTS.length; s++) {
+            const tex = m[TEXTURE_SLOTS[s]];
+            if (tex && tex.anisotropy !== targetAniso) {
+              tex.anisotropy = targetAniso;
+              if (tex.image) tex.needsUpdate = true;
+            }
+          }
+        }
+      }
+    });
   }
 
   triggerCrowdExcitement(boost = 1.0) {
@@ -572,6 +650,8 @@ export class FujiTrack {
     this.animatedProps = [];
     this._floodAtmosphereMeshes = [];
     this.skidIndex = 0;
+    this.racingLineMesh = null;
+    this._racingLineTex = null;
 
     this._buildPeriodicC2Spline();
     this._createRichMaterials();
@@ -584,9 +664,11 @@ export class FujiTrack {
     this._buildMarshalPosts();
     this._buildPuddles();
     this._buildSkidmarkSystem();
+    this._buildDynamicRacingLine();
     this._buildGrandstands();
     this._buildBiomeLandmarks();
     this._buildMainStraightScenicVistaTrees();
+    this._applyGraphicsQualityToCircuit();
   }
 
   // --------------------------------------------------------------------------
@@ -1320,6 +1402,7 @@ export class FujiTrack {
   updateVisualState(moistureW, visualStyle, elapsedSec = 0) {
     const dt = Math.max(0, Math.min(0.1, elapsedSec - (this._lastElapsedSec || elapsedSec)));
     this._lastElapsedSec = elapsedSec;
+    this._lastVisualStyle = visualStyle || '2026_PBR';
     if (this.crowdExcitement > 0.0) {
       this.crowdExcitement = Math.max(0.0, this.crowdExcitement - dt * 0.38);
     }
@@ -1327,6 +1410,9 @@ export class FujiTrack {
     this._crowdUniforms.uExcitement.value = this.crowdExcitement;
 
     const isArcade = visualStyle === '1982_ARCADE';
+    if (isArcade && this.racingLineMesh) {
+      this.racingLineMesh.visible = false;
+    }
     const isVegas = this.trackDef.theme === 'VEGAS';
 
     // Floodlight volumetric cones & light pools ONLY on Vegas night OR dark heavy storms!
@@ -3992,6 +4078,7 @@ export class FujiTrack {
       });
       fanInst.instanceMatrix.needsUpdate = true;
       if (fanInst.instanceColor) fanInst.instanceColor.needsUpdate = true;
+      fanInst.userData.gfxRole = 'CROWD_DETAIL';
       this.group.add(fanInst);
     }
 
@@ -4014,6 +4101,12 @@ export class FujiTrack {
 
     // Restrained Photographer Camera Flashes (zero confetti, zero stadium smoke flares!)
     this.animatedProps.push((t) => {
+      if (this.graphicsQuality === 'PERFORMANCE') {
+        for (let i = 0; i < allCameraFlashes.length; i++) {
+          allCameraFlashes[i].mesh.visible = false;
+        }
+        return;
+      }
       const excite = this.crowdExcitement || 0.0;
       const baseThresh = isVegas ? 0.82 : 0.94;
       const threshold = baseThresh - Math.min(0.14, excite * 0.11);
@@ -5742,6 +5835,7 @@ export class FujiTrack {
       decTrunks.forEach((m, k) => dtInst.setMatrixAt(k, m));
       dtInst.instanceMatrix.needsUpdate = true;
       dtInst.castShadow = true;
+      dtInst.userData.gfxTreeShadow = true;
       this.group.add(dtInst);
     }
     if (pineTrunks.length) {
@@ -5749,6 +5843,7 @@ export class FujiTrack {
       pineTrunks.forEach((m, k) => ptInst.setMatrixAt(k, m));
       ptInst.instanceMatrix.needsUpdate = true;
       ptInst.castShadow = true;
+      ptInst.userData.gfxTreeShadow = true;
       this.group.add(ptInst);
     }
 
@@ -5770,6 +5865,7 @@ export class FujiTrack {
         inst.instanceMatrix.needsUpdate = true;
         inst.castShadow = true;
         inst.receiveShadow = true;
+        inst.userData.gfxTreeShadow = true;
         this.group.add(inst);
       }
       if (pineBuckets[idx].length) {
@@ -5778,6 +5874,7 @@ export class FujiTrack {
         inst.instanceMatrix.needsUpdate = true;
         inst.castShadow = true;
         inst.receiveShadow = true;
+        inst.userData.gfxTreeShadow = true;
         this.group.add(inst);
       }
     });
@@ -5795,6 +5892,7 @@ export class FujiTrack {
       const pInst = new THREE.InstancedMesh(petalGeo, petalMat, petalRings.length);
       petalRings.forEach((m, k) => pInst.setMatrixAt(k, m));
       pInst.instanceMatrix.needsUpdate = true;
+      pInst.userData.gfxRole = 'DISTANT_SCENIC';
       this.group.add(pInst);
     }
   }
@@ -5991,6 +6089,8 @@ export class FujiTrack {
       decTrunks.forEach((m, k) => inst.setMatrixAt(k, m));
       inst.instanceMatrix.needsUpdate = true;
       inst.castShadow = true;
+      inst.userData.gfxRole = 'DISTANT_SCENIC';
+      inst.userData.gfxTreeShadow = true;
       this.group.add(inst);
     }
     if (pineTrunks.length) {
@@ -5998,6 +6098,8 @@ export class FujiTrack {
       pineTrunks.forEach((m, k) => inst.setMatrixAt(k, m));
       inst.instanceMatrix.needsUpdate = true;
       inst.castShadow = true;
+      inst.userData.gfxRole = 'DISTANT_SCENIC';
+      inst.userData.gfxTreeShadow = true;
       this.group.add(inst);
     }
 
@@ -6019,6 +6121,8 @@ export class FujiTrack {
         inst.instanceMatrix.needsUpdate = true;
         inst.castShadow = true;
         inst.receiveShadow = true;
+        inst.userData.gfxRole = 'DISTANT_SCENIC';
+        inst.userData.gfxTreeShadow = true;
         this.group.add(inst);
       }
       if (pineCrowns[idx].length) {
@@ -6027,6 +6131,8 @@ export class FujiTrack {
         inst.instanceMatrix.needsUpdate = true;
         inst.castShadow = true;
         inst.receiveShadow = true;
+        inst.userData.gfxRole = 'DISTANT_SCENIC';
+        inst.userData.gfxTreeShadow = true;
         this.group.add(inst);
       }
     });
@@ -6274,6 +6380,427 @@ export class FujiTrack {
     this.skidMesh.setMatrixAt(this.skidIndex, d.matrix);
     this.skidIndex = (this.skidIndex + 1) % this.maxSkids;
     this.skidMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  // --------------------------------------------------------------------------
+  // 11. DYNAMIC 3D RACING LINE & BRAKING CHEVRON RIBBON (400 SEGMENTS, RGBA)
+  // --------------------------------------------------------------------------
+  _makeRacingLineChevronTexture() {
+    const W = 256;
+    const H = 256;
+    const c = document.createElement('canvas');
+    c.width = W;
+    c.height = H;
+    const ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+
+    // Subtle continuous side guide rails + soft translucent center spine
+    const spineGrad = ctx.createLinearGradient(0, 0, W, 0);
+    spineGrad.addColorStop(0.00, 'rgba(255, 255, 255, 0.0)');
+    spineGrad.addColorStop(0.12, 'rgba(255, 255, 255, 0.34)');
+    spineGrad.addColorStop(0.22, 'rgba(255, 255, 255, 0.18)');
+    spineGrad.addColorStop(0.50, 'rgba(255, 255, 255, 0.24)');
+    spineGrad.addColorStop(0.78, 'rgba(255, 255, 255, 0.18)');
+    spineGrad.addColorStop(0.88, 'rgba(255, 255, 255, 0.34)');
+    spineGrad.addColorStop(1.00, 'rgba(255, 255, 255, 0.0)');
+    ctx.fillStyle = spineGrad;
+    ctx.fillRect(0, 0, W, H);
+
+    // Crisp forward-pointing motorsport chevron (^ nose at top y=26 -> v=0.90 forward along +s!)
+    const drawChevron = (tipY, wingY, thick, alpha) => {
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(W * 0.50, tipY);
+      ctx.lineTo(W * 0.88, wingY);
+      ctx.lineTo(W * 0.88, wingY + thick);
+      ctx.lineTo(W * 0.50, tipY + thick * 0.92);
+      ctx.lineTo(W * 0.12, wingY + thick);
+      ctx.lineTo(W * 0.12, wingY);
+      ctx.closePath();
+
+      const cg = ctx.createLinearGradient(0, tipY, 0, wingY + thick);
+      cg.addColorStop(0.0, `rgba(255, 255, 255, ${alpha})`);
+      cg.addColorStop(0.65, `rgba(255, 255, 255, ${(alpha * 0.92).toFixed(3)})`);
+      cg.addColorStop(1.0, `rgba(255, 255, 255, ${(alpha * 0.36).toFixed(3)})`);
+      ctx.fillStyle = cg;
+      ctx.fill();
+      ctx.restore();
+    };
+
+    // Primary bold chevron + secondary harmonic echo chevron per tile
+    drawChevron(24, 96, 38, 0.98);
+    drawChevron(148, 214, 28, 0.68);
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.anisotropy = FujiTrack._targetAnisotropy || 8;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  _buildDynamicRacingLine() {
+    const N = 400;
+    this._racingLineSegs = N;
+    const dsGame = TRACK_GAME_LENGTH / N;
+    const mPerG = Math.max(1.0, this.metersPerGameUnit || 3.25);
+
+    const smooth01 = (e0, e1, x) => {
+      const t = Math.max(0.0, Math.min(1.0, (x - e0) / Math.max(1e-6, e1 - e0)));
+      return t * t * (3.0 - 2.0 * t);
+    };
+
+    // 1. Compute raw lateral racing-line offset d_line(s):
+    //    wide outside turn-in setup -> clip inside apex sign(kReal)*4.8m -> clean outside track-out
+    let dCur = new Float64Array(N);
+    let dNext = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      const s = i * dsGame;
+      const kHere = this.getRealCurvature(s);
+      const kAheadNear = this.getRealCurvature(wrapS(s + 30.0 / mPerG));
+      const kAheadMid = this.getRealCurvature(wrapS(s + 58.0 / mPerG));
+      const kAheadFar = this.getRealCurvature(wrapS(s + 86.0 / mPerG));
+      const kBehindNear = this.getRealCurvature(wrapS(s - 26.0 / mPerG));
+      const kBehindMid = this.getRealCurvature(wrapS(s - 52.0 / mPerG));
+
+      const absHere = Math.abs(kHere);
+      const apexW = smooth01(0.0018, 0.0102, absHere);
+      // Scale raw apex slightly above 4.8m (5.35m) so 3 circular smoothing passes land right on sign(kReal)*4.8m!
+      const apexLat = Math.sign(kHere) * 5.35 * apexW;
+
+      const kSetupDom = Math.abs(kAheadMid) >= Math.abs(kAheadNear) ? kAheadMid : kAheadNear;
+      const maxAhead = Math.max(Math.abs(kAheadNear), Math.abs(kAheadMid), Math.abs(kAheadFar) * 0.78);
+      const setupW = smooth01(0.0022, 0.0092, maxAhead) * (1.0 - apexW);
+      const setupSign = Math.sign(kSetupDom || kAheadFar || 1.0);
+      const entryWideLat = -setupSign * 3.35 * setupW;
+
+      const kExitDom = Math.abs(kBehindNear) >= Math.abs(kBehindMid) ? kBehindNear : kBehindMid;
+      const maxBehind = Math.max(Math.abs(kBehindNear), Math.abs(kBehindMid) * 0.80);
+      const exitW = smooth01(0.0024, 0.0098, maxBehind) * (1.0 - apexW) * (1.0 - setupW * 0.65);
+      const exitSign = Math.sign(kExitDom || 1.0);
+      const exitWideLat = -exitSign * 3.10 * exitW;
+
+      dCur[i] = Math.max(-5.8, Math.min(5.8, apexLat + entryWideLat + exitWideLat));
+    }
+
+    // 2. Apply 3 passes of circular Gaussian/tent smoothing for a butter-smooth C1/C2 trajectory
+    for (let pass = 0; pass < 3; pass++) {
+      for (let i = 0; i < N; i++) {
+        let sum = 0.0;
+        let wSum = 0.0;
+        for (let k = -5; k <= 5; k++) {
+          const w = 6 - Math.abs(k);
+          sum += dCur[(i + k + N) % N] * w;
+          wSum += w;
+        }
+        dNext[i] = sum / wSum;
+      }
+      const swap = dCur;
+      dCur = dNext;
+      dNext = swap;
+    }
+
+    // 3. Evaluate 3D centerline frames along (s, d_line(s)) and precompute corner speed / proximity LUTs
+    const frames = new Array(N);
+    const centerPts = new Array(N);
+    const baseVIdeal = new Float32Array(N);
+    const cornerProx = new Float32Array(N);
+
+    const crownSurfaceLift = (latM) => {
+      const uNorm = Math.max(-1.0, Math.min(1.0, latM / ROAD_HALF_WIDTH));
+      return 0.024 + 0.036 * (1.0 - uNorm * uNorm);
+    };
+
+    for (let i = 0; i < N; i++) {
+      const dLat = Math.max(-5.4, Math.min(5.4, dCur[i]));
+      dCur[i] = dLat;
+      const s = i * dsGame;
+      const fr = this.sampleAt(s, dLat);
+      frames[i] = fr;
+      centerPts[i] = new THREE.Vector3(
+        fr.pos.x,
+        fr.pos.y + crownSurfaceLift(dLat) + 0.04,
+        fr.pos.z
+      );
+      baseVIdeal[i] = computeIdealCornerSpeedKmh(this, s, null);
+    }
+
+    const segStepM = dsGame * mPerG;
+    // Precompute physical F1 braking-zone speed envelope (backward pass around closed loop)
+    // so braking chevrons illuminate at the true 100m-120m braking point before tight corners!
+    const baseVEnv = new Float32Array(N);
+    for (let i = 0; i < N; i++) baseVEnv[i] = baseVIdeal[i];
+    const decelMps2 = 37.5; // ~3.8G progressive F1 braking envelope
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = N - 1; i >= 0; i--) {
+        const nextV = baseVEnv[(i + 1) % N] / 3.6;
+        const maxEntryKmh = Math.sqrt(nextV * nextV + 2.0 * decelMps2 * segStepM) * 3.6;
+        if (maxEntryKmh < baseVEnv[i]) baseVEnv[i] = maxEntryKmh;
+      }
+    }
+
+    const lookAheadSteps = Math.max(1, Math.ceil(135.0 / segStepM));
+    const lookBehindSteps = Math.max(1, Math.ceil(26.0 / segStepM));
+
+    for (let i = 0; i < N; i++) {
+      if (baseVIdeal[i] <= 305.0 || baseVEnv[i] <= 305.0) {
+        cornerProx[i] = 1.0;
+        continue;
+      }
+      let minDistAheadM = Infinity;
+      for (let k = 1; k <= lookAheadSteps; k++) {
+        if (baseVIdeal[(i + k) % N] <= 305.0) {
+          minDistAheadM = k * segStepM;
+          break;
+        }
+      }
+      let minDistBehindM = Infinity;
+      for (let k = 1; k <= lookBehindSteps; k++) {
+        if (baseVIdeal[(i - k + N) % N] <= 305.0) {
+          minDistBehindM = k * segStepM;
+          break;
+        }
+      }
+      const aheadFade = minDistAheadM <= 135.0 ? (1.0 - smooth01(90.0, 135.0, minDistAheadM)) : 0.0;
+      const exitFade = minDistBehindM <= 26.0 ? (1.0 - smooth01(4.0, 26.0, minDistBehindM)) : 0.0;
+      cornerProx[i] = Math.max(aheadFade, exitFade);
+    }
+
+    this._racingLineBaseVIdeal = baseVIdeal;
+    this._racingLineBaseVEnv = baseVEnv;
+    this._racingLineLiveV = new Float32Array(N);
+    this._racingLineCornerProx = cornerProx;
+    this._racingLineOffsets = dCur;
+
+    // 4. Build 0.85m-wide asphalt-hugging 3D ribbon mesh (+0.04m above crowned road surface)
+    const halfW = 0.425;
+    const vertCount = (N + 1) * 2;
+    const positions = new Float32Array(vertCount * 3);
+    const normals = new Float32Array(vertCount * 3);
+    const uvs = new Float32Array(vertCount * 2);
+    const colors = new Float32Array(vertCount * 4);
+    const indices = [];
+
+    for (let i = 0; i <= N; i++) {
+      const idx = i % N;
+      const fr = frames[idx];
+      const dLat = dCur[idx];
+      const prevP = centerPts[(idx - 1 + N) % N];
+      const nextP = centerPts[(idx + 1) % N];
+      const curP = centerPts[idx];
+
+      const tx = nextP.x - prevP.x;
+      const tz = nextP.z - prevP.z;
+      const th = Math.hypot(tx, tz);
+      const rx = th > 1e-6 ? -tz / th : fr.right.x;
+      const rz = th > 1e-6 ? tx / th : fr.right.z;
+
+      const yL = fr.pos.y + crownSurfaceLift(dLat - halfW) + 0.04;
+      const yR = fr.pos.y + crownSurfaceLift(dLat + halfW) + 0.04;
+
+      const vBase = i * 2;
+      const p3 = vBase * 3;
+      positions[p3]     = curP.x - rx * halfW;
+      positions[p3 + 1] = yL;
+      positions[p3 + 2] = curP.z - rz * halfW;
+      positions[p3 + 3] = curP.x + rx * halfW;
+      positions[p3 + 4] = yR;
+      positions[p3 + 5] = curP.z + rz * halfW;
+
+      normals[p3]     = fr.normal.x;
+      normals[p3 + 1] = fr.normal.y;
+      normals[p3 + 2] = fr.normal.z;
+      normals[p3 + 3] = fr.normal.x;
+      normals[p3 + 4] = fr.normal.y;
+      normals[p3 + 5] = fr.normal.z;
+
+      const u2 = vBase * 2;
+      const vRepeat = i * 3.0;
+      uvs[u2]     = 0.0;
+      uvs[u2 + 1] = vRepeat;
+      uvs[u2 + 2] = 1.0;
+      uvs[u2 + 3] = vRepeat;
+
+      const c4 = vBase * 4;
+      colors[c4]     = 0.06;
+      colors[c4 + 1] = 0.78;
+      colors[c4 + 2] = 0.51;
+      colors[c4 + 3] = 0.0;
+      colors[c4 + 4] = 0.06;
+      colors[c4 + 5] = 0.78;
+      colors[c4 + 6] = 0.51;
+      colors[c4 + 7] = 0.0;
+
+      if (i < N) {
+        const b = i * 2;
+        indices.push(b, b + 1, b + 2, b + 1, b + 3, b + 2);
+      }
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    const colAttr = new THREE.BufferAttribute(colors, 4);
+    colAttr.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute('color', colAttr);
+    geo.setIndex(indices);
+
+    this._racingLineTex = this._makeRacingLineChevronTexture();
+    const mat = new THREE.MeshBasicMaterial({
+      map: this._racingLineTex,
+      vertexColors: true,
+      transparent: true,
+      opacity: 1.0,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -3,
+      polygonOffsetUnits: -3,
+    });
+
+    this.racingLineMesh = new THREE.Mesh(geo, mat);
+    this.racingLineMesh.name = 'Dynamic3DRacingLineRibbon';
+    this.racingLineMesh.renderOrder = 4;
+    this.racingLineMesh.frustumCulled = false;
+    this.racingLineMesh.visible = false;
+    this.group.add(this.racingLineMesh);
+  }
+
+  updateDynamicRacingLine(playerCar, elapsedSec = 0) {
+    if (!this.racingLineMesh) return;
+    if (
+      this.racingLineMode === 'OFF' ||
+      this._lastVisualStyle === '1982_ARCADE' ||
+      !playerCar ||
+      playerCar.inPitLane ||
+      playerCar.exploded
+    ) {
+      this.racingLineMesh.visible = false;
+      return;
+    }
+
+    this.racingLineMesh.visible = true;
+    const t = Number(elapsedSec) || 0;
+    if (this._racingLineTex) {
+      this._racingLineTex.offset.y = -((t * 1.15) % 1.0);
+    }
+
+    const N = this._racingLineSegs || 400;
+    const dsGame = TRACK_GAME_LENGTH / N;
+    const mPerG = Math.max(1.0, this.metersPerGameUnit || 3.25);
+    const segStepM = dsGame * mPerG;
+    const carS = wrapS(playerCar.s);
+    const speedKmh = Math.max(0.0, Number(playerCar.speedKmh) || 0.0);
+    const isFull = this.racingLineMode === 'FULL';
+
+    // Compute live car-conditioned ideal & braking-envelope speeds across the lookahead window
+    const liveV = this._racingLineLiveV || new Float32Array(N);
+    const baseEnv = this._racingLineBaseVEnv || this._racingLineBaseVIdeal;
+    for (let i = 0; i < N; i++) {
+      const sSeg = i * dsGame;
+      let ds = sSeg - carS;
+      if (ds < -500.0) ds += 1000.0;
+      else if (ds >= 500.0) ds -= 1000.0;
+      const distM = ds * mPerG;
+      if (distM >= -12.0 && distM <= 235.0) {
+        liveV[i] = computeIdealCornerSpeedKmh(this, sSeg, playerCar);
+      } else {
+        liveV[i] = baseEnv[i];
+      }
+    }
+    // Backward braking-zone propagation across the lookahead window (~3.8G decel)
+    const decelMps2 = 37.5;
+    const startIdx = Math.floor((carS / TRACK_GAME_LENGTH) * N);
+    const aheadSegs = Math.min(N - 1, Math.ceil(235.0 / segStepM));
+    for (let step = aheadSegs; step >= -4; step--) {
+      const idx = ((startIdx + step) % N + N) % N;
+      const nextIdx = (idx + 1) % N;
+      const nextMps = liveV[nextIdx] / 3.6;
+      const maxEntryKmh = Math.sqrt(nextMps * nextMps + 2.0 * decelMps2 * segStepM) * 3.6;
+      if (maxEntryKmh < liveV[idx]) liveV[idx] = maxEntryKmh;
+    }
+
+    const colAttr = this.racingLineMesh.geometry.getAttribute('color');
+    const arr = colAttr.array;
+
+    const smooth01 = (e0, e1, x) => {
+      const u = Math.max(0.0, Math.min(1.0, (x - e0) / Math.max(1e-6, e1 - e0)));
+      return u * u * (3.0 - 2.0 * u);
+    };
+
+    for (let i = 0; i < N; i++) {
+      const sSeg = i * dsGame;
+      let ds = sSeg - carS;
+      if (ds < -500.0) ds += 1000.0;
+      else if (ds >= 500.0) ds -= 1000.0;
+      const distM = ds * mPerG;
+      const inWindow = distM >= -8.0 && distM <= 195.0;
+
+      const c4 = i * 8;
+      if (!inWindow && !isFull) {
+        arr[c4 + 3] = 0.0;
+        arr[c4 + 7] = 0.0;
+        continue;
+      }
+
+      const vIdeal = liveV[i];
+      const deltaSpd = speedKmh - vIdeal;
+
+      // Exact speed-delta color cue:
+      // Emerald Green (0.06, 0.78, 0.51) <= vIdeal + 5
+      // Amber Gold    (0.96, 0.62, 0.05) vIdeal + 5 < speedKmh <= vIdeal + 28
+      // Crimson Red   (0.95, 0.20, 0.20) speedKmh > vIdeal + 28
+      let r = 0.06;
+      let g = 0.78;
+      let b = 0.51;
+      if (deltaSpd > 28.0) {
+        const wRed = smooth01(28.0, 31.5, deltaSpd);
+        r = 0.96 + (0.95 - 0.96) * wRed;
+        g = 0.62 + (0.20 - 0.62) * wRed;
+        b = 0.05 + (0.20 - 0.05) * wRed;
+      } else if (deltaSpd > 5.0) {
+        const wAmb = smooth01(5.0, 8.5, deltaSpd);
+        r = 0.06 + (0.96 - 0.06) * wAmb;
+        g = 0.78 + (0.62 - 0.78) * wAmb;
+        b = 0.51 + (0.05 - 0.51) * wAmb;
+      }
+
+      const liveCorner = vIdeal <= 305.0 ? Math.min(1.0, (310.0 - vIdeal) / 12.0) : 0.0;
+      const cFactor = Math.max(this._racingLineCornerProx[i], liveCorner);
+
+      let alpha = 0.0;
+      if (isFull) {
+        const baseFullAlpha = 0.30 + (0.82 - 0.30) * cFactor;
+        if (inWindow) {
+          const pulse = 0.92 + 0.08 * Math.sin(t * (deltaSpd > 28.0 ? 9.0 : 4.8) - distM * 0.14);
+          alpha = Math.min(0.92, baseFullAlpha * pulse);
+        } else {
+          alpha = baseFullAlpha;
+        }
+      } else if (inWindow && cFactor > 0.001) {
+        const behindFade = smooth01(-8.0, -0.5, distM);
+        const aheadFade = 1.0 - smooth01(152.0, 195.0, distM);
+        const pulse = 0.92 + 0.08 * Math.sin(t * (deltaSpd > 28.0 ? 9.0 : 4.8) - distM * 0.14);
+        alpha = 0.78 * cFactor * behindFade * aheadFade * pulse;
+      }
+
+      arr[c4]     = r;
+      arr[c4 + 1] = g;
+      arr[c4 + 2] = b;
+      arr[c4 + 3] = alpha;
+      arr[c4 + 4] = r;
+      arr[c4 + 5] = g;
+      arr[c4 + 6] = b;
+      arr[c4 + 7] = alpha;
+    }
+
+    // Wrap seam row N === row 0 seamlessly
+    const last = N * 8;
+    for (let k = 0; k < 8; k++) {
+      arr[last + k] = arr[k];
+    }
+    colAttr.needsUpdate = true;
   }
 
   computeMinimapBounds() {

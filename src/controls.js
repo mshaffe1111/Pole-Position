@@ -198,6 +198,26 @@ export class ErgonomicControls {
     this.manualBrake = 0.0;
     this.assistBrakeApplied = 0.0;
 
+    // Tactical F1 MGU-K ERS Overtake Boost & FIA DRS Wing Flap outputs (read directly by physics.js)
+    this.ersOvertakeActive = false;
+    this.drsManualOpen = false;
+    this._ersTouchHeld = false;
+    this._ersLatched = false;
+    this._ersTouchDownMs = 0.0;
+    this._ersTouchId = null;
+    this._ersPointerId = null;
+    this._lastErsTapEndMs = 0.0;
+    this._lastDrsTapEndMs = 0.0;
+    this._lastTearOffTapEndMs = 0.0;
+    this._gpPrevDrsBtn = false;
+    this._gpErsHeld = false;
+    this._lastPlayerCarRef = null;
+    this._hapticLastByKind = {};
+    this.ersBtnEl = null;
+    this.ersPctEl = null;
+    this.drsBtnEl = null;
+    this.tearOffBtnEl = null;
+
     // Customizable Ergonomics & Driving Assists (mirrored at top-level for physics/HUD convenience)
     this.controlSettings = {
       sensitivity: DEFAULT_SENSITIVITY,              // [0.6..1.5] default 0.90 for calm, user-friendly control
@@ -694,6 +714,8 @@ export class ErgonomicControls {
           tgt.closest(
             '#touch-wheel-zone, #touch-slider-zone, #touch-arrow-zone, #touch-pedal-zone, #touch-tilt-zone, ' +
             '#touch-shifter-btn, #touch-shift-down-btn, #touch-shift-up-btn, ' +
+            '#btn-touch-ers, #btn-touch-drs, #btn-touch-tearoff, #btn-toggle-mfd, #live-timing-tower, ' +
+            '#touch-tactical-cluster, .touch-tactical-cluster, #proximity-radar-layer, ' +
             'button, a, input, select, textarea, .garage-drawer, .career-drawer, .modal-box, #pause-modal, ' +
             '#pit-strategy-drawer, #pit-stop-overlay, #replay-overlay, .hud-quick-actions, #right-telemetry-dock, #telemetry-2026-panel'
           )
@@ -718,7 +740,8 @@ export class ErgonomicControls {
           t.identifier === this._wheelTouchId ||
           t.identifier === this._sliderTouchId ||
           t.identifier === this._arrowTouchId ||
-          t.identifier === this._pedalTouchId
+          t.identifier === this._pedalTouchId ||
+          t.identifier === this._ersTouchId
         ) {
           continue;
         }
@@ -841,6 +864,9 @@ export class ErgonomicControls {
         if (t.identifier === this._pedalTouchId) {
           releasePedalTouch(t.identifier);
         }
+        if (t.identifier === this._ersTouchId && this._releaseErsTouch) {
+          this._releaseErsTouch(t.identifier, e.type === 'touchcancel');
+        }
         if (t.identifier === this._visorGestureTouchId) {
           this._visorGestureTouchId = null;
           if (e.type === 'touchend') {
@@ -890,6 +916,9 @@ export class ErgonomicControls {
       if (e.pointerId === this.sliderPointerId && this._releaseSliderPointer) this._releaseSliderPointer(e.pointerId);
       if (e.pointerId === this.arrowPointerId) releaseArrowPointer(e.pointerId);
       if (e.pointerId === this.pedalPointerId) releasePedalPointer(e.pointerId);
+      if (e.pointerId === this._ersPointerId && this._releaseErsPointer) {
+        this._releaseErsPointer(e.pointerId, e.type === 'pointercancel');
+      }
     };
     window.addEventListener('pointerup', onGlobalPointerEnd, { passive: true });
     window.addEventListener('pointercancel', onGlobalPointerEnd, { passive: true });
@@ -903,7 +932,12 @@ export class ErgonomicControls {
       releaseArrowTouch();
       releasePedalPointer();
       releasePedalTouch();
+      this._ersTouchId = null;
+      this._ersPointerId = null;
+      this._ersTouchHeld = false;
+      this._gpErsHeld = false;
       this.keys.clear();
+      this.ersOvertakeActive = Boolean(this._ersLatched);
     };
     window.addEventListener('blur', resetAllTransientInputs);
     document.addEventListener('visibilitychange', () => {
@@ -913,13 +947,13 @@ export class ErgonomicControls {
     // ------------------------------------------------------------------------
     // 3. Manual Shifters: 1982 LOW/HIGH Toggle & 8-Speed Sequential Paddles
     // ------------------------------------------------------------------------
-    const bindShifterButton = (btnEl, vibMs, dir) => {
+    const bindShifterButton = (btnEl, kind, dir) => {
       if (!btnEl) return;
       btnEl.addEventListener('touchstart', (e) => {
         e.preventDefault();
         e.stopPropagation();
         if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
-        this._vibrate(vibMs);
+        this.triggerHaptic(kind);
         if (this.callbacks.onShift) this.callbacks.onShift(dir);
       }, { passive: false });
 
@@ -928,14 +962,238 @@ export class ErgonomicControls {
         e.preventDefault();
         e.stopPropagation();
         if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
-        this._vibrate(vibMs);
+        this.triggerHaptic(kind);
         if (this.callbacks.onShift) this.callbacks.onShift(dir);
       });
     };
 
-    bindShifterButton(this.shifterBtnEl, 16, 0);
-    bindShifterButton(this.shiftDownBtnEl, 14, -1);
-    bindShifterButton(this.shiftUpBtnEl, 14, +1);
+    bindShifterButton(this.shifterBtnEl, 'SHIFT_UP', 0);
+    bindShifterButton(this.shiftDownBtnEl, 'SHIFT_DOWN', -1);
+    bindShifterButton(this.shiftUpBtnEl, 'SHIFT_UP', +1);
+
+    // ------------------------------------------------------------------------
+    // 4. Tactical F1 Cockpit Buttons: MGU-K ERS Boost, FIA DRS Flap & Tear-Off
+    // ------------------------------------------------------------------------
+    this._bindTacticalButtonsIfPresent();
+  }
+
+  _triggerDrsToggle(playerCarOverride = null) {
+    const car =
+      playerCarOverride ||
+      this._lastPlayerCarRef ||
+      (typeof window !== 'undefined' ? window.__RACE_PHANATIC_GAME__?.playerCar : null);
+    if (!car?.drsAvailable) {
+      return false;
+    }
+    this.drsManualOpen = !this.drsManualOpen;
+    this.triggerHaptic('DRS');
+    this.callbacks.onDrsToggle?.(this.drsManualOpen);
+    return this.drsManualOpen;
+  }
+
+  _bindTacticalButtonsIfPresent() {
+    if (typeof document === 'undefined') return;
+    const ignoreTouchPointer =
+      this._ignoreTouchPointer || ((e) => this._hasNativeTouch && e.pointerType === 'touch');
+
+    const lockButtonTouchStyle = (el) => {
+      if (!el || !el.style) return;
+      el.style.userSelect = 'none';
+      el.style.webkitUserSelect = 'none';
+      el.style.webkitTouchCallout = 'none';
+      el.style.touchAction = 'none';
+    };
+
+    // 4A. #btn-touch-ers (MGU-K Overtake Boost: Hold to deploy, <230ms quick-tap toggles latch!)
+    const ersBtn = document.getElementById('btn-touch-ers');
+    const ersPct = document.getElementById('ers-touch-pct');
+    if (ersPct) {
+      this.ersPctEl = ersPct;
+    } else if (ersBtn && !this.ersPctEl) {
+      this.ersPctEl = ersBtn.querySelector('#ers-touch-pct, .ers-pct');
+    }
+
+    if (!this._releaseErsTouch) {
+      this._releaseErsTouch = (touchId, isCancel = false) => {
+        if (touchId !== undefined && touchId !== this._ersTouchId) return;
+        this._ersTouchId = null;
+        if (this._ersPointerId === null) {
+          this._finishErsButtonHold(isCancel);
+        }
+      };
+    }
+    if (!this._releaseErsPointer) {
+      this._releaseErsPointer = (pointerId, isCancel = false) => {
+        if (pointerId !== undefined && pointerId !== this._ersPointerId) return;
+        this._ersPointerId = null;
+        if (this._ersTouchId === null) {
+          this._finishErsButtonHold(isCancel);
+        }
+      };
+    }
+
+    if (ersBtn && this.ersBtnEl !== ersBtn) {
+      this.ersBtnEl = ersBtn;
+      lockButtonTouchStyle(ersBtn);
+
+      const beginErsPress = () => {
+        if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
+        this._ersTouchHeld = true;
+        this._ersTouchDownMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        this.ersOvertakeActive = true;
+        this.triggerHaptic('ERS', 0.85);
+      };
+
+      ersBtn.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (this._ersTouchId === null && this._ersPointerId === null && e.changedTouches.length > 0) {
+          this._ersTouchId = e.changedTouches[0].identifier;
+          beginErsPress();
+        }
+      }, { passive: false });
+
+      ersBtn.addEventListener('touchend', (e) => {
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          if (e.changedTouches[i].identifier === this._ersTouchId) {
+            e.preventDefault();
+            e.stopPropagation();
+            this._releaseErsTouch(this._ersTouchId, false);
+            break;
+          }
+        }
+      }, { passive: false });
+
+      ersBtn.addEventListener('touchcancel', (e) => {
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          if (e.changedTouches[i].identifier === this._ersTouchId) {
+            this._releaseErsTouch(this._ersTouchId, true);
+            break;
+          }
+        }
+      }, { passive: false });
+
+      ersBtn.addEventListener('pointerdown', (e) => {
+        if (ignoreTouchPointer(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (this._ersPointerId === null && this._ersTouchId === null) {
+          this._ersPointerId = e.pointerId;
+          beginErsPress();
+          if (e.pointerType === 'mouse' || e.pointerType === 'pen') {
+            try { ersBtn.setPointerCapture(e.pointerId); } catch (_) {}
+          }
+        }
+      });
+
+      const onErsPtrEnd = (e) => {
+        if (ignoreTouchPointer(e)) return;
+        if (e.pointerId === this._ersPointerId) {
+          e.preventDefault();
+          e.stopPropagation();
+          this._releaseErsPointer(e.pointerId, e.type === 'pointercancel');
+        }
+      };
+      ersBtn.addEventListener('pointerup', onErsPtrEnd);
+      ersBtn.addEventListener('pointercancel', onErsPtrEnd);
+
+      ersBtn.addEventListener('click', (e) => {
+        const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        if (nowMs - this._lastErsTapEndMs < 320) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
+        this._ersLatched = !this._ersLatched;
+        this.ersOvertakeActive = this._ersLatched;
+        this.triggerHaptic('ERS', 0.85);
+      });
+    }
+
+    // 4B. #btn-touch-drs (FIA DRS Wing Flap Toggle)
+    const drsBtn = document.getElementById('btn-touch-drs');
+    if (drsBtn && this.drsBtnEl !== drsBtn) {
+      this.drsBtnEl = drsBtn;
+      lockButtonTouchStyle(drsBtn);
+
+      drsBtn.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this._lastDrsTapEndMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
+        this._triggerDrsToggle();
+      }, { passive: false });
+
+      drsBtn.addEventListener('pointerdown', (e) => {
+        if (ignoreTouchPointer(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this._lastDrsTapEndMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
+        this._triggerDrsToggle();
+      });
+
+      drsBtn.addEventListener('click', (e) => {
+        const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        if (nowMs - this._lastDrsTapEndMs < 320) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
+        this._triggerDrsToggle();
+      });
+    }
+
+    // 4C. #btn-touch-tearoff (Cockpit Visor Tear-Off Wipe)
+    const tearBtn = document.getElementById('btn-touch-tearoff');
+    if (tearBtn && this.tearOffBtnEl !== tearBtn) {
+      this.tearOffBtnEl = tearBtn;
+      lockButtonTouchStyle(tearBtn);
+
+      tearBtn.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this._lastTearOffTapEndMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
+        this.triggerVisorTearOff();
+      }, { passive: false });
+
+      tearBtn.addEventListener('pointerdown', (e) => {
+        if (ignoreTouchPointer(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this._lastTearOffTapEndMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
+        this.triggerVisorTearOff();
+      });
+
+      tearBtn.addEventListener('click', (e) => {
+        const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        if (nowMs - this._lastTearOffTapEndMs < 320) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (this.callbacks.onUserInteract) this.callbacks.onUserInteract();
+        this.triggerVisorTearOff();
+      });
+    }
+  }
+
+  _finishErsButtonHold(isCancel = false) {
+    if (!this._ersTouchHeld) return;
+    const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const heldMs = nowMs - this._ersTouchDownMs;
+    this._ersTouchHeld = false;
+    this._lastErsTapEndMs = nowMs;
+    if (!isCancel && heldMs < 230.0) {
+      this._ersLatched = !this._ersLatched;
+      this.ersOvertakeActive = this._ersLatched;
+      this.triggerHaptic('TAP', 0.7);
+    } else {
+      this._ersLatched = false;
+      this.ersOvertakeActive =
+        this.keys.has('KeyE') ||
+        this.keys.has('ShiftLeft') ||
+        this.keys.has('ShiftRight') ||
+        this._gpErsHeld;
+    }
   }
 
   _bindSliderZoneIfPresent() {
@@ -1509,9 +1767,12 @@ export class ErgonomicControls {
         if (code === 'Space') {
           if (this.callbacks.onClutchTap) this.callbacks.onClutchTap();
           if (this.callbacks.onShift) this.callbacks.onShift(0);
-        } else if (code === 'KeyE' || code === 'ShiftRight') {
+        } else if (code === 'KeyE' || code === 'ShiftLeft' || code === 'ShiftRight') {
+          this.ersOvertakeActive = true;
+          this.triggerHaptic('ERS', 0.75);
+        } else if (code === 'BracketRight' || code === 'Period') {
           if (this.callbacks.onShift) this.callbacks.onShift(+1);
-        } else if (code === 'KeyQ' || code === 'ShiftLeft') {
+        } else if (code === 'KeyQ' || code === 'BracketLeft' || code === 'Comma') {
           if (this.callbacks.onShift) this.callbacks.onShift(-1);
         } else if (code === 'KeyV') {
           if (this.callbacks.onToggleVisualStyle) this.callbacks.onToggleVisualStyle();
@@ -1520,6 +1781,16 @@ export class ErgonomicControls {
         } else if (code === 'KeyX' || code === 'KeyT') {
           this.triggerVisorTearOff();
         } else if (code === 'KeyR') {
+          const inReplayOrResults =
+            typeof window !== 'undefined' &&
+            (window.__RACE_PHANATIC_GAME__?.replay?.isPlaying ||
+              window.__RACE_PHANATIC_GAME__?.state === 'RACE_RESULTS');
+          if (inReplayOrResults && this.callbacks.onToggleReplay) {
+            this.callbacks.onToggleReplay();
+          } else {
+            this._triggerDrsToggle();
+          }
+        } else if (code === 'KeyI' || code === 'F2') {
           if (this.callbacks.onToggleReplay) this.callbacks.onToggleReplay();
         } else if (code === 'KeyB') {
           if (this.callbacks.onRequestBox) {
@@ -1541,6 +1812,16 @@ export class ErgonomicControls {
 
     window.addEventListener('keyup', (e) => {
       this.keys.delete(e.code);
+      if (e.code === 'KeyE' || e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
+        this.ersOvertakeActive = Boolean(
+          this._ersTouchHeld ||
+          this._ersLatched ||
+          this.keys.has('KeyE') ||
+          this.keys.has('ShiftLeft') ||
+          this.keys.has('ShiftRight') ||
+          this._gpErsHeld
+        );
+      }
     });
   }
 
@@ -1657,10 +1938,13 @@ export class ErgonomicControls {
     let gpGas = 0.0;
     let gpBrake = 0.0;
     let gpDpadDir = 0;
+    let gpErsHeld = false;
 
     if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') {
       this._activeGamepad = null;
-      return { gpSteer, gpGas, gpBrake, gpDpadDir };
+      this._gpErsHeld = false;
+      this._gpPrevDrsBtn = false;
+      return { gpSteer, gpGas, gpBrake, gpDpadDir, gpErsHeld };
     }
 
     let pads;
@@ -1668,11 +1952,15 @@ export class ErgonomicControls {
       pads = navigator.getGamepads();
     } catch (_) {
       this._activeGamepad = null;
-      return { gpSteer, gpGas, gpBrake, gpDpadDir };
+      this._gpErsHeld = false;
+      this._gpPrevDrsBtn = false;
+      return { gpSteer, gpGas, gpBrake, gpDpadDir, gpErsHeld };
     }
     if (!pads) {
       this._activeGamepad = null;
-      return { gpSteer, gpGas, gpBrake, gpDpadDir };
+      this._gpErsHeld = false;
+      this._gpPrevDrsBtn = false;
+      return { gpSteer, gpGas, gpBrake, gpDpadDir, gpErsHeld };
     }
 
     // Prefer standard-mapped controllers; skip known virtual HID non-gamepad devices
@@ -1693,7 +1981,9 @@ export class ErgonomicControls {
     this._activeGamepad = activePad;
     if (!activePad) {
       this._gpShiftInitialized = false;
-      return { gpSteer, gpGas, gpBrake, gpDpadDir };
+      this._gpErsHeld = false;
+      this._gpPrevDrsBtn = false;
+      return { gpSteer, gpGas, gpBrake, gpDpadDir, gpErsHeld };
     }
 
     const sens = clamp(this.controlSettings.sensitivity || 1.0, 0.6, 1.5);
@@ -1715,31 +2005,53 @@ export class ErgonomicControls {
       gpBrake = clamp((ltVal - GAMEPAD_TRIGGER_DEADZONE) / (1.0 - GAMEPAD_TRIGGER_DEADZONE), 0.0, 1.0);
     }
 
-    // Standard-layout D-Pad steering & LB/RB paddle shifters
-    if (activePad.mapping === 'standard' && activePad.buttons) {
-      const dLeft = !!activePad.buttons[14]?.pressed;
-      const dRight = !!activePad.buttons[15]?.pressed;
-      gpDpadDir = (dRight ? 1 : 0) - (dLeft ? 1 : 0);
-
+    // Tactical Gamepad Buttons: B/Circle (1) or LB (4) = ERS Overtake Hold, Y/Triangle (3) = DRS Toggle
+    if (activePad.buttons) {
+      const btnB = !!activePad.buttons[1]?.pressed;
+      const btnY = !!activePad.buttons[3]?.pressed;
       const lbDown = !!activePad.buttons[4]?.pressed;
       const rbDown = !!activePad.buttons[5]?.pressed;
-      if (!this._gpShiftInitialized) {
-        this._gpPrevShiftDown = lbDown;
-        this._gpPrevShiftUp = rbDown;
-        this._gpShiftInitialized = true;
-      } else {
-        if (rbDown && !this._gpPrevShiftUp && this.callbacks.onShift) {
-          this.callbacks.onShift(+1);
-        }
-        if (lbDown && !this._gpPrevShiftDown && this.callbacks.onShift) {
-          this.callbacks.onShift(-1);
-        }
-        this._gpPrevShiftDown = lbDown;
-        this._gpPrevShiftUp = rbDown;
+
+      gpErsHeld = btnB || lbDown;
+      this._gpErsHeld = gpErsHeld;
+
+      if (btnY && !this._gpPrevDrsBtn) {
+        this._triggerDrsToggle();
       }
+      this._gpPrevDrsBtn = btnY;
+
+      if (activePad.mapping === 'standard') {
+        const dLeft = !!activePad.buttons[14]?.pressed;
+        const dRight = !!activePad.buttons[15]?.pressed;
+        gpDpadDir = (dRight ? 1 : 0) - (dLeft ? 1 : 0);
+
+        const manualGb =
+          this._lastPlayerCarRef &&
+          (this._lastPlayerCarRef.gearboxMode === 'MANUAL_8SPD' ||
+            this._lastPlayerCarRef.gearboxMode === 'PRO_6SPD' ||
+            this._lastPlayerCarRef.gearboxMode === 'CLASSIC_2SPD');
+
+        if (!this._gpShiftInitialized) {
+          this._gpPrevShiftDown = lbDown;
+          this._gpPrevShiftUp = rbDown;
+          this._gpShiftInitialized = true;
+        } else {
+          if (manualGb && rbDown && !this._gpPrevShiftUp && this.callbacks.onShift) {
+            this.callbacks.onShift(+1);
+          }
+          if (manualGb && lbDown && !this._gpPrevShiftDown && this.callbacks.onShift) {
+            this.callbacks.onShift(-1);
+          }
+          this._gpPrevShiftDown = lbDown;
+          this._gpPrevShiftUp = rbDown;
+        }
+      }
+    } else {
+      this._gpErsHeld = false;
+      this._gpPrevDrsBtn = false;
     }
 
-    return { gpSteer, gpGas, gpBrake, gpDpadDir };
+    return { gpSteer, gpGas, gpBrake, gpDpadDir, gpErsHeld };
   }
 
   _readTireFlatSpotSeverity(car) {
@@ -1935,7 +2247,7 @@ export class ErgonomicControls {
   triggerVisorTearOff() {
     this.visorTearOffProgress = 0.0;
     this.visorTearOffCount += 1;
-    this._vibratePedalTick(12);
+    this.triggerHaptic('TAP', 0.85);
     if (this.callbacks.onVisorTearOff) {
       this.callbacks.onVisorTearOff(this.visorTearOffCount);
     }
@@ -1952,7 +2264,7 @@ export class ErgonomicControls {
   }
 
   triggerQuickCameraCycle(direction = 1) {
-    this._vibratePedalTick(9);
+    this.triggerHaptic('TAP', 0.75);
     if (this.callbacks.onCycleCamera) {
       this.callbacks.onCycleCamera(direction);
     }
@@ -1965,11 +2277,38 @@ export class ErgonomicControls {
   update(dt, playerCar) {
     const safeDt = Number.isFinite(dt) ? clamp(dt, 0.0005, 0.1) : (1.0 / 60.0);
 
-    // Sync top-level tractionControl if mutated directly by external UI/main.js
+    if (playerCar !== undefined) {
+      this._lastPlayerCarRef = playerCar;
+    }
+
+    // Lazily bind tactical F1 mobile cockpit buttons if injected into DOM after construction
+    if (
+      typeof document !== 'undefined' &&
+      (!this.ersBtnEl ||
+        !this.ersBtnEl.isConnected ||
+        !this.drsBtnEl ||
+        !this.drsBtnEl.isConnected ||
+        !this.tearOffBtnEl ||
+        !this.tearOffBtnEl.isConnected ||
+        !this.ersPctEl ||
+        !this.ersPctEl.isConnected)
+    ) {
+      this._bindTacticalButtonsIfPresent();
+    }
+
+    // Sync top-level settings if mutated directly by external UI/main.js
     if (this.tractionControl !== this.controlSettings.tractionControl) {
       const normTc = normalizeTractionControl(this.tractionControl);
       this.tractionControl = normTc;
       this.controlSettings.tractionControl = normTc;
+    }
+    if (this.autoThrottle !== this.controlSettings.autoThrottle) {
+      this.autoThrottle = Boolean(this.autoThrottle);
+      this.controlSettings.autoThrottle = this.autoThrottle;
+    }
+    if (this.haptics !== this.controlSettings.haptics) {
+      this.haptics = Boolean(this.haptics);
+      this.controlSettings.haptics = this.haptics;
     }
     const tcMode = this.controlSettings.tractionControl || 'FULL';
     const tcAssistWeight = tcMode === 'FULL' ? 1.0 : (tcMode === 'SPORT' ? 0.55 : 0.0);
@@ -1982,7 +2321,7 @@ export class ErgonomicControls {
     this.applyPhysicsFeedback(playerCar, safeDt, true);
 
     // 1. HTML5 Gamepad polling (strict >= 0.22 C1 deadzone + progressive user-friendly stick mapping)
-    const { gpSteer, gpGas, gpBrake, gpDpadDir } = this._pollGamepad();
+    const { gpSteer, gpGas, gpBrake, gpDpadDir, gpErsHeld } = this._pollGamepad();
 
     // 2. Smooth C1-continuous Keyboard & Gamepad D-Pad steering envelope (calm, user-friendly rates, zero step kink!)
     const leftDown = this.keys.has('KeyA') || this.keys.has('ArrowLeft') || gpDpadDir < 0;
@@ -2142,14 +2481,64 @@ export class ErgonomicControls {
     this.manualBrake = manualBrake;
     this.assistBrakeApplied = liveAssistBrake;
 
+    // Smooth AAA Mobile Auto-Throttle: cuts proportionally to manual/assist brake so hairpins never fight full gas!
     let autoGas = 0.0;
-    if (this.controlSettings.autoThrottle && playerCar && !playerCar.exploded && !playerCar.inPitLane) {
+    if (this.controlSettings.autoThrottle && !playerCar?.exploded && !playerCar?.inPitLane) {
       const brakingNow = Math.max(manualBrake, liveAssistBrake);
-      autoGas = brakingNow < 0.06 ? 1.0 : clamp(1.0 - brakingNow * 2.2, 0.0, 1.0);
+      autoGas = clamp(1.0 - brakingNow * 2.2, 0.0, 1.0);
     }
 
     this.throttle = clamp(Math.max(manualGas, autoGas), 0.0, 1.0);
     this.brake = manualBrake;
+
+    // 6b. Tactical MGU-K ERS Overtake Boost & FIA DRS Wing Flap State + Mobile HUD Sync
+    const ersChargeVal = Number.isFinite(playerCar?.ersCharge)
+      ? clamp(Number(playerCar.ersCharge), 0.0, 1.0)
+      : 1.0;
+    const carBrakeVal = Math.max(Number(playerCar?.brakeInput) || 0.0, manualBrake);
+
+    if (
+      this._ersLatched &&
+      (ersChargeVal <= 0.02 || carBrakeVal > 0.20 || playerCar?.exploded || playerCar?.inPitLane)
+    ) {
+      this._ersLatched = false;
+    }
+
+    const kbErsHeld =
+      this.keys.has('KeyE') || this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
+    const rawErsHeld = Boolean(this._ersTouchHeld || this._ersLatched || kbErsHeld || gpErsHeld);
+    this.ersOvertakeActive =
+      rawErsHeld &&
+      ersChargeVal > 0.02 &&
+      carBrakeVal <= 0.20 &&
+      !playerCar?.exploded &&
+      !playerCar?.inPitLane;
+
+    if (playerCar && (!playerCar.drsAvailable || carBrakeVal > 0.05)) {
+      this.drsManualOpen = false;
+    }
+
+    const ersPctInt = Math.round(ersChargeVal * 100);
+    const ersPctText = `${ersPctInt}%`;
+    if (this.ersBtnEl) {
+      this.ersBtnEl.classList.toggle('ers-active', Boolean(playerCar?.ersOvertakeActive));
+      this.ersBtnEl.classList.toggle('ers-harvesting', Boolean(playerCar?.ersHarvesting));
+      this.ersBtnEl.classList.toggle('ers-empty', ersChargeVal <= 0.03);
+      if (this.ersBtnEl.style?.setProperty) {
+        this.ersBtnEl.style.setProperty('--ers-pct', ersPctText);
+      }
+    }
+    if (this.ersPctEl) {
+      this.ersPctEl.textContent = ersPctText;
+    }
+
+    if (this.drsBtnEl) {
+      const drsAvail = Boolean(playerCar?.drsAvailable);
+      const drsOpen = Boolean(playerCar?.drsActive);
+      this.drsBtnEl.classList.toggle('drs-available', drsAvail && !drsOpen);
+      this.drsBtnEl.classList.toggle('drs-open', drsOpen);
+      this.drsBtnEl.classList.toggle('drs-disabled', !drsAvail);
+    }
 
     // 7. 1:1 Visual Steering Wheel Rotation (±180°, ZERO fake Math.sin shake!) + FFB Torque Arc + Tactile Haptics
     if (playerCar && !playerCar.exploded && speedKmhNow > 30.0) {
@@ -2180,8 +2569,9 @@ export class ErgonomicControls {
       let gTxt = 'G1';
       const curGear = playerCar ? Math.max(1, Math.round(playerCar.gear || 1)) : 1;
       if (playerCar && curGear !== this._lastCarGear) {
+        const shiftKind = curGear > this._lastCarGear ? 'SHIFT_UP' : 'SHIFT_DOWN';
         this._lastCarGear = curGear;
-        if (speedKmhNow > 25.0) this._vibratePedalTick(9);
+        if (speedKmhNow > 25.0) this.triggerHaptic(shiftKind, 0.75);
       }
       if (playerCar) {
         if (playerCar.gearboxMode === 'CLASSIC_2SPD') {
@@ -2297,25 +2687,149 @@ export class ErgonomicControls {
     this.ffbArcSvgEl.style.opacity = absTorque > 0.015 || flatVib > 0.05 ? '0.94' : '0.28';
   }
 
+  /**
+   * Rich Mobile & Gamepad Haptics:
+   * Supports 'TAP', 'SHIFT_UP', 'SHIFT_DOWN', 'DRS', 'ERS', 'OVERTAKE', 'KERB', 'RUB', and 'LAUNCH_PERFECT'.
+   */
+  triggerHaptic(kind = 'TAP', intensity = 1.0) {
+    if (!this.haptics || !this.controlSettings.haptics) return false;
+
+    const key = String(kind || 'TAP').toUpperCase().trim();
+    const scale = clamp(Number.isFinite(Number(intensity)) ? Number(intensity) : 1.0, 0.15, 1.5);
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+
+    let vibPattern = Math.max(4, Math.round(8 * scale));
+    let gpDur = 22;
+    let gpWeak = 0.22 * scale;
+    let gpStrong = 0.06 * scale;
+    let cooldownMs = 32;
+
+    switch (key) {
+      case 'SHIFT_UP':
+        vibPattern = [Math.max(5, Math.round(12 * scale)), 16, Math.max(4, Math.round(7 * scale))];
+        gpDur = 42;
+        gpWeak = 0.46 * scale;
+        gpStrong = 0.34 * scale;
+        cooldownMs = 42;
+        break;
+      case 'SHIFT_DOWN':
+        vibPattern = Math.max(5, Math.round(10 * scale));
+        gpDur = 34;
+        gpWeak = 0.38 * scale;
+        gpStrong = 0.20 * scale;
+        cooldownMs = 42;
+        break;
+      case 'DRS':
+        vibPattern = [10, 22, 14];
+        gpDur = 55;
+        gpWeak = 0.52 * scale;
+        gpStrong = 0.18 * scale;
+        cooldownMs = 55;
+        break;
+      case 'ERS':
+        vibPattern = [14, 18, 24];
+        gpDur = 75;
+        gpWeak = 0.65 * scale;
+        gpStrong = 0.42 * scale;
+        cooldownMs = 55;
+        break;
+      case 'OVERTAKE':
+        vibPattern = [12, 20, 18];
+        gpDur = 68;
+        gpWeak = 0.56 * scale;
+        gpStrong = 0.32 * scale;
+        cooldownMs = 110;
+        break;
+      case 'KERB':
+      case 'CURB':
+        vibPattern = Math.max(6, Math.round(11 * scale));
+        gpDur = 32;
+        gpWeak = 0.35 * scale;
+        gpStrong = 0.24 * scale;
+        cooldownMs = 85;
+        break;
+      case 'RUB':
+        vibPattern = [Math.max(8, Math.round(18 * scale)), 14, Math.max(6, Math.round(12 * scale))];
+        gpDur = 82;
+        gpWeak = 0.60 * scale;
+        gpStrong = 0.72 * scale;
+        cooldownMs = 140;
+        break;
+      case 'LAUNCH_PERFECT':
+        vibPattern = [16, 20, 28, 18, 14];
+        gpDur = 125;
+        gpWeak = 0.82 * scale;
+        gpStrong = 0.76 * scale;
+        cooldownMs = 120;
+        break;
+      case 'TAP':
+      default:
+        vibPattern = Math.max(4, Math.round(8 * scale));
+        gpDur = 20;
+        gpWeak = 0.22 * scale;
+        gpStrong = 0.06 * scale;
+        cooldownMs = 32;
+        break;
+    }
+
+    const lastKindMs = this._hapticLastByKind[key] || 0;
+    if (lastKindMs && now - lastKindMs < cooldownMs) {
+      return false;
+    }
+    this._hapticLastByKind[key] = now;
+
+    if (this._canVibrate()) {
+      try {
+        navigator.vibrate(vibPattern);
+      } catch (_) {}
+    }
+
+    this._pulseGamepadHaptics(gpDur, gpWeak, gpStrong);
+    return true;
+  }
+
   _canVibrate() {
-    if (!this.controlSettings.haptics) return false;
+    if (!this.haptics || !this.controlSettings.haptics) return false;
     if (typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function') return false;
-    // Chrome blocks vibrate() until the user has interacted with the frame
-    if (navigator.userActivation && !navigator.userActivation.hasBeenActive) return false;
+    // Chrome blocks native vibrate() until the user has interacted with the frame
+    let isNativeVibrate = true;
+    try {
+      isNativeVibrate = Function.prototype.toString.call(navigator.vibrate).includes('[native code]');
+    } catch (_) {}
+    if (isNativeVibrate && navigator.userActivation && !navigator.userActivation.hasBeenActive) {
+      return false;
+    }
     return true;
   }
 
   _pulseGamepadHaptics(durationMs, weakMag, strongMag) {
-    if (!this.controlSettings.haptics) return;
-    const actuator = this._activeGamepad?.vibrationActuator;
+    if (!this.haptics || !this.controlSettings.haptics) return;
+    let pad = this._activeGamepad;
+    if (!pad && typeof navigator !== 'undefined' && typeof navigator.getGamepads === 'function') {
+      try {
+        const pads = navigator.getGamepads();
+        if (pads) {
+          for (let i = 0; i < pads.length; i++) {
+            if (pads[i] && pads[i].connected && pads[i].vibrationActuator) {
+              pad = pads[i];
+              break;
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    const actuator = pad?.vibrationActuator;
     if (actuator && typeof actuator.playEffect === 'function') {
       try {
-        actuator.playEffect('dual-rumble', {
+        const res = actuator.playEffect('dual-rumble', {
           startDelay: 0,
-          duration: durationMs,
+          duration: Math.max(10, Math.round(durationMs)),
           weakMagnitude: clamp(weakMag, 0.0, 1.0),
           strongMagnitude: clamp(strongMag, 0.0, 1.0),
-        }).catch(() => {});
+        });
+        if (res && typeof res.catch === 'function') {
+          res.catch(() => {});
+        }
       } catch (_) {}
     }
   }
@@ -2338,12 +2852,7 @@ export class ErgonomicControls {
   }
 
   _vibrateCurbPulse() {
-    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    if (!this._lastVib || now - this._lastVib > 90) {
-      this._lastVib = now;
-      this._vibrate(11);
-      this._pulseGamepadHaptics(32, 0.32, 0.22);
-    }
+    this.triggerHaptic('KERB', 0.9);
   }
 
   _vibrateFlatSpotThump(severity = 0.35) {

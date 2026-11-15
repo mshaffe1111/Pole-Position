@@ -17,26 +17,38 @@ import {
   AI_DRIVER_ROSTER,
   WEATHER_REGIMES,
   PIT_LANE_CONFIG,
-} from './config.js?v=20261114fix';
-import { FujiTrack } from './track.js?v=20261114fix';
-import * as ModelsModule from './models.js?v=20261114fix';
-import { AssetLibrary, FormulaCarRig, PitCrewDiorama, EffectsManager } from './models.js?v=20261114fix';
-import { WeatherSystem } from './weather.js?v=20261114fix';
-import { createVehicleState, stepVehiclePhysics240Hz, shiftGear } from './physics.js?v=20261114fix';
-import { RaceSystemsController } from './pit_damage_caution.js?v=20261114fix';
-import { SpatialAIController } from './ai.js?v=20261114fix';
-import { ProceduralAudioEngine } from './audio.js?v=20261114fix';
-import { ErgonomicControls } from './controls.js?v=20261114fix';
-import { TelemetryHUD, formatLapTimeArcade, formatLapTimeSim, ordinalSuffix } from './hud.js?v=20261114fix';
-import { Retro1982Renderer } from './retro1982.js?v=20261114fix';
-import { ReplayDirector } from './replay.js?v=20261114fix';
+  TIRE_COMPOUNDS,
+} from './config.js';
+import { FujiTrack } from './track.js';
+import * as ModelsModule from './models.js';
+import { AssetLibrary, FormulaCarRig, PitCrewDiorama, EffectsManager } from './models.js';
+import { WeatherSystem } from './weather.js';
+import * as PhysicsMod from './physics.js';
+import { RaceSystemsController } from './pit_damage_caution.js';
+import { SpatialAIController } from './ai.js';
+import { ProceduralAudioEngine } from './audio.js';
+import { ErgonomicControls } from './controls.js';
+import { TelemetryHUD, formatLapTimeArcade, formatLapTimeSim, ordinalSuffix } from './hud.js';
+import { Retro1982Renderer } from './retro1982.js';
+import { ReplayDirector } from './replay.js';
 import {
   CareerManager,
   TEAM_CATALOG,
   CHAMPIONSHIP_CALENDAR,
   CAR_SETUP_OPTIONS,
   formatCredits,
-} from './career.js?v=20261114fix';
+} from './career.js';
+
+const { createVehicleState, stepVehiclePhysics240Hz, shiftGear } = PhysicsMod;
+
+const FALLBACK_TT_TARGETS = {
+  FUJI_1982: { goldSec: 63.5, silverSec: 66.5, bronzeSec: 70.5 },
+  MONACO_HARBOR: { goldSec: 68.0, silverSec: 71.5, bronzeSec: 76.0 },
+  SUZUKA_130R: { goldSec: 78.5, silverSec: 82.0, bronzeSec: 87.0 },
+  MONZA_TEMPLE: { goldSec: 69.5, silverSec: 73.0, bronzeSec: 77.5 },
+  SILVERSTONE_GP: { goldSec: 76.5, silverSec: 80.0, bronzeSec: 85.0 },
+  VEGAS_NEON: { goldSec: 79.0, silverSec: 82.8, bronzeSec: 88.0 },
+};
 
 const LIVE_CAMERA_LABELS = [
   '01 • CHASE CAM',
@@ -94,6 +106,17 @@ class PolePosition2026Game {
       visualStyle: '2026_PBR',       // '2026_PBR' | '1982_ARCADE'
       aiDifficulty: 'PRO',           // 'ROOKIE' | 'PRO' | 'LEGEND'
     };
+    this.aiDifficulty = 'PRO';
+    this._timeTrialActive = false;
+    this._gridIntroSkipped = false;
+    this._greenFlagPerfMs = 0;
+    this._launchEvaluated = false;
+    this._lastLaunchReactionMs = null;
+    this._maxTopSpeedSession = 0;
+    this._lastSessionSummary = null;
+    this._fpsAccumSec = 0;
+    this._fpsFrameCount = 0;
+    this._autoGfxTier = 'ULTRA';
 
     this.state = GAME_STATES.PRE_RACE_MENU;
     this.cameraModeIdx = 0; // 0: Chase, 1: Halo T-Cam, 2: Cockpit Helmet, 3: Bonnet Cam, 4: Nose Wing Cam
@@ -175,6 +198,8 @@ class PolePosition2026Game {
     this.prefs = {
       speedUnit: 'KMH',
       aiDifficulty: 'PRO',
+      racingLine: 'CORNERS',
+      graphicsQuality: 'AUTO',
       assistUserSet: false,
       control: {
         sensitivity: 0.90,
@@ -195,8 +220,15 @@ class PolePosition2026Game {
         if (saved && typeof saved === 'object') {
           if (saved.speedUnit === 'MPH' || saved.speedUnit === 'KMH') this.prefs.speedUnit = saved.speedUnit;
           if (['ROOKIE', 'PRO', 'LEGEND'].includes(saved.aiDifficulty)) {
+            this.aiDifficulty = saved.aiDifficulty;
             this.prefs.aiDifficulty = saved.aiDifficulty;
             this.config.aiDifficulty = saved.aiDifficulty;
+          }
+          if (['OFF', 'CORNERS', 'FULL'].includes(saved.racingLine)) {
+            this.prefs.racingLine = saved.racingLine;
+          }
+          if (['AUTO', 'ULTRA', '60FPS'].includes(saved.graphicsQuality)) {
+            this.prefs.graphicsQuality = saved.graphicsQuality;
           }
           if (saved.control && typeof saved === 'object') {
             Object.assign(this.prefs.control, saved.control);
@@ -242,10 +274,16 @@ class PolePosition2026Game {
   }
 
   _savePrefs() {
+    const syncedAiDiff = this.aiDifficulty || this.config.aiDifficulty || this.prefs.aiDifficulty || 'PRO';
+    this.aiDifficulty = syncedAiDiff;
+    this.config.aiDifficulty = syncedAiDiff;
+    this.prefs.aiDifficulty = syncedAiDiff;
     try {
       localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify({
         speedUnit: this.prefs.speedUnit,
-        aiDifficulty: this.config.aiDifficulty || 'PRO',
+        aiDifficulty: syncedAiDiff,
+        racingLine: this.prefs.racingLine || 'CORNERS',
+        graphicsQuality: this.prefs.graphicsQuality || 'AUTO',
         assistMigratedV4: true,
         assistMigratedV5: true,
         assistUserSet: !!this.prefs.assistUserSet,
@@ -287,11 +325,16 @@ class PolePosition2026Game {
     this.hud = new TelemetryHUD(this.track, this.raceSystems, {
       onClutchButton: () => this._handleClutchTap(),
       onRequestBox: () => this._toggleBoxThisLap(),
+      onSkipGridIntro: () => this._skipGridIntro(),
     });
     this.hud.setSpeedUnit(this.prefs.speedUnit);
 
     this.controls = new ErgonomicControls({
       onUserInteract: () => this._unlockAndSyncAudioButton(),
+      onDrsToggle: (isOpen) => {
+        this.audio.playDrsBeep?.(isOpen);
+        this.controls?.triggerHaptic?.('DRS');
+      },
       onShift: (dir) => {
         if (this.playerCar && !this.controlsLocked && !this.paused && !this.replay.isPlaying) {
           shiftGear(this.playerCar, dir, {
@@ -338,6 +381,7 @@ class PolePosition2026Game {
     });
 
     this._applyPersistedSettings();
+    this._applyGraphicsQuality(this.prefs.graphicsQuality || 'AUTO');
     this._bindShowroomMenuAndModals();
     this._bindCareerHub();
     this._bindPauseAndReplayUI();
@@ -347,10 +391,98 @@ class PolePosition2026Game {
     this._spawnShowroomScene();
     this._renderCareerHub();
 
+    // Tap open stage or press Space/Enter during Grid Flyover (>1.6s) to skip straight to driving camera
+    window.addEventListener('pointerdown', (e) => {
+      if (this.state === GAME_STATES.GRID_LINEUP && !this._gridIntroSkipped && this.countdownTimer > 1.6) {
+        if (
+          e.target &&
+          e.target.closest &&
+          e.target.closest('#btn-live-menu, #pause-modal, #touch-pedal-assembly, #touch-wheel-zone, #touch-arrow-zone, #touch-tactical-cluster, #live-timing-tower, #right-telemetry-dock')
+        ) {
+          return;
+        }
+        this._skipGridIntro();
+      }
+    }, { passive: true });
+    window.addEventListener('keydown', (e) => {
+      if (
+        this.state === GAME_STATES.GRID_LINEUP &&
+        !this._gridIntroSkipped &&
+        this.countdownTimer > 1.6 &&
+        (e.code === 'Space' || e.code === 'Enter')
+      ) {
+        this._skipGridIntro();
+      }
+    });
+
     const loadingEl = document.getElementById('boot-loading');
     if (loadingEl) loadingEl.style.display = 'none';
 
     requestAnimationFrame((ts) => this._frameLoop(ts));
+  }
+
+  _skipGridIntro() {
+    if (this.state === GAME_STATES.GRID_LINEUP && !this._gridIntroSkipped) {
+      this._gridIntroSkipped = true;
+      if (this.countdownTimer > 1.55) {
+        this.countdownTimer = 1.55;
+      }
+      this.hud?.updateLaunchReactionHud?.({
+        visible: true,
+        throttle01: this.controls?.throttle || 0,
+        canSkipIntro: false,
+      });
+      this.audio?.playUIClick?.(false);
+    }
+  }
+
+  _computeTargetDpr() {
+    const rawDpr = window.devicePixelRatio || 1;
+    const gfx = this.prefs?.graphicsQuality || 'AUTO';
+    if (gfx === 'ULTRA') return Math.min(rawDpr, 2.0);
+    if (gfx === '60FPS') return Math.min(rawDpr, 1.15);
+    if (this._autoGfxTier === 'PERFORMANCE') return Math.min(rawDpr, 1.05);
+    if (this._autoGfxTier === 'HIGH') return Math.min(rawDpr, 1.35);
+    return Math.min(rawDpr, 1.75);
+  }
+
+  _applyGraphicsQuality(mode = 'AUTO') {
+    const gfx = ['AUTO', 'ULTRA', '60FPS'].includes(mode) ? mode : 'AUTO';
+    this.prefs.graphicsQuality = gfx;
+    let tier = 'ULTRA';
+    if (gfx === '60FPS') {
+      tier = 'PERFORMANCE';
+    } else if (gfx === 'AUTO') {
+      tier = this._autoGfxTier || 'ULTRA';
+    }
+
+    if (this.renderer) {
+      const wantShadows = tier !== 'PERFORMANCE';
+      if (this.renderer.shadowMap.enabled !== wantShadows) {
+        this.renderer.shadowMap.enabled = wantShadows;
+        this.renderer.shadowMap.needsUpdate = true;
+      }
+      this.renderer.setPixelRatio(this._computeTargetDpr());
+      const { w, h } = this._getViewportSize();
+      this.renderer.setSize(w, h);
+    }
+    this.track?.setGraphicsQuality?.(tier);
+    this.weather?.setGraphicsQuality?.(tier);
+  }
+
+  _syncTrackRacingLineMode() {
+    if (!this.track || typeof this.track.setRacingLineMode !== 'function') return;
+    const activeSession =
+      this.state === GAME_STATES.QUALIFYING ||
+      this.state === GAME_STATES.GRID_LINEUP ||
+      this.state === GAME_STATES.RACING ||
+      this.state === GAME_STATES.PIT_STOP;
+    const is2026 = this.config.mode === '2026_UPDATED';
+    const mode = (activeSession && is2026) ? (this.prefs.racingLine || 'CORNERS') : 'OFF';
+    this.track.setRacingLineMode(mode);
+    if (this.playerCar) {
+      this.track.updateDynamicRacingLine?.(this.playerCar, this.elapsedSec);
+    }
   }
 
   _getViewportSize() {
@@ -367,7 +499,7 @@ class PolePosition2026Game {
       rootStyle.setProperty('--app-w', `${w}px`);
       rootStyle.setProperty('--app-h', `${h}px`);
     }
-    const nextDpr = Math.min(window.devicePixelRatio || 1, 2);
+    const nextDpr = this._computeTargetDpr();
     const aspect = w / h;
     if (this.camera) {
       this.camera.aspect = aspect;
@@ -435,6 +567,7 @@ class PolePosition2026Game {
   }
 
   _activeTotalLaps() {
+    if (this._timeTrialActive) return 99;
     if (this.config.mode === '1982_ORIGINAL') return this.config.classicLaps;
     return PRO_2026_LENGTHS[this.config.raceLengthId]?.laps || 5;
   }
@@ -479,8 +612,10 @@ class PolePosition2026Game {
     this.hud.triggerGearShiftPulse(shiftDir);
     if (shiftDir === 'UP') {
       this.audio.playUpshiftCut(nextGear);
+      this.controls?.triggerHaptic?.('SHIFT_UP');
     } else {
       this.audio.playDownshiftBlip(nextGear);
+      this.controls?.triggerHaptic?.('SHIFT_DOWN');
     }
     this.controls.setGearboxUI(this._activeGearboxMode(), car.gear);
   }
@@ -557,9 +692,23 @@ class PolePosition2026Game {
       document.querySelectorAll('[data-cfg-quali2026]').forEach((b) =>
         b.classList.toggle('selected', (b.dataset.cfgQuali2026 === 'ON') === this.config.runQualifying2026)
       );
+      const activeAiDiff = this.aiDifficulty || this.config.aiDifficulty || this.prefs.aiDifficulty || 'PRO';
+      this.aiDifficulty = activeAiDiff;
+      this.config.aiDifficulty = activeAiDiff;
+      this.prefs.aiDifficulty = activeAiDiff;
       document.querySelectorAll('[data-cfg-ai-diff]').forEach((b) =>
-        b.classList.toggle('selected', b.dataset.cfgAiDiff === this.aiDifficulty)
+        b.classList.toggle('selected', b.dataset.cfgAiDiff === activeAiDiff)
       );
+      document.querySelectorAll('[data-cfg-raceline]').forEach((b) =>
+        b.classList.toggle('selected', b.dataset.cfgRaceline === (this.prefs.racingLine || 'CORNERS'))
+      );
+      document.querySelectorAll('[data-cfg-gfx]').forEach((b) =>
+        b.classList.toggle('selected', b.dataset.cfgGfx === (this.prefs.graphicsQuality || 'AUTO'))
+      );
+      const ttDockBtn = document.getElementById('btn-launch-timetrial');
+      if (ttDockBtn) {
+        ttDockBtn.style.display = is2026 ? 'flex' : 'none';
+      }
 
       const ctl = this.prefs.control;
       ctl.brakingAssist = normalizeAssistMode(ctl.brakingAssist, 'MIN');
@@ -728,7 +877,26 @@ class PolePosition2026Game {
       const nextDiff = String(b.dataset.cfgAiDiff || 'PRO').toUpperCase();
       if (['ROOKIE', 'PRO', 'LEGEND'].includes(nextDiff)) {
         this.aiDifficulty = nextDiff;
+        this.config.aiDifficulty = nextDiff;
         this.prefs.aiDifficulty = nextDiff;
+        this._savePrefs();
+      }
+    });
+    bindGroup('data-cfg-raceline', (b) => {
+      const nextRl = String(b.dataset.cfgRaceline || 'CORNERS').toUpperCase();
+      if (['OFF', 'CORNERS', 'FULL'].includes(nextRl)) {
+        this.prefs.racingLine = nextRl;
+        this._syncTrackRacingLineMode();
+        this._savePrefs();
+      }
+    });
+    bindGroup('data-cfg-gfx', (b) => {
+      const nextGfx = String(b.dataset.cfgGfx || 'AUTO').toUpperCase();
+      if (['AUTO', 'ULTRA', '60FPS'].includes(nextGfx)) {
+        this._autoGfxTier = 'ULTRA';
+        this._fpsAccumSec = 0;
+        this._fpsFrameCount = 0;
+        this._applyGraphicsQuality(nextGfx);
         this._savePrefs();
       }
     });
@@ -935,17 +1103,24 @@ class PolePosition2026Game {
       this._toggleFullscreen();
     });
 
-    // Race Launch Buttons (Bottom Dock + Inside Settings Modal)
+    // Race Launch Buttons (Bottom Dock + Inside Settings Modal + Time Trial Hot Lap)
     const triggerLaunch = () => {
       this._unlockAndSyncAudioButton();
       this.audio.playUIClick(true);
       setGarageOpen(false);
       this._careerRoundActive = false;
+      this._timeTrialActive = false;
       this.launchFromMenu();
     };
     document.getElementById('btn-launch-race')?.addEventListener('click', triggerLaunch);
     document.getElementById('btn-start-race')?.addEventListener('click', triggerLaunch);
     document.getElementById('btn-garage-race')?.addEventListener('click', triggerLaunch);
+    document.getElementById('btn-launch-timetrial')?.addEventListener('click', () => {
+      this._unlockAndSyncAudioButton();
+      this.audio.playUIClick(true);
+      setGarageOpen(false);
+      this.startTimeTrialSession(this.config.trackId);
+    });
 
     // Legacy 1-Tap Authentic 1982 Namco "Pole Position" Launch Hook
     document.getElementById('btn-launch-1982-direct')?.addEventListener('click', () => {
@@ -1032,6 +1207,10 @@ class PolePosition2026Game {
     // Post-Race Podium Modal
     document.getElementById('btn-podium-again')?.addEventListener('click', () => {
       document.getElementById('podium-modal').style.display = 'none';
+      if (this._timeTrialActive) {
+        this.startTimeTrialSession(this.config.trackId);
+        return;
+      }
       if (this._careerRoundActive) {
         const round = this.career.getCurrentRound();
         const nextTrack = round?.resolvedTrackId || round?.trackId;
@@ -1191,6 +1370,22 @@ class PolePosition2026Game {
         this.career.setCarSetup({ [setupBtn.dataset.setupKey]: setupBtn.dataset.setupVal });
         this.audio.playUIClick(false);
         this._renderCareerHub();
+        return;
+      }
+      const sponsorBtn = e.target.closest('[data-sponsor-id]');
+      if (sponsorBtn && typeof this.career.selectSponsorContract === 'function') {
+        this.career.selectSponsorContract(sponsorBtn.dataset.sponsorId);
+        this.audio.playUIClick(true);
+        this._renderCareerHub();
+        return;
+      }
+      const ttTrackBtn = e.target.closest('[data-tt-track]');
+      if (ttTrackBtn) {
+        const targetTrack = ttTrackBtn.dataset.ttTrack;
+        this._unlockAndSyncAudioButton();
+        this.audio.playUIClick(true);
+        this._setCareerOpen(false);
+        this.startTimeTrialSession(targetTrack);
       }
     });
 
@@ -1213,9 +1408,17 @@ class PolePosition2026Game {
         this._switchActiveCircuit(tId);
       }
       this._careerRoundActive = true;
+      this._timeTrialActive = false;
       this._setCareerOpen(false);
       this._syncMenuUI?.();
       this.launchFromMenu();
+    });
+
+    document.getElementById('btn-career-timetrial')?.addEventListener('click', () => {
+      this._unlockAndSyncAudioButton();
+      this.audio.playUIClick(true);
+      this._setCareerOpen(false);
+      this.startTimeTrialSession(this.config.trackId);
     });
 
     document.getElementById('btn-career-test')?.addEventListener('click', () => {
@@ -1224,6 +1427,7 @@ class PolePosition2026Game {
       this.config.mode = '2026_UPDATED';
       if (this.config.gearboxMode === 'CLASSIC_2SPD') this.config.gearboxMode = 'AUTO_8SPD';
       this._careerRoundActive = false;
+      this._timeTrialActive = false;
       this._setCareerOpen(false);
       this._syncMenuUI?.();
       this.launchFromMenu();
@@ -1407,7 +1611,198 @@ class PolePosition2026Game {
         </div>`).join('');
     }
 
+    // Driver Profile XP Bar & FIA License Header
+    const prof = this._getDriverProfileSafe();
+    const lvlEl = document.getElementById('career-driver-lvl');
+    const licEl = document.getElementById('career-driver-license');
+    const xpFillEl = document.getElementById('career-driver-xp-fill');
+    const xpTxtEl = document.getElementById('career-driver-xp-txt');
+    if (lvlEl) {
+      lvlEl.textContent = `LV ${prof.level}`;
+      if (prof.licenseColor) lvlEl.style.background = prof.licenseColor;
+    }
+    if (licEl) licEl.textContent = prof.licenseTitle;
+    if (xpFillEl) xpFillEl.style.width = `${Math.max(2, Math.min(100, Math.round(prof.progress01 * 100)))}%`;
+    if (xpTxtEl) xpTxtEl.textContent = `${prof.xpIntoLevel} / ${prof.xpForNextLevel} XP`;
+
+    // TAB 5: Sponsor Contracts, 6-Circuit Time Trial Medals & Driver Achievements
+    const sponsorSec = document.getElementById('career-sponsors-section');
+    const sponsorGrid = document.getElementById('career-sponsors-grid');
+    if (sponsorSec && sponsorGrid) {
+      const contracts =
+        this.career.getWeekendSponsorObjectives?.() ||
+        this.career.getSponsorContracts?.() ||
+        this.career.getAllSponsorContracts?.() ||
+        null;
+      const activeSponsor = this.career.getActiveSponsorContract?.() || null;
+      if (Array.isArray(contracts) && contracts.length > 0) {
+        sponsorSec.hidden = false;
+        sponsorGrid.innerHTML = contracts.map((sp) => {
+          const isSel = (activeSponsor && activeSponsor.id === sp.id) || sp.isPinned || sp.selected || sp.active;
+          const bonusAmt = sp.effectiveBonus ?? sp.bonus ?? sp.bonusCredits ?? sp.payout ?? 0;
+          const bonusTxt = bonusAmt > 0 ? compactCredits(bonusAmt) : '';
+          return `
+            <button class="sponsor-card${isSel ? ' selected' : ''}" data-sponsor-id="${escapeHtml(sp.id)}" type="button">
+              <b style="font-size:0.64rem;color:#ffffff;">${escapeHtml(sp.label || sp.title || sp.name || sp.id)}</b>
+              <span style="font-size:0.54rem;color:#94a3b8;">${escapeHtml(sp.objective || sp.desc || '')}</span>
+              ${bonusTxt ? `<span style="font-size:0.56rem;color:#00d2be;font-weight:900;">+${escapeHtml(bonusTxt)}${isSel ? ' (1.5x PINNED)' : ''}</span>` : ''}
+            </button>`;
+        }).join('');
+      } else {
+        sponsorSec.hidden = true;
+      }
+    }
+
+    const ttGrid = document.getElementById('career-timetrial-medals');
+    if (ttGrid) {
+      ttGrid.innerHTML = Object.keys(TRACK_CATALOG).map((tId) => {
+        const tDef = TRACK_CATALOG[tId];
+        const info = this._getTimeTrialInfoSafe(tId);
+        const medal = String(info.medal || 'NONE').toUpperCase();
+        const mCls = medal === 'GOLD' ? ' medal-gold' : (medal === 'SILVER' ? ' medal-silver' : (medal === 'BRONZE' ? ' medal-bronze' : ''));
+        const mBadge = medal === 'GOLD' ? '🥇 GOLD' : (medal === 'SILVER' ? '🥈 SILVER' : (medal === 'BRONZE' ? '🥉 BRONZE' : 'UNRANKED'));
+        const pbStr = Number.isFinite(info.bestLapSec) && info.bestLapSec > 0
+          ? `PB ${formatLapTimeSim(info.bestLapSec)}`
+          : 'NO LAP SET';
+        return `
+          <div class="tt-medal-card${mCls}">
+            <div class="ttm-head">
+              <span>${escapeHtml(tDef.name)}</span>
+              <span style="color:${medal === 'GOLD' ? '#fde047' : '#94a3b8'};font-size:0.56rem;">${mBadge}</span>
+            </div>
+            <div class="ttm-targets">
+              <span>🥇 ${formatLapTimeSim(info.goldSec)}</span>
+              <span>🥈 ${formatLapTimeSim(info.silverSec)}</span>
+              <span>🥉 ${formatLapTimeSim(info.bronzeSec)}</span>
+            </div>
+            <div class="ttm-foot">
+              <span class="ttm-pb">${pbStr}</span>
+              <button class="ttm-go-btn" data-tt-track="${escapeHtml(tId)}" type="button">HOT LAP ▸</button>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    const achGrid = document.getElementById('career-achievements-grid');
+    if (achGrid) {
+      const achs = this._getAchievementsSafe();
+      achGrid.innerHTML = achs.map((a) => {
+        const unlocked = Boolean(a.unlocked);
+        const rewardVal = Number(a.rewardCredits ?? a.bonusCredits ?? a.reward ?? a.payout ?? 0);
+        return `
+          <div class="ach-card${unlocked ? ' unlocked' : ''}">
+            <span class="ach-icon">${escapeHtml(a.icon || (unlocked ? '🏆' : '🔒'))}</span>
+            <div class="ach-body">
+              <span class="ach-title">${escapeHtml(a.title || a.name || a.id)}</span>
+              <span class="ach-desc">${escapeHtml(a.desc || a.description || '')}</span>
+              ${rewardVal > 0 ? `<span class="ach-reward">${unlocked ? '✓ CLAIMED ' : 'REWARD: '}+${escapeHtml(compactCredits(rewardVal))}</span>` : ''}
+            </div>
+          </div>`;
+      }).join('');
+    }
+
     this._syncCareerBadges();
+  }
+
+  _getDriverProfileSafe() {
+    if (typeof this.career?.getDriverProfile === 'function') {
+      const p = this.career.getDriverProfile();
+      if (p && typeof p === 'object') {
+        return {
+          xp: Number(p.xp) || 0,
+          level: Number(p.level) || 1,
+          xpIntoLevel: Number(p.xpIntoLevel ?? p.currentLevelXp) || 0,
+          xpForNextLevel: Math.max(100, Number(p.xpForNextLevel ?? p.nextLevelXp) || 500),
+          progress01: Number.isFinite(p.progress01) ? p.progress01 : 0,
+          licenseTitle: String(p.licenseTitle || p.title || 'FIA GRADE C • ROOKIE'),
+          licenseColor: p.licenseColor || '#e10600',
+        };
+      }
+    }
+    const st = this.career?.getState?.() || {};
+    const s = st.stats || {};
+    const estXp = (s.races || 0) * 180 + (s.wins || 0) * 250 + (s.podiums || 0) * 110 + (s.poles || 0) * 90;
+    const level = Math.min(20, 1 + Math.floor(estXp / 500));
+    const xpInto = estXp % 500;
+    const licenses = ['FIA GRADE C • ROOKIE', 'FIA GRADE B • CONTENDER', 'FIA GRADE A • PRO WORKS', 'FIA SUPER LICENSE'];
+    const licIdx = level >= 12 ? 3 : (level >= 7 ? 2 : (level >= 3 ? 1 : 0));
+    return {
+      xp: estXp,
+      level,
+      xpIntoLevel: xpInto,
+      xpForNextLevel: 500,
+      progress01: xpInto / 500,
+      licenseTitle: licenses[licIdx],
+      licenseColor: licIdx === 3 ? '#f5b700' : (licIdx === 2 ? '#00d2be' : '#e10600'),
+    };
+  }
+
+  _getTimeTrialInfoSafe(trackId) {
+    if (typeof this.career?.getTimeTrialInfo === 'function') {
+      const info = this.career.getTimeTrialInfo(trackId);
+      if (info && typeof info === 'object') {
+        const fb = FALLBACK_TT_TARGETS[trackId] || FALLBACK_TT_TARGETS.FUJI_1982;
+        return {
+          trackId,
+          goldSec: Number(info.goldSec ?? info.gold ?? info.targets?.gold) || fb.goldSec,
+          silverSec: Number(info.silverSec ?? info.silver ?? info.targets?.silver) || fb.silverSec,
+          bronzeSec: Number(info.bronzeSec ?? info.bronze ?? info.targets?.bronze) || fb.bronzeSec,
+          bestLapSec: Number.isFinite(info.bestLapSec ?? info.bestSec) ? Number(info.bestLapSec ?? info.bestSec) : null,
+          medal: String(info.highestMedal || info.bestMedal || info.medal || 'NONE').toUpperCase(),
+        };
+      }
+    }
+    const fb = FALLBACK_TT_TARGETS[trackId] || FALLBACK_TT_TARGETS.FUJI_1982;
+    let savedMap = {};
+    try {
+      savedMap = JSON.parse(localStorage.getItem('rp_f1_tt_fallback_v1') || '{}') || {};
+    } catch (_) {}
+    const entry = savedMap[trackId] || {};
+    return {
+      trackId,
+      goldSec: fb.goldSec,
+      silverSec: fb.silverSec,
+      bronzeSec: fb.bronzeSec,
+      bestLapSec: Number.isFinite(entry.bestLapSec) ? entry.bestLapSec : null,
+      medal: entry.medal || 'NONE',
+    };
+  }
+
+  _recordTimeTrialLapSafe(trackId, lapSec) {
+    if (typeof this.career?.recordTimeTrialLap === 'function') {
+      return this.career.recordTimeTrialLap(trackId, lapSec);
+    }
+    const prev = this._getTimeTrialInfoSafe(trackId);
+    const isPersonalBest = !prev.bestLapSec || lapSec < prev.bestLapSec;
+    const bestLapSec = isPersonalBest ? lapSec : prev.bestLapSec;
+    const rankOrder = { NONE: 0, BRONZE: 1, SILVER: 2, GOLD: 3 };
+    let medal = 'NONE';
+    if (bestLapSec <= prev.goldSec) medal = 'GOLD';
+    else if (bestLapSec <= prev.silverSec) medal = 'SILVER';
+    else if (bestLapSec <= prev.bronzeSec) medal = 'BRONZE';
+    const newMedalUnlocked = (rankOrder[medal] || 0) > (rankOrder[prev.medal] || 0);
+    try {
+      const savedMap = JSON.parse(localStorage.getItem('rp_f1_tt_fallback_v1') || '{}') || {};
+      savedMap[trackId] = { bestLapSec, medal };
+      localStorage.setItem('rp_f1_tt_fallback_v1', JSON.stringify(savedMap));
+    } catch (_) {}
+    return { isPersonalBest, medal, newMedalUnlocked, bestLapSec };
+  }
+
+  _getAchievementsSafe() {
+    if (typeof this.career?.getAchievementsStatus === 'function') {
+      const list = this.career.getAchievementsStatus();
+      if (Array.isArray(list) && list.length > 0) return list;
+    }
+    const s = this.career?.getState?.()?.stats || {};
+    return [
+      { id: 'FIRST_RACE', icon: '🏁', title: 'Grand Prix Debut', desc: 'Complete your first Grand Prix session.', rewardCredits: 15000, unlocked: (s.races || 0) >= 1 },
+      { id: 'FIRST_PODIUM', icon: '🥉', title: 'Podium Champagne', desc: 'Finish P3 or higher in a Grand Prix.', rewardCredits: 25000, unlocked: (s.podiums || 0) >= 1 },
+      { id: 'FIRST_WIN', icon: '🏆', title: 'Top Step Victory', desc: 'Win a Formula 1 Grand Prix.', rewardCredits: 50000, unlocked: (s.wins || 0) >= 1 },
+      { id: 'POLE_SITTER', icon: '⚡', title: 'Pole Position', desc: 'Qualify P1 on the starting grid.', rewardCredits: 20000, unlocked: (s.poles || 0) >= 1 },
+      { id: 'WORLD_CHAMP', icon: '👑', title: 'World Drivers Champion', desc: 'Win the 6-Round World Championship.', rewardCredits: 150000, unlocked: (s.championships || 0) >= 1 },
+      { id: 'TT_GOLD', icon: '🥇', title: 'Hot-Lap Specialist', desc: 'Earn a Gold Medal in Time Trial.', rewardCredits: 30000, unlocked: Object.keys(TRACK_CATALOG).some((k) => this._getTimeTrialInfoSafe(k).medal === 'GOLD') },
+    ];
   }
 
   _playerSeasonPoints() {
@@ -1429,7 +1824,11 @@ class PolePosition2026Game {
     });
     document.getElementById('btn-pause-restart')?.addEventListener('click', () => {
       this._setPaused(false);
-      this.launchFromMenu();
+      if (this._timeTrialActive) {
+        this.startTimeTrialSession(this.config.trackId);
+      } else {
+        this.launchFromMenu();
+      }
     });
     document.getElementById('btn-pause-quit')?.addEventListener('click', () => {
       this._setPaused(false);
@@ -1713,7 +2112,12 @@ class PolePosition2026Game {
   }
 
   _switchActiveCircuit(trackId) {
-    this.track.loadCircuit(trackId);
+    if (trackId && TRACK_CATALOG[trackId]) {
+      this.config.trackId = trackId;
+    }
+    this.track.loadCircuit(this.config.trackId);
+    this._syncTrackRacingLineMode();
+    this._applyGraphicsQuality(this.prefs.graphicsQuality || 'AUTO');
     this.effects.clearAllDebris();
     this.pitCrewDiorama.repositionForTrack(this.track);
     this._repositionPitCrewTeamRig();
@@ -1849,12 +2253,18 @@ class PolePosition2026Game {
       this.camera.lookAt(this._camLook);
     }
     this._syncPlayerCockpitHelmetVisibility();
+    this._syncTrackRacingLineMode();
+    this.hud?.updateLaunchReactionHud?.({ visible: false });
+    this.hud?.updateTimeTrialBanner?.(null);
     this._syncScreenLayers();
   }
 
   returnToPreRaceMenu() {
     if (this.replay?.isPlaying) this._exitReplay();
     this.paused = false;
+    this._timeTrialActive = false;
+    this.hud?.updateLaunchReactionHud?.({ visible: false });
+    this.hud?.updateTimeTrialBanner?.(null);
     const pm = document.getElementById('pause-modal');
     if (pm) pm.style.display = 'none';
     document.getElementById('dnq-modal').style.display = 'none';
@@ -1869,6 +2279,9 @@ class PolePosition2026Game {
   launchFromMenu() {
     if (this.replay?.isPlaying) this._exitReplay();
     this.paused = false;
+    this._timeTrialActive = false;
+    this.hud?.updateTimeTrialBanner?.(null);
+    this.hud?.updateLaunchReactionHud?.({ visible: false });
     const pm = document.getElementById('pause-modal');
     if (pm) pm.style.display = 'none';
     this._setGarageOpen?.(false);
@@ -1978,7 +2391,7 @@ class PolePosition2026Game {
     }
 
     // Competitive AI Constructor Tier + Player Career R&D Progression + AI Difficulty Scaling
-    const rivalCount = isShowroom ? 0 : Math.max(1, totalCars - 1);
+    const rivalCount = isShowroom ? 0 : Math.max(0, totalCars - 1);
     const diff = this.aiDifficulty || 'PRO';
     const diffPower = diff === 'LEGEND' ? 0.022 : (diff === 'ROOKIE' ? -0.028 : 0.0);
     const diffTop = diff === 'LEGEND' ? 2.8 : (diff === 'ROOKIE' ? -3.8 : 0.0);
@@ -2053,7 +2466,111 @@ class PolePosition2026Game {
     }
   }
 
+  _triggerLaunchBoost(car, reactionMs = 180) {
+    if (!car) return;
+    if (typeof PhysicsMod.applyLaunchReactionBoost === 'function') {
+      PhysicsMod.applyLaunchReactionBoost(car, reactionMs);
+      return;
+    }
+    const bonus01 = Math.max(0, Math.min(1, (420 - reactionMs) / 280));
+    car.launchBoostTimer = 0.55 + bonus01 * 1.05;
+    car.speedKmh = Math.max(car.speedKmh || 0, 14 + Math.max(0, (380 - reactionMs) * 0.05));
+  }
+
+  startTimeTrialSession(trackId = this.config.trackId) {
+    this.audio.init();
+    if (trackId && TRACK_CATALOG[trackId] && trackId !== this.config.trackId) {
+      this._switchActiveCircuit(trackId, false);
+    }
+
+    this.config.mode = '2026_UPDATED';
+    if (this.config.gearboxMode === 'CLASSIC_2SPD') {
+      this.config.gearboxMode = 'AUTO_8SPD';
+    }
+    this._timeTrialActive = true;
+    this._careerRoundActive = false;
+    this.paused = false;
+    if (this.replay?.isPlaying) this._exitReplay();
+
+    const pauseModal = document.getElementById('pause-modal');
+    if (pauseModal) pauseModal.style.display = 'none';
+    const podiumModal = document.getElementById('podium-modal');
+    if (podiumModal) podiumModal.style.display = 'none';
+    const dnqModal = document.getElementById('dnq-modal');
+    if (dnqModal) dnqModal.style.display = 'none';
+    this._setGarageOpen(false);
+    this._setCareerOpen(false);
+
+    this.score = 0;
+    this.qualifyingBonus = 0;
+    this.passingBonus = 0;
+    this.timeBonus = 0;
+    this.overtakesCount = 0;
+    this.qualifyingTime = null;
+    this.qualifiedGridSlot = 1;
+
+    this.hud.setModeVisibility('2026_UPDATED');
+    this.hud.setSpeedUnit(this.prefs.speedUnit);
+    this.hud.updateLaunchReactionHud({ visible: false });
+    this._syncMenuUI?.();
+
+    const tDef = this.track.trackDef;
+    this.lockedRaceWeatherId = tDef.forceNight
+      ? 'NEON_NIGHT'
+      : ((this.config.weatherPreset === 'LIGHT_DRIZZLE' || this.config.weatherPreset === 'MONSOON_STORM')
+        ? this.config.weatherPreset
+        : 'HOT_SUNNY');
+
+    this.weather.configureForSession('2026_UPDATED', this.lockedRaceWeatherId, tDef);
+    this.raceSystems.resetForNewSession('SOFT', 99, this._sessionCareerModifiers());
+    this.track.setPuddles1982Mode(false);
+    this.replay.reset();
+    this.hud.resetSectorSplits?.();
+    this._prevMacroSectorIdx = 2;
+    this._macroSectorStartSec = 0;
+    this.crowdExcitement = 0.45;
+    this._camChaseYaw = null;
+    this._camPrevSpeedKmh = 236;
+
+    this._buildCarsForSession(1, false, 'SOFT');
+    if (this.playerCar) {
+      this.playerCar.s = TRACK_GAME_LENGTH - 22;
+      this.playerCar.totalDistanceGameM = -22;
+      this.playerCar.lap = 1;
+      this.playerCar.currentLapTime = 0;
+      this.playerCar.lateralOffset = 0;
+      this.playerCar.lateralVel = 0;
+      this.playerCar.relYaw = 0;
+      this.playerCar.steerInput = 0;
+      this.playerCar.steerAngleRad = 0;
+      this.playerCar.speedKmh = 236;
+      this.playerCar.gear = 6;
+      this.playerCar.rpm = 11200;
+      this.playerCar.fuelLaps = 6.0;
+      this.playerCar.ersCharge = 1.0;
+      this._snapCarPrevPose(this.playerCar);
+    }
+
+    this.distanceScoredMeters = 0;
+    this.sessionElapsedSec = 0;
+    this._maxTopSpeedSession = 236;
+    this._launchEvaluated = true;
+    this._lastLaunchReactionMs = null;
+    this.controlsLocked = false;
+    this.state = GAME_STATES.RACING;
+    this.controls.setGearboxUI(this._activeGearboxMode(), 6);
+    this._syncTrackRacingLineMode();
+    this._syncScreenLayers();
+    this.track.setGantryLights(0, true, false);
+
+    this.hud.updateTimeTrialBanner(this._getTimeTrialInfoSafe(this.config.trackId));
+    this.hud.showCenterCallout('⏱ FLYING LAP — BEAT THE GOLD TARGET!', 2400, '#fbbf24');
+  }
+
   startQualifyingSession() {
+    this._timeTrialActive = false;
+    this.hud.updateTimeTrialBanner(null);
+    this.hud.updateLaunchReactionHud({ visible: false });
     const totalCars = this.config.mode === '1982_ORIGINAL' ? 8 : this.config.gridSize;
     const startComp = this._sessionStartCompound || this.config.startingCompound;
 
@@ -2086,6 +2603,7 @@ class PolePosition2026Game {
     this.lastBeepSecond = 4;
     this.controlsLocked = true;
     this.controls.setGearboxUI(this._activeGearboxMode(), 1);
+    this._syncTrackRacingLineMode();
     this._syncScreenLayers();
 
     this.hud.showCenterCallout('QUALIFYING — OUT LAP', 2400, '#ffd600');
@@ -2203,9 +2721,17 @@ class PolePosition2026Game {
     this.countdownTimer = 4.0;
     this.lastBeepSecond = 5;
     this._prevLightsLit = 0;
+    this._timeTrialActive = false;
+    this._gridIntroSkipped = false;
+    this._launchEvaluated = false;
+    this._lastLaunchReactionMs = null;
+    this._maxTopSpeedSession = 0;
+    this.hud.updateTimeTrialBanner(null);
+    this.hud.updateLaunchReactionHud({ visible: true, throttle01: 0, canSkipIntro: true });
     this.controlsLocked = true;
     this.state = GAME_STATES.GRID_LINEUP;
     this.controls.setGearboxUI(this._activeGearboxMode(), 1);
+    this._syncTrackRacingLineMode();
     this._syncScreenLayers();
 
     const reg = WEATHER_REGIMES[this.lockedRaceWeatherId] || WEATHER_REGIMES.HOT_SUNNY;
@@ -2229,9 +2755,30 @@ class PolePosition2026Game {
   _beginGreenFlagRacing() {
     this.controlsLocked = false;
     this.state = GAME_STATES.RACING;
+    this.hud.updateLaunchReactionHud({ visible: false });
+    this._greenFlagPerfMs = performance.now();
     this.track.setGantryLights(0, true, false);
     this.audio.playStartBeep(true);
-    this.hud.showCenterCallout('LIGHTS OUT AND AWAY WE GO!', 1500, '#10b981');
+
+    const thr = this.controls.throttle || this.playerCar?.throttleInput || 0;
+    if (thr >= 0.55 && thr <= 0.90) {
+      const reactionMs = Math.round(135 + Math.abs(thr - 0.72) * 110);
+      this._triggerLaunchBoost(this.playerCar, reactionMs);
+      this._lastLaunchReactionMs = reactionMs;
+      this._launchEvaluated = true;
+      this.audio.playPerfectLaunchChord?.();
+      this.controls?.triggerHaptic?.('LAUNCH_PERFECT');
+      this.hud.showCenterCallout(`⚡ PERFECT LAUNCH • ${(reactionMs / 1000).toFixed(2)}s!`, 1750, '#10b981');
+    } else if (thr > 0.90) {
+      this._triggerLaunchBoost(this.playerCar, 255);
+      this._lastLaunchReactionMs = 255;
+      this._launchEvaluated = true;
+      this.controls?.triggerHaptic?.('SHIFT_UP');
+      this.hud.showCenterCallout('WHEELSPIN LAUNCH • GOOD GETAWAY!', 1550, '#fbbf24');
+    } else {
+      this.hud.showCenterCallout('LIGHTS OUT AND AWAY WE GO!', 1500, '#10b981');
+    }
+
     setTimeout(() => {
       if (this.state === GAME_STATES.RACING) {
         this.track.setGantryLights(0, false, false);
@@ -2242,6 +2789,9 @@ class PolePosition2026Game {
   _completeGrandPrix(expired1982Timer = false) {
     this.state = GAME_STATES.RACE_RESULTS;
     this.controlsLocked = true;
+    this.hud.updateLaunchReactionHud({ visible: false });
+    this.hud.updateTimeTrialBanner(null);
+    this._syncTrackRacingLineMode();
     if (this._speedVignetteEl) this._speedVignetteEl.style.opacity = '0';
 
     const totalLaps = this._activeTotalLaps();
@@ -2262,19 +2812,30 @@ class PolePosition2026Game {
 
     this._checkTopScore();
 
+    const maxDamageVal = Math.max(
+      this.playerCar?.damage?.frontWing || 0,
+      this.playerCar?.damage?.rearWing || 0,
+      this.playerCar?.damage?.suspension || 0
+    );
+    const cleanRace =
+      (this.playerCar?.timePenaltiesSec || 0) <= 0 &&
+      maxDamageVal < 0.25;
+    const bestPitStopSec = Array.isArray(this.playerCar?.pitHistory) && this.playerCar.pitHistory.length > 0
+      ? this.playerCar.pitHistory.reduce((minS, p) => {
+          const d = Number(p.durationSec);
+          return Number.isFinite(d) && d > 0 ? Math.min(minS, d) : minS;
+        }, Infinity)
+      : null;
+
     // Award FIA Championship points + R&D prize purse for Career rounds
     this._lastCareerResult = null;
+    this._lastSessionSummary = null;
     if (this._careerRoundActive && this.config.mode === '2026_UPDATED' && !expired1982Timer && this.career) {
       try {
         const bestAi = standings
           .filter((c) => !c.isPlayer && Number.isFinite(c.bestLapTime) && c.bestLapTime > 0)
           .reduce((m, c) => Math.min(m, c.bestLapTime), Infinity);
         const pBest = this.playerCar.bestLapTime;
-        const cleanRace =
-          (this.playerCar.timePenaltiesSec || 0) <= 0 &&
-          (this.playerCar.damage?.frontWing || 0) < 0.25 &&
-          (this.playerCar.damage?.rearWing || 0) < 0.25 &&
-          (this.playerCar.damage?.suspension || 0) < 0.25;
         this._lastCareerResult = this.career.recordRaceWeekendResult({
           trackId: this.config.trackId,
           finishPos: playerRank,
@@ -2291,6 +2852,42 @@ class PolePosition2026Game {
       } catch (err) {
         console.warn('[Career] Failed to record race result:', err);
       }
+    }
+
+    // Record Driver Profile XP & Achievements across Quick Race, 1982 Arcade & Career
+    if (!expired1982Timer && this.career && typeof this.career.recordSessionSummary === 'function') {
+      try {
+        this._lastSessionSummary = this.career.recordSessionSummary({
+          mode: this.config.mode,
+          trackId: this.config.trackId,
+          finishPos: playerRank,
+          gridPos: this.qualifiedGridSlot,
+          overtakes: this.overtakesCount,
+          cleanRace,
+          zeroDamage: maxDamageVal <= 0.015 && (this.playerCar?.timePenaltiesSec || 0) <= 0,
+          maxDamage: maxDamageVal,
+          maxSpeedKmh: this._maxTopSpeedSession || 0,
+          reactionMs: this._lastLaunchReactionMs,
+          bestPitStopSec: Number.isFinite(bestPitStopSec) ? bestPitStopSec : null,
+          isWet: (this.weather?.grooveMoisture || 0) >= 0.20,
+          isCareerRound: this._careerRoundActive,
+          bestLapSec: this.playerCar?.bestLapTime || null,
+        });
+        if (
+          this._lastSessionSummary?.leveledUp ||
+          (Array.isArray(this._lastSessionSummary?.newlyUnlockedAchievements) &&
+            this._lastSessionSummary.newlyUnlockedAchievements.length > 0)
+        ) {
+          this.audio.playAchievementChime?.('GOLD');
+        }
+      } catch (err) {
+        console.warn('[Career] Failed to record session summary:', err);
+      }
+    }
+
+    if (!expired1982Timer && playerRank <= 3 && this.playerCar) {
+      const pFr = this.track.sampleAt(this.playerCar.s, this.playerCar.lateralOffset);
+      this.effects?.triggerVictoryCelebration?.(pFr.pos);
     }
 
     this._populatePodiumModal(standings, playerRank, totalLaps, expired1982Timer);
@@ -2345,6 +2942,70 @@ class PolePosition2026Game {
         `;
       }
     });
+
+    // Full Grid Classification Table (#podium-full-table)
+    const fullTableEl = document.getElementById('podium-full-table');
+    if (fullTableEl && standings.length > 0) {
+      const leader = standings[0];
+      const mPerG = Math.max(0.5, Number(this.track.metersPerGameUnit || this.track.realMetersPerGameMeter) || 4.54);
+      const rowsHtml = standings.map((car, idx) => {
+        const pos = idx + 1;
+        const livery = car.isPlayer ? (this.playerCar?.liveryHex || '#e41c24') : (car.liveryHex || '#ff9800');
+        const bestStr = car.bestLapTime ? fmtLap(car.bestLapTime) : '—';
+        let gapStr = 'LEADER';
+        if (idx > 0) {
+          const distGapM = Math.max(0, (leader.totalDistanceGameM - car.totalDistanceGameM) * mPerG);
+          const penDiff = (car.timePenaltiesSec || 0) - (leader.timePenaltiesSec || 0);
+          const estGapSec = Math.max(0.05, distGapM / 64.0 + penDiff);
+          gapStr = `+${estGapSec.toFixed(2)}s`;
+        } else if ((car.timePenaltiesSec || 0) > 0) {
+          gapStr = `LEADER (+${car.timePenaltiesSec.toFixed(1)}s)`;
+        }
+        const compInfo = TIRE_COMPOUNDS[car.compound] || TIRE_COMPOUNDS.SOFT;
+        const stops = car.pitStopsCompleted || 0;
+        return `
+          <div class="pft-row ${car.isPlayer ? 'is-player' : ''}">
+            <span class="pft-pos">P${pos}</span>
+            <span class="pft-driver"><span class="pft-bar" style="background:${livery}"></span>${escapeHtml(car.name)}</span>
+            <span class="pft-best">${escapeHtml(bestStr)}</span>
+            <span class="pft-gap">${escapeHtml(gapStr)}</span>
+            <span class="pft-tire"><span class="pft-tire-dot" style="border-color:${compInfo.colorHex};color:${compInfo.colorHex}">${escapeHtml(compInfo.short)}</span>${stops}S</span>
+          </div>`;
+      }).join('');
+      fullTableEl.innerHTML = `
+        <div class="pft-head">
+          <span>POS</span><span>DRIVER</span><span>BEST LAP</span><span>GAP</span><span>STINT</span>
+        </div>
+        <div class="pft-body">${rowsHtml}</div>
+      `;
+      fullTableEl.style.display = 'block';
+    }
+
+    // Driver XP & Unlocked Trophies Banner (#podium-xp-banner)
+    const xpBannerEl = document.getElementById('podium-xp-banner');
+    if (xpBannerEl) {
+      const sum = this._lastSessionSummary || this._lastCareerResult;
+      const prof = sum?.driverProfile || this._getDriverProfileSafe();
+      const xpGain = Number(sum?.xpGained) || 0;
+      const achList = Array.isArray(sum?.newlyUnlockedAchievements) ? sum.newlyUnlockedAchievements : [];
+      if (!expired && (xpGain > 0 || achList.length > 0)) {
+        const achChips = achList.map((a) =>
+          `<span class="pxp-chip trophy">${escapeHtml(a.icon || '🏆')} ${escapeHtml(a.title || a.name || 'TROPHY')} ${escapeHtml(a.formattedBonus || '')}</span>`
+        ).join('');
+        xpBannerEl.innerHTML = `
+          <div class="pxp-row">
+            <span class="pxp-chip xp">+${xpGain} DRIVER XP</span>
+            <span class="pxp-chip lvl">LV ${prof.level} • ${escapeHtml(prof.licenseTitle || prof.rankTitle || 'FIA LICENSE')}</span>
+            ${sum?.leveledUp ? `<span class="pxp-chip lvlup">⬆ LEVEL UP TO LV ${sum.newLevel || prof.level}!</span>` : ''}
+            ${this._lastLaunchReactionMs ? `<span class="pxp-chip">LAUNCH ${(this._lastLaunchReactionMs / 1000).toFixed(2)}s</span>` : ''}
+            ${achChips}
+          </div>`;
+        xpBannerEl.style.display = 'block';
+      } else {
+        xpBannerEl.innerHTML = '';
+        xpBannerEl.style.display = 'none';
+      }
+    }
 
     const setTxt = (id, val) => {
       const e = document.getElementById(id);
@@ -2564,6 +3225,11 @@ class PolePosition2026Game {
         }
       } else if (this.state === GAME_STATES.GRID_LINEUP) {
         this.countdownTimer -= rawDt;
+        this.hud.updateLaunchReactionHud({
+          visible: true,
+          throttle01: this.controls.throttle || 0,
+          canSkipIntro: !this._gridIntroSkipped && this.countdownTimer > 1.6,
+        });
         const lightsLit = Math.min(5, Math.max(1, Math.ceil(4.0 - this.countdownTimer)));
         if (lightsLit !== this._prevLightsLit && this.countdownTimer > 0.2) {
           this._prevLightsLit = lightsLit;
@@ -2573,6 +3239,39 @@ class PolePosition2026Game {
         if (this.countdownTimer <= 0) {
           this._prevLightsLit = 0;
           this._beginGreenFlagRacing();
+        }
+      } else if (this.state === GAME_STATES.RACING && !this._launchEvaluated && !this._timeTrialActive) {
+        const elapsedReactionMs = performance.now() - (this._greenFlagPerfMs || 0);
+        if (elapsedReactionMs <= 420 && (this.controls.throttle || 0) > 0.18) {
+          const reactionMs = Math.max(115, Math.round(elapsedReactionMs));
+          this._triggerLaunchBoost(this.playerCar, reactionMs);
+          this._lastLaunchReactionMs = reactionMs;
+          this._launchEvaluated = true;
+          if (reactionMs <= 230) {
+            this.audio.playPerfectLaunchChord?.();
+            this.controls?.triggerHaptic?.('LAUNCH_PERFECT');
+            this.hud.showCenterCallout(`⚡ LIGHTNING REACTION • ${(reactionMs / 1000).toFixed(2)}s!`, 1750, '#10b981');
+          } else {
+            this.controls?.triggerHaptic?.('SHIFT_UP');
+            this.hud.showCenterCallout(`GOOD REACTION • ${(reactionMs / 1000).toFixed(2)}s`, 1450, '#38bdf8');
+          }
+        } else if (elapsedReactionMs > 420) {
+          this._launchEvaluated = true;
+        }
+      }
+
+      // Adaptive 60 FPS DPR & Shadow Scaler when graphicsQuality === 'AUTO'
+      if (this.prefs.graphicsQuality === 'AUTO' && !this._isRetroRendererActive()) {
+        this._fpsAccumSec = (this._fpsAccumSec || 0) + rawDt;
+        this._fpsFrameCount = (this._fpsFrameCount || 0) + 1;
+        if (this._fpsAccumSec >= 1.8) {
+          const avgFps = this._fpsFrameCount / this._fpsAccumSec;
+          this._fpsAccumSec = 0;
+          this._fpsFrameCount = 0;
+          if (avgFps < 48 && this._autoGfxTier !== 'PERFORMANCE') {
+            this._autoGfxTier = this._autoGfxTier === 'ULTRA' ? 'HIGH' : 'PERFORMANCE';
+            this._applyGraphicsQuality('AUTO');
+          }
         }
       }
 
@@ -2622,11 +3321,14 @@ class PolePosition2026Game {
       replayState = this.replay.updatePlayback(rawDt, {
         track: this.track,
         camera: this.camera,
+        renderer: this.renderer,
+        scene: this.scene,
         carRigs: this.carRigs,
         moisture: this.weather.grooveMoisture,
         elapsedSec: this.elapsedSec,
         callbacks: {
           onFlyby: (spd) => this.audio.playReplayFlyby?.(spd),
+          onPhotoShutter: () => this.audio.playCameraShutter?.(),
         },
       });
       this._updateReplayOverlay(replayState);
@@ -2655,6 +3357,9 @@ class PolePosition2026Game {
     );
 
     this.track.updateVisualState(this.weather.grooveMoisture, this.config.visualStyle, this.elapsedSec);
+    if (this.state !== GAME_STATES.PRE_RACE_MENU && this.playerCar) {
+      this.track.updateDynamicRacingLine?.(this.playerCar, this.elapsedSec);
+    }
     this.track.updateMarshalFlags(
       this.raceSystems.getActiveYellowSectorSet(),
       this.raceSystems.vscActive,
@@ -2802,12 +3507,16 @@ class PolePosition2026Game {
           sessionPhase: this.state,
           score: this.score,
           topScore: this.topScore,
-          timerDisplaySec: (this.state === GAME_STATES.QUALIFYING || isClassic)
-            ? this.masterTimerSec
-            : this.sessionElapsedSec,
-          timerLabel: this.state === GAME_STATES.QUALIFYING
-            ? 'QUALI TIME'
-            : (isClassic ? 'TIME LEFT' : 'LAP TIME'),
+          timerDisplaySec: this._timeTrialActive
+            ? (this.playerCar.currentLapTime || 0)
+            : ((this.state === GAME_STATES.QUALIFYING || isClassic)
+              ? this.masterTimerSec
+              : this.sessionElapsedSec),
+          timerLabel: this._timeTrialActive
+            ? 'HOT LAP'
+            : (this.state === GAME_STATES.QUALIFYING
+              ? 'QUALI TIME'
+              : (isClassic ? 'TIME LEFT' : 'LAP TIME')),
           currentLap: this.playerCar.lap,
           totalLaps: this._activeTotalLaps(),
           playerPos,
@@ -2817,6 +3526,8 @@ class PolePosition2026Game {
           weatherSummary: this.weather.getForecastSummary(),
           brakingAssistMode: this.prefs.control.brakingAssist || 'MIN',
           tractionControlMode: this.prefs.control.tractionControl || 'FULL',
+          cameraModeIdx: this.cameraModeIdx,
+          timeTrialActive: this._timeTrialActive,
         });
       }
     }
@@ -2967,6 +3678,22 @@ class PolePosition2026Game {
       onEngineerWarning: (msg) => {
         this.hud.showEngineerRadio(msg);
       },
+      onDrsOpened: (car) => {
+        if (!car || car.isPlayer) {
+          this.audio.playDrsBeep?.(true);
+          this.controls?.triggerHaptic?.('DRS');
+        }
+      },
+      onErsBoostActivated: (car) => {
+        if (!car || car.isPlayer) {
+          this.audio.playErsDeployPulse?.(true);
+          this.controls?.triggerHaptic?.('ERS');
+        }
+      },
+      onWheelRub: (_, __, ov) => {
+        this.audio.playWheelRubThud?.(ov);
+        this.controls?.triggerHaptic?.('RUB');
+      },
       onLapCrossed: (car) => this._onCarCrossedLine(car, isQuali, isRacing, totalLaps),
     };
 
@@ -3020,6 +3747,9 @@ class PolePosition2026Game {
     }
 
     if ((isQuali || isRacing) && !this.controlsLocked) {
+      if (this.playerCar && this.playerCar.speedKmh > (this._maxTopSpeedSession || 0)) {
+        this._maxTopSpeedSession = this.playerCar.speedKmh;
+      }
       this.raceSystems.updateCollisionsAndCautions(this.allCars, this.playerCar, dt, physCtx);
 
       if (this.playerCar.totalDistanceGameM - this.distanceScoredMeters >= 5.0) {
@@ -3059,6 +3789,7 @@ class PolePosition2026Game {
           this.score += pts;
           this._checkTopScore();
           this.audio.playOvertakeWhoosh?.(Math.max(36, this.playerCar.speedKmh * 0.22));
+          this.controls?.triggerHaptic?.('OVERTAKE');
           if (nowRivalsAhead === 0) {
             this._cheerCrowd(0.95);
             this.hud.showCenterCallout(
@@ -3150,6 +3881,55 @@ class PolePosition2026Game {
     car.lap += 1;
 
     if (car.isPlayer && isRacing) {
+      if (this._timeTrialActive) {
+        const ttRes = this._recordTimeTrialLapSafe(this.config.trackId, completedLapSec);
+        this.hud.updateTimeTrialBanner(this._getTimeTrialInfoSafe(this.config.trackId));
+        car.fuelLaps = 6.0;
+        car.ersCharge = 1.0;
+        if (Array.isArray(car.tireFlatSpot)) {
+          car.tireFlatSpot[0] = 0;
+          car.tireFlatSpot[1] = 0;
+          car.tireFlatSpot[2] = 0;
+          car.tireFlatSpot[3] = 0;
+        }
+        if (car.tires) {
+          for (const k of ['FL', 'FR', 'RL', 'RR']) {
+            if (car.tires[k]) {
+              car.tires[k].life = 1.0;
+              car.tires[k].blister = 0;
+              car.tires[k].tempC = 95;
+            }
+          }
+        }
+        const newMedals = Array.isArray(ttRes?.newlyUnlockedMedals)
+          ? ttRes.newlyUnlockedMedals
+          : (Array.isArray(ttRes?.newlyEarnedMedals) ? ttRes.newlyEarnedMedals : []);
+        const topNewMedal = newMedals.includes('GOLD')
+          ? 'GOLD'
+          : (newMedals.includes('SILVER') ? 'SILVER' : (newMedals.includes('BRONZE') ? 'BRONZE' : null));
+        if (topNewMedal) {
+          this.audio.playAchievementChime?.(topNewMedal);
+          this.controls?.triggerHaptic?.('LAUNCH_PERFECT');
+          const icon = topNewMedal === 'GOLD' ? '🥇' : (topNewMedal === 'SILVER' ? '🥈' : '🥉');
+          this.hud.showCenterCallout(
+            `${icon} ${topNewMedal} MEDAL! • ${formatLapTimeSim(completedLapSec)}`,
+            2500,
+            topNewMedal === 'GOLD' ? '#fbbf24' : (topNewMedal === 'SILVER' ? '#e2e8f0' : '#f59e0b')
+          );
+          if (topNewMedal === 'GOLD' && this.playerCar) {
+            const pFr = this.track.sampleAt(this.playerCar.s, this.playerCar.lateralOffset);
+            this.effects?.triggerVictoryCelebration?.(pFr.pos);
+          }
+        } else if (isPersonalBest) {
+          this.audio.playStartBeep(true);
+          this.hud.showCenterCallout(`⏱ PERSONAL BEST • ${formatLapTimeSim(completedLapSec)}`, 2100, '#a855f7');
+        } else {
+          this.hud.showCenterCallout(`HOT LAP ${car.lap - 1} • ${formatLapTimeSim(completedLapSec)}`, 1800, '#38bdf8');
+        }
+        this._syncCareerBadges();
+        return;
+      }
+
       if (car.lap > totalLaps) {
         this._completeGrandPrix(false);
         return;
@@ -3277,6 +4057,39 @@ class PolePosition2026Game {
       this._camDesiredLook.set(pFr.pos.x, pFr.pos.y + 0.75, pFr.pos.z);
       this.camera.position.lerp(this._camDesiredPos, expAlpha(6.5));
       this._camLook.lerp(this._camDesiredLook, expAlpha(8.0));
+      this.camera.lookAt(this._camLook);
+      return;
+    }
+
+    // 3b. Skippable Pre-Race 3D FOM Grid Flyover Sweep (countdownTimer 4.0s -> 1.6s)
+    if (this.state === GAME_STATES.GRID_LINEUP && !this._gridIntroSkipped && this.countdownTimer > 1.6) {
+      this.camera.up.set(0, 1, 0);
+      const rawT = Math.max(0, Math.min(1, (4.0 - this.countdownTimer) / 2.4));
+      const u = rawT * rawT * (3 - 2 * rawT);
+      const flyFov = aspect < 0.58 ? 72 : (aspect < 0.85 ? 64 : 54);
+      if (Math.abs(this.camera.near - 0.32) > 0.01 || Math.abs(this.camera.fov - flyFov) > 0.15) {
+        this.camera.near = 0.32;
+        this.camera.fov = flyFov;
+        this.camera.updateProjectionMatrix();
+      }
+      const backDistTarget = aspect < 0.58 ? 6.95 : (aspect < 0.85 ? 6.35 : 5.75);
+      const upHeightTarget = aspect < 0.58 ? 2.22 : (aspect < 0.85 ? 2.08 : 1.94);
+      const fwdOffset = 6.8 * (1 - u) - backDistTarget * u;
+      const latOffset = -2.6 * Math.sin(Math.PI * (1 - u * 0.85)) * (1 - u);
+      const yOffset = 1.25 * (1 - u) + upHeightTarget * u;
+
+      this._camDesiredPos
+        .copy(pFr.pos)
+        .addScaledVector(pFr.tangent, fwdOffset)
+        .addScaledVector(pFr.right, latOffset)
+        .addScaledVector(pFr.normal, yOffset);
+      this._camDesiredLook
+        .copy(pFr.pos)
+        .addScaledVector(pFr.tangent, -1.2 * (1 - u) + 3.6 * u)
+        .addScaledVector(pFr.normal, 0.72 + 0.14 * u);
+
+      this.camera.position.lerp(this._camDesiredPos, expAlpha(9.5));
+      this._camLook.lerp(this._camDesiredLook, expAlpha(11.0));
       this.camera.lookAt(this._camLook);
       return;
     }
@@ -3524,6 +4337,9 @@ class PolePosition2026Game {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.protocol === 'http:')) {
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
+  }
   const game = new PolePosition2026Game();
   window.__RACE_PHANATIC_GAME__ = game;
   game.init().catch((err) => {

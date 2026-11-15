@@ -304,11 +304,69 @@ export class WeatherSystem {
     this._visorTearOffProgress = 1.2;
     this._prevCamYaw = null;
     this._smoothedYawSlip = 0.0;
+    this.graphicsQuality = 'ULTRA';
+    this._maxRainDrops = 1800;
+    this._activeRainCount = 1800;
+    this._maxRainSplashes = 140;
+    this._activeSplashCount = 140;
 
     this._buildSkyAndLighting();
     this._buildParallaxMountainVistas();
     this._buildRainParticles();
     this._buildCockpitVisorRain();
+  }
+
+  setGraphicsQuality(tier = 'HIGH') {
+    const raw = String(tier || 'HIGH').trim().toUpperCase();
+    let q = 'HIGH';
+    if (raw === 'ULTRA' || raw === 'MAX') {
+      q = 'ULTRA';
+    } else if (raw === 'PERFORMANCE' || raw === '60FPS' || raw === 'LOW' || raw === 'FAST') {
+      q = 'PERFORMANCE';
+    }
+
+    const prevQ = this.graphicsQuality;
+    this.graphicsQuality = q;
+
+    const rainTarget = q === 'ULTRA' ? 1800 : (q === 'HIGH' ? 1120 : 520);
+    const splashTarget = q === 'ULTRA' ? 140 : (q === 'HIGH' ? 88 : 0);
+    this._activeRainCount = Math.min(this._maxRainDrops, rainTarget);
+    this._activeSplashCount = Math.min(this._maxRainSplashes, splashTarget);
+
+    if (this.rainLines?.geometry) {
+      this.rainLines.geometry.setDrawRange(0, this._activeRainCount * 2);
+    }
+    if (this.splashLines?.geometry) {
+      this.splashLines.geometry.setDrawRange(0, this._activeSplashCount * 2);
+      if (this._activeSplashCount === 0) {
+        this.splashLines.visible = false;
+      }
+    }
+
+    if (this.sunLight?.shadow) {
+      const targetMapSize = q === 'ULTRA' ? 2048 : (q === 'HIGH' ? 1024 : 512);
+      this.sunLight.shadow.bias = q === 'ULTRA' ? -0.00022 : (q === 'HIGH' ? -0.00030 : -0.00044);
+      this.sunLight.shadow.normalBias = q === 'ULTRA' ? 0.015 : (q === 'HIGH' ? 0.021 : 0.030);
+      this.sunLight.shadow.radius = q === 'ULTRA' ? 1.35 : (q === 'HIGH' ? 1.15 : 1.0);
+
+      if (
+        prevQ !== q &&
+        (this.sunLight.shadow.mapSize.width !== targetMapSize ||
+          this.sunLight.shadow.mapSize.height !== targetMapSize)
+      ) {
+        this.sunLight.shadow.mapSize.set(targetMapSize, targetMapSize);
+        if (this.sunLight.shadow.map) {
+          this.sunLight.shadow.map.dispose();
+          this.sunLight.shadow.map = null;
+        }
+      }
+    }
+
+    if (this.visorUniforms?.uQualityLevel) {
+      this.visorUniforms.uQualityLevel.value = q === 'ULTRA' ? 2.0 : (q === 'HIGH' ? 1.0 : 0.0);
+    }
+
+    return this.graphicsQuality;
   }
 
   _buildSkyAndLighting() {
@@ -1064,13 +1122,14 @@ export class WeatherSystem {
   // --------------------------------------------------------------------------
   _buildCockpitVisorRain() {
     this.visorUniforms = {
-      uTime:       { value: 0.0 },
-      uWetness:    { value: 0.0 },
-      uSpeedNorm:  { value: 0.0 },
-      uSteerSlip:  { value: 0.0 },
-      uTearOff:    { value: 1.2 },
-      uLightning:  { value: 0.0 },
-      uSkyTint:    { value: new THREE.Color(0xd2e4f4) },
+      uTime:         { value: 0.0 },
+      uWetness:      { value: 0.0 },
+      uSpeedNorm:    { value: 0.0 },
+      uSteerSlip:    { value: 0.0 },
+      uTearOff:      { value: 1.2 },
+      uLightning:    { value: 0.0 },
+      uQualityLevel: { value: 2.0 },
+      uSkyTint:      { value: new THREE.Color(0xd2e4f4) },
     };
 
     const visorGeo = new THREE.PlaneGeometry(2, 2);
@@ -1094,6 +1153,7 @@ export class WeatherSystem {
         uniform float uSteerSlip;
         uniform float uTearOff;
         uniform float uLightning;
+        uniform float uQualityLevel;
         uniform vec3 uSkyTint;
         varying vec2 vUv;
 
@@ -1171,13 +1231,16 @@ export class WeatherSystem {
                      * smoothstep(0.08, 0.44, rFlow)
                      * smoothstep(0.96, 0.56, rFlow);
 
-          float angCells2 = floor((ang + 3.14159265) * 62.0);
-          float h2 = vHash21(vec2(angCells2, 43.1));
-          float angFrac2 = fract((ang + 3.14159265) * 62.0) - 0.5;
-          float rFlow2 = fract(r * 5.8 - uTime * (1.9 + h2 * 2.1) * (0.45 + uSpeedNorm * 2.3) + h2 * 13.0);
-          float fine = smoothstep(0.11, 0.0, abs(angFrac2))
-                     * smoothstep(0.18, 0.76, rFlow2)
-                     * smoothstep(0.98, 0.74, rFlow2);
+          float fine = 0.0;
+          if (uQualityLevel > 0.5) {
+            float angCells2 = floor((ang + 3.14159265) * 62.0);
+            float h2 = vHash21(vec2(angCells2, 43.1));
+            float angFrac2 = fract((ang + 3.14159265) * 62.0) - 0.5;
+            float rFlow2 = fract(r * 5.8 - uTime * (1.9 + h2 * 2.1) * (0.45 + uSpeedNorm * 2.3) + h2 * 13.0);
+            fine = smoothstep(0.11, 0.0, abs(angFrac2))
+                 * smoothstep(0.18, 0.76, rFlow2)
+                 * smoothstep(0.98, 0.74, rFlow2);
+          }
 
           float total = (head * 0.78 + fine * 0.48) * peripheryMask * smoothstep(0.16, 0.68, uSpeedNorm);
           float glint = pow(max(0.0, head), 2.2) * peripheryMask;
@@ -1192,8 +1255,12 @@ export class WeatherSystem {
 
           float lowSpeedFade = mix(1.0, 0.42, clamp(uSpeedNorm, 0.0, 1.0));
           vec3 d1 = dropletLayer(vUv, 15.0, 3.1, lowSpeedFade);
-          vec3 d2 = dropletLayer(vUv + vec2(0.19, 0.33), 28.0, 19.7, lowSpeedFade * 0.86);
-          vec3 dMicro = dropletLayer(vUv + vec2(0.41, 0.13), 46.0, 37.3, 0.68);
+          vec3 d2 = uQualityLevel > 0.5
+            ? dropletLayer(vUv + vec2(0.19, 0.33), 28.0, 19.7, lowSpeedFade * 0.86)
+            : vec3(0.0);
+          vec3 dMicro = uQualityLevel > 1.5
+            ? dropletLayer(vUv + vec2(0.41, 0.13), 46.0, 37.3, 0.68)
+            : vec3(0.0);
           vec2 aero = aeroStreaks(vUv);
 
           // Keep central braking-marker & apex focal zone crisp and unobstructed
@@ -1561,9 +1628,9 @@ export class WeatherSystem {
     this.ambientLight.intensity = this._baseAmbientIntensity + this.lightningFlash * 0.48;
 
     const rainInt = activeReg.rainIntensity || 0.0;
-    const raining = rainInt > 0.05;
+    const raining = rainInt > 0.05 && this._activeRainCount > 0;
     this.rainLines.visible = raining;
-    this.splashLines.visible = raining && !!focusTargetPos;
+    this.splashLines.visible = raining && !!focusTargetPos && this._activeSplashCount > 0;
 
     if (raining && cameraPos) {
       this.rainMat.opacity = Math.min(0.68, 0.22 + rainInt * 0.34 + this.lightningFlash * 0.18);
@@ -1573,8 +1640,9 @@ export class WeatherSystem {
       const arr = posAttr.array;
       const slantX = 0.20 + rainInt * 0.15;
       const slantZ = 0.12 + rainInt * 0.09;
+      const rainCount = Math.min(this._activeRainCount, this.rainDrops.length);
 
-      for (let i = 0; i < this.rainDrops.length; i++) {
+      for (let i = 0; i < rainCount; i++) {
         const d = this.rainDrops[i];
         d.y -= d.speed * (0.85 + rainInt * 0.45) * safeDt;
         d.x += slantX * 8.5 * safeDt;
@@ -1597,13 +1665,14 @@ export class WeatherSystem {
       }
       posAttr.needsUpdate = true;
 
-      if (focusTargetPos) {
+      if (focusTargetPos && this._activeSplashCount > 0) {
         this.splashMat.opacity = 0.18 + rainInt * 0.28;
         const spAttr = this.splashLines.geometry.attributes.position;
         const spArr = spAttr.array;
         const baseY = focusTargetPos.y + 0.04;
+        const splashCount = Math.min(this._activeSplashCount, this.rainSplashes.length);
 
-        for (let i = 0; i < this.rainSplashes.length; i++) {
+        for (let i = 0; i < splashCount; i++) {
           const sp = this.rainSplashes[i];
           sp.phase += sp.rate * safeDt;
           if (sp.phase >= 1.0) {
