@@ -187,6 +187,7 @@ class PolePosition2026Game {
     this._careerTab = 'TEAMS';
     this._lastCrowdCheerSec = -10;
     this.crowdExcitement = 0.28;
+    this._overtakeFlashTimer = 0;
     this._prevMacroSectorIdx = 0;
     this._macroSectorStartSec = 0;
     this._pitWheelGunSoundAccum = 0;
@@ -530,7 +531,7 @@ class PolePosition2026Game {
     this.renderer.setSize(initW, initH);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.96;
+    this.renderer.toneMappingExposure = 1.18;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(this.renderer.domElement);
@@ -3356,7 +3357,32 @@ class PolePosition2026Game {
       rawDt
     );
 
+    if (this._overtakeFlashTimer > 0) {
+      this._overtakeFlashTimer = Math.max(0, this._overtakeFlashTimer - rawDt);
+    }
+    const liveStandings = this.allCars.length > 0 ? this._computeStandings() : [];
+    const livePlayerPos = liveStandings.length > 0
+      ? Math.max(1, liveStandings.findIndex((c) => c.isPlayer) + 1)
+      : 1;
+    const liveLeaderCar = liveStandings[0] || this.playerCar;
+    const raceTelemetry = {
+      speedKmh: Math.round(this.playerCar?.speedKmh || 0),
+      lap: this.playerCar?.lap || 1,
+      totalLaps: this._activeTotalLaps(),
+      position: livePlayerPos,
+      totalCars: Math.max(1, this.allCars.length),
+      leaderName: liveLeaderCar?.short || liveLeaderCar?.name || 'YOU #1',
+      fastestLap: this.playerCar?.bestLapTime ? formatLapTimeSim(this.playerCar.bestLapTime) : '--:--.--',
+      overtakeFlash: (this._overtakeFlashTimer || 0) > 0,
+      overtakeFlashIntensity: Math.min(1, (this._overtakeFlashTimer || 0) / 1.5),
+      crowdExcitement: this.crowdExcitement,
+      elapsedSec: this.elapsedSec,
+      state: this.state,
+    };
+
     this.track.updateVisualState(this.weather.grooveMoisture, this.config.visualStyle, this.elapsedSec);
+    this.track.update?.(rawDt, this.playerCar, this.camera, raceTelemetry);
+    this.track.updateJumbotronTelemetry?.(raceTelemetry);
     if (this.state !== GAME_STATES.PRE_RACE_MENU && this.playerCar) {
       this.track.updateDynamicRacingLine?.(this.playerCar, this.elapsedSec);
     }
@@ -3788,6 +3814,7 @@ class PolePosition2026Game {
           this.passingBonus += pts;
           this.score += pts;
           this._checkTopScore();
+          this._overtakeFlashTimer = 2.6;
           this.audio.playOvertakeWhoosh?.(Math.max(36, this.playerCar.speedKmh * 0.22));
           this.controls?.triggerHaptic?.('OVERTAKE');
           if (nowRivalsAhead === 0) {
@@ -3881,6 +3908,7 @@ class PolePosition2026Game {
     car.lap += 1;
 
     if (car.isPlayer && isRacing) {
+      this._overtakeFlashTimer = Math.max(this._overtakeFlashTimer || 0, 2.2);
       if (this._timeTrialActive) {
         const ttRes = this._recordTimeTrialLapSafe(this.config.trackId, completedLapSec);
         this.hud.updateTimeTrialBanner(this._getTimeTrialInfoSafe(this.config.trackId));
@@ -3958,7 +3986,7 @@ class PolePosition2026Game {
           this.audio.speakAnnouncement('Final lap! Push to the line!', true);
         }
         const posNow = this._computeStandings().findIndex((c) => c.isPlayer) + 1;
-        if (posNow > 0 && posNow <= 3) this._cheerCrowd(posNow === 1 ? 0.7 : 0.5);
+        this._cheerCrowd(posNow === 1 ? 0.85 : (posNow <= 3 ? 0.65 : 0.45));
       }
     }
   }
@@ -4338,7 +4366,7 @@ class PolePosition2026Game {
 
 window.addEventListener('DOMContentLoaded', () => {
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.protocol === 'http:')) {
-    navigator.serviceWorker.register('./sw.js').catch(() => {});
+    navigator.serviceWorker.register('./sw.js?v=20261114fun').catch(() => {});
   }
   const game = new PolePosition2026Game();
   window.__RACE_PHANATIC_GAME__ = game;

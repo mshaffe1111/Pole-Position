@@ -296,8 +296,8 @@ export class WeatherSystem {
     this.nextLightningSec = 6.5;
     this.elapsedSkySec = 0.0;
     this._sunOffset = new THREE.Vector3(65, 115, 78);
-    this._baseSunIntensity = 2.85;
-    this._baseAmbientIntensity = 0.38;
+    this._baseSunIntensity = 4.25;
+    this._baseAmbientIntensity = 0.78;
     this._targetHdrMix = 0.0;
     this._currentHdrMix = 0.0;
     this._visorAccum = 0.0;
@@ -309,10 +309,13 @@ export class WeatherSystem {
     this._activeRainCount = 1800;
     this._maxRainSplashes = 140;
     this._activeSplashCount = 140;
+    this._maxFestivalParticles = 320;
+    this._activeFestivalCount = 320;
 
     this._buildSkyAndLighting();
     this._buildParallaxMountainVistas();
     this._buildRainParticles();
+    this._buildFestivalSkyParticles();
     this._buildCockpitVisorRain();
   }
 
@@ -330,8 +333,10 @@ export class WeatherSystem {
 
     const rainTarget = q === 'ULTRA' ? 1800 : (q === 'HIGH' ? 1120 : 520);
     const splashTarget = q === 'ULTRA' ? 140 : (q === 'HIGH' ? 88 : 0);
+    const festivalTarget = q === 'ULTRA' ? 320 : (q === 'HIGH' ? 220 : 110);
     this._activeRainCount = Math.min(this._maxRainDrops, rainTarget);
     this._activeSplashCount = Math.min(this._maxRainSplashes, splashTarget);
+    this._activeFestivalCount = Math.min(this._maxFestivalParticles, festivalTarget);
 
     if (this.rainLines?.geometry) {
       this.rainLines.geometry.setDrawRange(0, this._activeRainCount * 2);
@@ -341,6 +346,9 @@ export class WeatherSystem {
       if (this._activeSplashCount === 0) {
         this.splashLines.visible = false;
       }
+    }
+    if (this.festivalPoints?.geometry) {
+      this.festivalPoints.geometry.setDrawRange(0, this._activeFestivalCount);
     }
 
     if (this.sunLight?.shadow) {
@@ -370,12 +378,12 @@ export class WeatherSystem {
   }
 
   _buildSkyAndLighting() {
-    // Physical Hemisphere Sky + Asphalt/Turf bounce calibrated to complement Poly Haven HDRI IBL
-    this.ambientLight = new THREE.HemisphereLight(0xdff0ff, 0x222822, 0.38);
+    // Vibrant Hemisphere Sky + Lush Emerald Turf Bounce (#2e8b40) so foliage, crowds & cars pop with color!
+    this.ambientLight = new THREE.HemisphereLight(0xe6f6ff, 0x2e8b40, 0.78);
     this.scene.add(this.ambientLight);
 
-    // Primary Physical Solar Directional Light with Tightly Framed 2048x2048 Soft Shadows
-    this.sunLight = new THREE.DirectionalLight(0xfff6e5, 2.85);
+    // Sun-Drenched Warm Golden-White Solar Directional Light (3.8-4.4 intensity) with 2048x2048 Soft Shadows
+    this.sunLight = new THREE.DirectionalLight(0xfff4d6, 4.25);
     this.sunLight.position.set(65, 115, 78);
     this.sunLight.castShadow = true;
     this.sunLight.shadow.mapSize.width = 2048;
@@ -394,13 +402,13 @@ export class WeatherSystem {
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
 
-    // Subtle Secondary Sky-Bounce Fill Light (preserves crisp dark cast-shadow contrast)
-    this.fillLight = new THREE.DirectionalLight(0xd4e6fc, 0.24);
+    // Warm Sky-Bounce Fill Light (lifts grandstand & tree shadow side with crisp azure clarity)
+    this.fillLight = new THREE.DirectionalLight(0xd8ecff, 0.48);
     this.fillLight.position.set(-340, 360, -310);
     this.scene.add(this.fillLight);
 
-    // Subtle Horizon Cross-Bounce Light
-    this.rimLight = new THREE.DirectionalLight(0xffe8cc, 0.14);
+    // Golden-Warm Horizon Rim Light
+    this.rimLight = new THREE.DirectionalLight(0xffe6b8, 0.32);
     this.rimLight.position.set(-230, 185, 340);
     this.scene.add(this.rimLight);
 
@@ -576,13 +584,10 @@ export class WeatherSystem {
           vec3 d = normalize(vLocalPos);
           vec3 sDir = normalize(sunDir);
 
-          // Procedural fallback / 1982 retro base
-          float effHdrMix = uHdrMix * (1.0 - step(0.5, retroMode));
-          vec3 col = vec3(0.0);
-
-          if (effHdrMix < 0.999) {
-            col = evalProceduralSky(d, sDir);
-          }
+          // Sun-drenched procedural azure/cerulean/sunset base blended with Poly Haven HDRI cloud detail
+          float effHdrMix = uHdrMix * (1.0 - step(0.5, retroMode)) * mix(0.38, 0.72, stormDarkness);
+          vec3 procCol = evalProceduralSky(d, sDir);
+          vec3 col = procCol;
 
           if (effHdrMix > 0.001) {
             // Exact Three.js equirectUv mapping so sky dome matches PMREM clearcoat reflections 1:1
@@ -600,13 +605,15 @@ export class WeatherSystem {
               hdrCol = mix(hdrCol, lowerTarget, smoothstep(0.015, -0.11, d.y));
             }
 
-            col = effHdrMix >= 0.999 ? hdrCol : mix(col, hdrCol, effHdrMix);
+            // Color-grade HDRI sample toward rich azure/golden sky palette so clear skies stay vibrant!
+            hdrCol = mix(hdrCol, procCol * max(0.85, length(hdrCol) * 0.68), 0.35 * (1.0 - stormDarkness));
+            col = mix(procCol, hdrCol, effHdrMix);
           }
 
-          if (retroMode > 0.5) {
-            float luma = dot(col, vec3(0.299, 0.587, 0.114));
-            col = mix(vec3(luma), col, 1.20);
-          }
+          // Boost sky chroma saturation in sun-drenched clear/sunset modes
+          float skyLuma = dot(col, vec3(0.299, 0.587, 0.114));
+          float satBoost = retroMode > 0.5 ? 1.28 : mix(1.24, 1.05, stormDarkness);
+          col = max(vec3(0.0), mix(vec3(skyLuma), col, satBoost));
 
           // Monsoon sheet-lightning cloud illumination
           if (flashBoost > 0.004) {
@@ -638,35 +645,35 @@ export class WeatherSystem {
     if (isNight || theme === 'VEGAS' || skyRegId === 'NEON_NIGHT') {
       return {
         url: POLY_HAVEN_HDRI_MAP.NEON_NIGHT,
-        envIntensity: 0.70,
-        skyExposure: 0.92,
+        envIntensity: 0.92,
+        skyExposure: 1.04,
       };
     }
     if (skyRegId === 'GOLDEN_SUNSET') {
       return {
         url: POLY_HAVEN_HDRI_MAP.GOLDEN_SUNSET,
-        envIntensity: 0.88,
-        skyExposure: 0.96,
+        envIntensity: 1.16,
+        skyExposure: 1.14,
       };
     }
     if (skyRegId === 'LIGHT_DRIZZLE' || skyRegId === 'MONSOON_STORM') {
       return {
         url: POLY_HAVEN_HDRI_MAP.LIGHT_DRIZZLE,
-        envIntensity: skyRegId === 'MONSOON_STORM' ? 0.68 : 0.78,
-        skyExposure: skyRegId === 'MONSOON_STORM' ? 0.58 : 0.80,
+        envIntensity: skyRegId === 'MONSOON_STORM' ? 0.78 : 0.90,
+        skyExposure: skyRegId === 'MONSOON_STORM' ? 0.68 : 0.88,
       };
     }
-    if (skyRegId === 'OVERCAST_COOL' || ((theme === 'SILVERSTONE' || theme === 'SUZUKA') && skyRegId === 'HOT_SUNNY')) {
+    if (skyRegId === 'OVERCAST_COOL') {
       return {
         url: POLY_HAVEN_HDRI_MAP.OVERCAST_COOL,
-        envIntensity: 0.90,
-        skyExposure: 0.96,
+        envIntensity: 1.08,
+        skyExposure: 1.08,
       };
     }
     return {
       url: POLY_HAVEN_HDRI_MAP.HOT_SUNNY,
-      envIntensity: 0.92,
-      skyExposure: 0.96,
+      envIntensity: 1.22,
+      skyExposure: 1.16,
     };
   }
 
@@ -952,34 +959,34 @@ export class WeatherSystem {
   _tintVistaLayersForBiome(theme, isNight, skyReg) {
     const palettes = {
       FUJI: [
-        { low: 0x223d28, mid: 0x334f3c, crag: 0x526475, snow: 0xe4ebf2 },
-        { low: 0x26384d, mid: 0x425873, crag: 0x647b94, snow: 0xedf3f8 },
-        { low: 0x4a6482, mid: 0x6c86a4, crag: 0x8ca2bd, snow: 0xeef4fa },
+        { low: 0x267d39, mid: 0x38964e, crag: 0x5c7894, snow: 0xffffff },
+        { low: 0x285678, mid: 0x46749c, crag: 0x6e92b8, snow: 0xf8fbff },
+        { low: 0x4c78a6, mid: 0x729bc4, crag: 0x9ab8d8, snow: 0xffffff },
       ],
       MONACO: [
-        { low: 0x344a35, mid: 0x6e695c, crag: 0x968d7d, snow: 0xd6ccbc },
-        { low: 0x384b5c, mid: 0x657485, crag: 0x8a97a6, snow: 0xdfe6ed },
-        { low: 0x566f87, mid: 0x7f96ad, crag: 0x9eb2c7, snow: 0xe6eef5 },
+        { low: 0x2d8a42, mid: 0x7c745e, crag: 0xa89b84, snow: 0xf0e4d2 },
+        { low: 0x346482, mid: 0x688298, crag: 0x94a8bc, snow: 0xecf3fa },
+        { low: 0x547ea3, mid: 0x82a2c0, crag: 0xa8c2db, snow: 0xf4f9ff },
       ],
       MONZA: [
-        { low: 0x2b4724, mid: 0x784d27, crag: 0x916338, snow: 0xc9a373 },
-        { low: 0x2e3f54, mid: 0x546980, crag: 0x768a9f, snow: 0xebf0f5 },
-        { low: 0x526b87, mid: 0x7b93ab, crag: 0x9cb1c7, snow: 0xedf2f7 },
+        { low: 0x288438, mid: 0x8a582b, crag: 0xa87442, snow: 0xe2bc88 },
+        { low: 0x2c5674, mid: 0x567898, crag: 0x7e9ab8, snow: 0xf5f9ff },
+        { low: 0x52789e, mid: 0x7c9ec0, crag: 0xa2bedb, snow: 0xf7fbff },
       ],
       VEGAS: [
-        { low: 0x0c0e17, mid: 0x171826, crag: 0x242336, snow: 0x323047 },
-        { low: 0x090b14, mid: 0x121422, crag: 0x1c1e30, snow: 0x27293f },
-        { low: 0x070810, mid: 0x0e101c, crag: 0x161829, snow: 0x202236 },
+        { low: 0x121528, mid: 0x22203b, crag: 0x352f54, snow: 0x4e4275 },
+        { low: 0x0e1222, mid: 0x1a1e38, crag: 0x2a2c4f, snow: 0x3d3e6b },
+        { low: 0x0a0d1a, mid: 0x14182e, crag: 0x222642, snow: 0x32365c },
       ],
       SUZUKA: [
-        { low: 0x234229, mid: 0x365942, crag: 0x54687a, snow: 0xe4edf5 },
-        { low: 0x293d54, mid: 0x475f7a, crag: 0x68809c, snow: 0xecf2f8 },
-        { low: 0x4c6887, mid: 0x718ca8, crag: 0x91a9c2, snow: 0xebf1f7 },
+        { low: 0x28843b, mid: 0x3c9c54, crag: 0x5c7c96, snow: 0xf7fbff },
+        { low: 0x2b5678, mid: 0x4c7498, crag: 0x7092b4, snow: 0xf5f9ff },
+        { low: 0x4e78a2, mid: 0x769ec2, crag: 0x9abadd, snow: 0xf8fcff },
       ],
       SILVERSTONE: [
-        { low: 0x264a28, mid: 0x3b6137, crag: 0x5c705e, snow: 0xc6d4cd },
-        { low: 0x2f4652, mid: 0x506773, crag: 0x748996, snow: 0xdde6ec },
-        { low: 0x536c80, mid: 0x7a92a6, crag: 0x99afc2, snow: 0xe6edf2 },
+        { low: 0x2b8c3e, mid: 0x42a452, crag: 0x648674, snow: 0xdcf0e6 },
+        { low: 0x2e5e6e, mid: 0x547e8e, crag: 0x7ca2b2, snow: 0xebf5fa },
+        { low: 0x547c96, mid: 0x7ca2ba, crag: 0x9ec0d6, snow: 0xf2f8fc },
       ],
     };
 
@@ -1114,6 +1121,134 @@ export class WeatherSystem {
     this.splashLines.frustumCulled = false;
     this.splashLines.visible = false;
     this.scene.add(this.splashLines);
+  }
+
+  // --------------------------------------------------------------------------
+  // FESTIVAL SKY / BLOSSOM / CONFETTI / NEON SPARKLE PARTICLE SYSTEM
+  // Drifting Pink Sakura Petals on Fuji/Suzuka, Gold/Tricolore Festival Confetti
+  // on Monza/Monaco/Silverstone, and Electric Neon Sparkle Motes on Las Vegas!
+  // --------------------------------------------------------------------------
+  _createFestivalParticleTexture() {
+    if (this._festivalTex) return this._festivalTex;
+    if (typeof document === 'undefined') return null;
+    const c = document.createElement('canvas');
+    c.width = 64;
+    c.height = 64;
+    const ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, 64, 64);
+
+    const grad = ctx.createRadialGradient(32, 30, 2, 32, 32, 28);
+    grad.addColorStop(0.0, 'rgba(255, 255, 255, 1.0)');
+    grad.addColorStop(0.55, 'rgba(255, 250, 252, 0.92)');
+    grad.addColorStop(0.85, 'rgba(255, 240, 248, 0.38)');
+    grad.addColorStop(1.0, 'rgba(255, 240, 248, 0.0)');
+    ctx.fillStyle = grad;
+
+    // Sculpted Sakura cherry-blossom petal / festival confetti silhouette
+    ctx.beginPath();
+    ctx.moveTo(32, 56);
+    ctx.bezierCurveTo(10, 46, 8, 18, 25, 10);
+    ctx.lineTo(32, 18);
+    ctx.lineTo(39, 10);
+    ctx.bezierCurveTo(56, 18, 54, 46, 32, 56);
+    ctx.closePath();
+    ctx.fill();
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    this._festivalTex = tex;
+    return tex;
+  }
+
+  _buildFestivalSkyParticles() {
+    const count = this._maxFestivalParticles || 320;
+    const positions = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
+    this.festivalParticles = [];
+
+    for (let i = 0; i < count; i++) {
+      const ox = (Math.random() - 0.5) * 96;
+      const oy = 1.2 + Math.random() * 24;
+      const oz = (Math.random() - 0.5) * 96;
+      const fallSpeed = 1.6 + Math.random() * 2.2;
+      const swayAmp = 1.4 + Math.random() * 2.6;
+      const swayFreq = 1.1 + Math.random() * 1.8;
+      const phase = Math.random() * Math.PI * 2;
+      this.festivalParticles.push({ ox, oy, oz, fallSpeed, swayAmp, swayFreq, phase });
+
+      const idx = i * 3;
+      positions[idx] = ox;
+      positions[idx + 1] = oy;
+      positions[idx + 2] = oz;
+      colors[idx] = 1.0;
+      colors[idx + 1] = 0.72;
+      colors[idx + 2] = 0.86;
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    this.festivalMat = new THREE.PointsMaterial({
+      size: 0.62,
+      map: this._createFestivalParticleTexture(),
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.90,
+      alphaTest: 0.04,
+      depthWrite: false,
+      sizeAttenuation: true,
+    });
+
+    this.festivalPoints = new THREE.Points(geo, this.festivalMat);
+    this.festivalPoints.name = 'FestivalSkyBlossomParticles';
+    this.festivalPoints.frustumCulled = false;
+    this.festivalPoints.visible = true;
+    this.scene.add(this.festivalPoints);
+  }
+
+  _configureFestivalParticlesForSession(theme, skyRegId, isNight) {
+    if (!this.festivalPoints) return;
+
+    const paletteByTheme = {
+      // Pink Sakura Cherry Blossom Petals + Warm Sun-Motes (Fuji & Suzuka)
+      FUJI:        [0xff9ec6, 0xff6ba8, 0xffd6e8, 0xff82b2, 0xffe8a3],
+      SUZUKA:      [0xff8ebc, 0xff5c9e, 0xffd2e6, 0xff9ec6, 0xffdf78],
+      // Italian Tricolore (Green/White/Red) + Championship Gold Festival Confetti (Monza)
+      MONZA:       [0x00d45a, 0xffffff, 0xff1828, 0xffd700, 0xff6e26],
+      // Monte Carlo Riviera Champagne Gold, Crimson & Turquoise Confetti / Sun-Motes (Monaco)
+      MONACO:      [0xffdf4f, 0xff2a3a, 0xffffff, 0x26e6ff, 0xff9d3b],
+      // British GP Union Jack Red/White/Blue & Festival Gold Confetti (Silverstone)
+      SILVERSTONE: [0xff2438, 0xffffff, 0x1e78ff, 0xffd53d, 0xff7a00],
+      // Las Vegas Strip Electric Neon Sparkle Motes
+      VEGAS:       [0xff2ae6, 0x00f5ff, 0xffd93b, 0xb84dff, 0x00ff9d],
+    };
+
+    const pal = (isNight || theme === 'VEGAS')
+      ? paletteByTheme.VEGAS
+      : (paletteByTheme[theme] || paletteByTheme.FUJI);
+
+    const colAttr = this.festivalPoints.geometry.attributes.color;
+    const tmp = new THREE.Color();
+    const isSunset = skyRegId === 'GOLDEN_SUNSET';
+    const sunsetGold = new THREE.Color(0xffc86b);
+
+    for (let i = 0; i < this.festivalParticles.length; i++) {
+      tmp.setHex(pal[i % pal.length]);
+      if (isSunset && !isNight && i % 3 === 0) {
+        tmp.lerp(sunsetGold, 0.35);
+      }
+      colAttr.setXYZ(i, tmp.r, tmp.g, tmp.b);
+    }
+    colAttr.needsUpdate = true;
+
+    const isSakura = (theme === 'FUJI' || theme === 'SUZUKA') && !isNight;
+    this.festivalMat.size = isSakura ? 0.68 : (isNight ? 0.56 : 0.60);
+    this.festivalMat.blending = (isNight || isSunset)
+      ? THREE.AdditiveBlending
+      : THREE.NormalBlending;
+    this.festivalMat.opacity = isNight ? 0.88 : 0.92;
+    this.festivalMat.needsUpdate = true;
   }
 
   // --------------------------------------------------------------------------
@@ -1424,73 +1559,82 @@ export class WeatherSystem {
       this.skyUniforms.sunDir.value.set(0.42, 0.56, 0.71).normalize();
     }
 
-    // Physical Sun/Sky Lighting Ratios calibrated for ACESFilmicToneMapping (exposure 0.96, zero bloom)
+    // Sun-Drenched Vibrant Lighting (3.8-4.4 directional sun + #2e8b40 emerald ground bounce)
     const sunIntensityMap = {
-      HOT_SUNNY:     2.85,
-      GOLDEN_SUNSET: 2.55,
-      OVERCAST_COOL: 1.85,
-      LIGHT_DRIZZLE: 1.08,
-      MONSOON_STORM: 0.76,
-      NEON_NIGHT:    0.92,
+      HOT_SUNNY:     4.25,
+      GOLDEN_SUNSET: 3.95,
+      OVERCAST_COOL: 2.85,
+      LIGHT_DRIZZLE: 1.70,
+      MONSOON_STORM: 1.18,
+      NEON_NIGHT:    1.50,
     };
     const ambientIntensityMap = {
-      HOT_SUNNY:     0.36,
-      GOLDEN_SUNSET: 0.38,
-      OVERCAST_COOL: 0.42,
-      LIGHT_DRIZZLE: 0.38,
-      MONSOON_STORM: 0.32,
-      NEON_NIGHT:    0.36,
+      HOT_SUNNY:     0.78,
+      GOLDEN_SUNSET: 0.72,
+      OVERCAST_COOL: 0.70,
+      LIGHT_DRIZZLE: 0.54,
+      MONSOON_STORM: 0.45,
+      NEON_NIGHT:    0.58,
     };
-    this._baseSunIntensity = sunIntensityMap[skyReg.id] ?? 2.85;
-    this._baseAmbientIntensity = ambientIntensityMap[skyReg.id] ?? 0.38;
+    this._baseSunIntensity = sunIntensityMap[skyReg.id] ?? 4.25;
+    this._baseAmbientIntensity = ambientIntensityMap[skyReg.id] ?? 0.78;
 
-    this.sunLight.color.setHex(skyReg.sunColor);
+    const sunColorMap = {
+      HOT_SUNNY:     0xfff4d6,
+      GOLDEN_SUNSET: 0xffb858,
+      OVERCAST_COOL: 0xfff8eb,
+      LIGHT_DRIZZLE: 0xdce8f5,
+      MONSOON_STORM: 0xb4cae0,
+      NEON_NIGHT:    0xd8e8ff,
+    };
+    this.sunLight.color.setHex(sunColorMap[skyReg.id] || skyReg.sunColor);
     this.sunLight.intensity = this._baseSunIntensity;
 
     const hemiSkyMap = {
-      HOT_SUNNY:     0xdcf0ff,
-      GOLDEN_SUNSET: 0xffcca8,
-      OVERCAST_COOL: 0xd6e2ee,
-      LIGHT_DRIZZLE: 0xb6c7db,
-      MONSOON_STORM: 0x8ba0b8,
-      NEON_NIGHT:    0x7c9ce8,
+      HOT_SUNNY:     0xe6f6ff,
+      GOLDEN_SUNSET: 0xffd2a6,
+      OVERCAST_COOL: 0xdeecfa,
+      LIGHT_DRIZZLE: 0xc2d4e8,
+      MONSOON_STORM: 0x98b0c8,
+      NEON_NIGHT:    0x8cb0ff,
     };
+    // Vibrant #2e8b40 emerald stadium turf bounce so foliage, cars & fan-club crowds shine with rich color!
     const hemiGroundMap = {
-      HOT_SUNNY:     0x232922,
-      GOLDEN_SUNSET: 0x2c1f19,
-      OVERCAST_COOL: 0x22272c,
-      LIGHT_DRIZZLE: 0x1b2026,
-      MONSOON_STORM: 0x141920,
-      NEON_NIGHT:    0x111320,
+      HOT_SUNNY:     0x2e8b40,
+      GOLDEN_SUNSET: 0x3b8c3c,
+      OVERCAST_COOL: 0x2a7d3b,
+      LIGHT_DRIZZLE: 0x225834,
+      MONSOON_STORM: 0x1a3c28,
+      NEON_NIGHT:    0x1c2848,
     };
-    this.ambientLight.color.setHex(hemiSkyMap[skyReg.id] || 0xdcf0ff);
-    this.ambientLight.groundColor.setHex(hemiGroundMap[skyReg.id] || 0x232922);
+    this.ambientLight.color.setHex(hemiSkyMap[skyReg.id] || 0xe6f6ff);
+    this.ambientLight.groundColor.setHex(hemiGroundMap[skyReg.id] || 0x2e8b40);
     this.ambientLight.intensity = this._baseAmbientIntensity;
 
-    this.fillLight.color.setHex(isNight ? 0x8eb4f0 : (isSunset ? 0xc4d4f5 : 0xd4e6fa));
-    this.fillLight.intensity = isNight ? 0.28 : (isSunset ? 0.24 : 0.22);
+    this.fillLight.color.setHex(isNight ? 0x9ec2ff : (isSunset ? 0xffd6b8 : 0xd8ecff));
+    this.fillLight.intensity = isNight ? 0.42 : (isSunset ? 0.46 : 0.48);
 
-    this.rimLight.color.setHex(isNight ? 0x8ab8ff : (isSunset ? 0xffaa6b : 0xffebd4));
-    this.rimLight.intensity = isNight ? 0.16 : (isSunset ? 0.18 : 0.12);
+    this.rimLight.color.setHex(isNight ? 0x94c4ff : (isSunset ? 0xffa858 : 0xffe6b8));
+    this.rimLight.intensity = isNight ? 0.28 : (isSunset ? 0.36 : 0.32);
 
     const skyPaletteOverrides = {
       HOT_SUNNY: {
-        zenith: 0x0b52d4, mid: 0x3c91f2, horizon: 0xb8e0ff, antiHorizon: 0x8cc8fc, sun: 0xfff5e0, boost: 0.96,
+        zenith: 0x004ce8, mid: 0x1e8eff, horizon: 0x9ee6ff, antiHorizon: 0x68c4ff, sun: 0xfff5d6, boost: 1.22,
       },
       GOLDEN_SUNSET: {
-        zenith: 0x254fa6, mid: 0xdc5f4e, horizon: 0xf7b65c, antiHorizon: 0x7c4e98, sun: 0xffb85c, boost: 0.98,
+        zenith: 0x1e3fa8, mid: 0xf25c3d, horizon: 0xffc24b, antiHorizon: 0x8e48a8, sun: 0xffbe55, boost: 1.24,
       },
       OVERCAST_COOL: {
-        zenith: 0x425b78, mid: 0x7991ab, horizon: 0xbfd0e0, antiHorizon: 0xa8bcd0, sun: 0xeef4fa, boost: 0.94,
+        zenith: 0x2462b8, mid: 0x5c9ce6, horizon: 0xbce0fa, antiHorizon: 0x98c6ed, sun: 0xfff6e6, boost: 1.08,
       },
       LIGHT_DRIZZLE: {
-        zenith: 0x2e4359, mid: 0x566e87, horizon: 0x91a6ba, antiHorizon: 0x7d92a8, sun: 0xc8d8e8, boost: 0.92,
+        zenith: 0x2e4866, mid: 0x5a7896, horizon: 0x9ab2c8, antiHorizon: 0x849cb4, sun: 0xd2e2f2, boost: 0.96,
       },
       MONSOON_STORM: {
-        zenith: 0x1a283d, mid: 0x344761, horizon: 0x5c728c, antiHorizon: 0x4b607a, sun: 0xa4bcd8, boost: 0.90,
+        zenith: 0x1c2c44, mid: 0x384e6b, horizon: 0x627a96, antiHorizon: 0x506682, sun: 0xaec6e2, boost: 0.92,
       },
       NEON_NIGHT: {
-        zenith: 0x050a1c, mid: 0x0e1836, horizon: 0x1c2240, antiHorizon: 0x141830, sun: 0xcfe2ff, boost: 0.95,
+        zenith: 0x060c24, mid: 0x122048, horizon: 0x242c56, antiHorizon: 0x181e3e, sun: 0xd6e6ff, boost: 1.04,
       },
     };
 
@@ -1500,42 +1644,42 @@ export class WeatherSystem {
       horizon: skyReg.skyHorizon,
       antiHorizon: skyReg.skyHorizon,
       sun: skyReg.sunColor,
-      boost: 0.96,
+      boost: 1.16,
     };
 
     const themeHorizonMap = {
-      FUJI:        isSunset ? 0xf2b085 : 0xc4e2fa,
-      MONACO:      isSunset ? 0xf5be7d : 0xa8def5,
-      SUZUKA:      isSunset ? 0xf0aa8e : 0xbedef5,
-      MONZA:       isSunset ? 0xf5b46e : 0xf5dec0,
-      SILVERSTONE: isSunset ? 0xebae96 : 0xcfdde8,
-      VEGAS:       0x252a4a,
+      FUJI:        isSunset ? 0xffb480 : 0xb8e8ff,
+      MONACO:      isSunset ? 0xffc478 : 0x98e4ff,
+      SUZUKA:      isSunset ? 0xffae88 : 0xb2e4ff,
+      MONZA:       isSunset ? 0xffba68 : 0xffe4bc,
+      SILVERSTONE: isSunset ? 0xffb492 : 0xc4e4fa,
+      VEGAS:       0x2e3462,
     };
 
     this.skyUniforms.zenithColor.value.setHex(pal.zenith);
     this.skyUniforms.midColor.value.setHex(pal.mid);
     this.skyUniforms.horizonColor.value.setHex(pal.horizon);
     this.skyUniforms.antiHorizonColor.value.setHex(pal.antiHorizon);
-    this.skyUniforms.groundFogColor.value.setHex(isSunset ? 0xd99268 : (isNight ? 0x0b0f1c : skyReg.fogColor));
+    this.skyUniforms.groundFogColor.value.setHex(isSunset ? 0xe89b68 : (isNight ? 0x0d1326 : 0xa8dcff));
     this.skyUniforms.sunColor.value.setHex(pal.sun);
     this.skyUniforms.themeHorizonTint.value.setHex(
-      isNight ? 0x242a4d : (themeHorizonMap[this.activeTheme] || pal.horizon)
+      isNight ? 0x2c3462 : (themeHorizonMap[this.activeTheme] || pal.horizon)
     );
     this.skyUniforms.skyRadianceBoost.value = pal.boost;
 
-    this.skyUniforms.nightAmount.value = isNight ? 1.0 : (isSunset ? 0.16 : 0.0);
+    this.skyUniforms.nightAmount.value = isNight ? 1.0 : (isSunset ? 0.14 : 0.0);
     this.skyUniforms.sunsetAmount.value = isSunset ? 1.0 : 0.0;
-    this.skyUniforms.stormDarkness.value = isStorm ? 1.0 : (isDrizzle ? 0.55 : 0.0);
+    this.skyUniforms.stormDarkness.value = isStorm ? 1.0 : (isDrizzle ? 0.50 : 0.0);
 
     const cloudMap = {
-      HOT_SUNNY:     0.22,
-      GOLDEN_SUNSET: 0.38,
-      OVERCAST_COOL: 0.68,
-      LIGHT_DRIZZLE: 0.86,
-      MONSOON_STORM: 0.96,
-      NEON_NIGHT:    0.14,
+      HOT_SUNNY:     0.18,
+      GOLDEN_SUNSET: 0.34,
+      OVERCAST_COOL: 0.55,
+      LIGHT_DRIZZLE: 0.84,
+      MONSOON_STORM: 0.95,
+      NEON_NIGHT:    0.12,
     };
-    this.skyUniforms.cloudCover.value = cloudMap[reg.id] ?? 0.28;
+    this.skyUniforms.cloudCover.value = cloudMap[reg.id] ?? 0.22;
 
     if (this.visorUniforms) {
       this.visorUniforms.uSkyTint.value.setHex(isNight ? 0x9ec4e8 : (isSunset ? 0xf5c49e : 0xd2e4f4));
@@ -1550,10 +1694,11 @@ export class WeatherSystem {
       sunColor: pal.sun,
     };
 
-    this.scene.fog.color.setHex(isSunset ? 0xd99268 : (isNight ? 0x0b0f1c : skyReg.fogColor));
-    this.scene.fog.density = Math.min(0.00032, (skyReg.fogDensity || 0.00016) * (isStorm ? 0.42 : 0.28));
+    this.scene.fog.color.setHex(isSunset ? 0xe89b68 : (isNight ? 0x0d1326 : (isStorm || isDrizzle ? skyReg.fogColor : 0xa8dcff)));
+    this.scene.fog.density = Math.min(0.00026, (skyReg.fogDensity || 0.00014) * (isStorm ? 0.38 : 0.20));
 
     this._tintVistaLayersForBiome(this.activeTheme, isNight, effectiveSkyReg);
+    this._configureFestivalParticlesForSession(this.activeTheme, skyReg.id, isNight);
     this._bindPolyHavenOrFallbackEnvironment(effectiveSkyReg, this.activeTheme, isNight);
 
     return this.currentRegimeId;
@@ -1631,6 +1776,47 @@ export class WeatherSystem {
     const raining = rainInt > 0.05 && this._activeRainCount > 0;
     this.rainLines.visible = raining;
     this.splashLines.visible = raining && !!focusTargetPos && this._activeSplashCount > 0;
+
+    // Animate Festival Sky Blossoms / Tricolore Confetti / Neon Sparkle Motes in Clear/Sunset/Night Weather
+    const showFestival = !raining && visualStyle !== '1982_ARCADE' && this.festivalPoints && this._activeFestivalCount > 0;
+    if (this.festivalPoints) {
+      this.festivalPoints.visible = Boolean(showFestival);
+      if (showFestival && cameraPos) {
+        const fAttr = this.festivalPoints.geometry.attributes.position;
+        const fArr = fAttr.array;
+        const fCount = Math.min(this._activeFestivalCount, this.festivalParticles.length);
+        const t = this.elapsedSkySec;
+        const isVegas = this.isNightActive || this.activeTheme === 'VEGAS';
+
+        for (let i = 0; i < fCount; i++) {
+          const p = this.festivalParticles[i];
+          if (isVegas) {
+            p.oy += p.fallSpeed * 0.45 * safeDt;
+            if (p.oy > 25) {
+              p.oy = 1.0 + Math.random() * 3.0;
+              p.ox = (Math.random() - 0.5) * 92;
+              p.oz = (Math.random() - 0.5) * 92;
+            }
+          } else {
+            p.oy -= p.fallSpeed * safeDt;
+            p.ox += Math.cos(t * 0.7 + p.phase) * 1.35 * safeDt;
+            if (p.oy < -1.5) {
+              p.oy = 21 + Math.random() * 6;
+              p.ox = (Math.random() - 0.5) * 92;
+              p.oz = (Math.random() - 0.5) * 92;
+            }
+          }
+
+          const swirlX = Math.sin(t * p.swayFreq + p.phase) * p.swayAmp;
+          const swirlZ = Math.cos(t * (p.swayFreq * 0.85) + p.phase * 1.3) * p.swayAmp;
+          const idx = i * 3;
+          fArr[idx]     = cameraPos.x + p.ox + swirlX;
+          fArr[idx + 1] = cameraPos.y + p.oy;
+          fArr[idx + 2] = cameraPos.z + p.oz + swirlZ;
+        }
+        fAttr.needsUpdate = true;
+      }
+    }
 
     if (raining && cameraPos) {
       this.rainMat.opacity = Math.min(0.68, 0.22 + rainInt * 0.34 + this.lightningFlash * 0.18);

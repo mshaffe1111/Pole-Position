@@ -1532,6 +1532,135 @@ export class Retro1982Renderer {
       return m.canvas;
     };
 
+    const torii = makeOffscreenCanvas(38, 46);
+    {
+      const c = torii.ctx;
+      // Stone pedestal bases
+      c.fillStyle = '#18202c';
+      c.fillRect(5, 39, 6, 7);
+      c.fillRect(27, 39, 6, 7);
+      // Crimson pillars (hashira)
+      c.fillStyle = '#e41820';
+      c.fillRect(6, 10, 4, 30);
+      c.fillRect(28, 10, 4, 30);
+      c.fillStyle = '#ff3840';
+      c.fillRect(7, 10, 1, 29);
+      c.fillRect(29, 10, 1, 29);
+      // Lower tie beam (nuki)
+      c.fillStyle = '#d8141c';
+      c.fillRect(3, 16, 32, 3);
+      c.fillStyle = '#18202c';
+      c.fillRect(3, 15, 32, 1);
+      // Upper lintel (kasagi) with upturned wing tips
+      c.fillStyle = '#141824';
+      c.fillRect(1, 5, 36, 3);
+      c.fillRect(0, 3, 4, 3);
+      c.fillRect(34, 3, 4, 3);
+      c.fillStyle = '#e41820';
+      c.fillRect(2, 8, 34, 3);
+      // Center gold tablet (gakuzuka)
+      c.fillStyle = '#141824';
+      c.fillRect(16, 10, 6, 7);
+      c.fillStyle = '#fce400';
+      c.fillRect(17, 11, 4, 5);
+      // Hanging festival chochin lanterns
+      c.fillStyle = '#ff2830';
+      c.fillRect(11, 20, 3, 4);
+      c.fillRect(24, 20, 3, 4);
+      c.fillStyle = '#fcfcfc';
+      c.fillRect(11, 21, 3, 1);
+      c.fillRect(24, 21, 3, 1);
+    }
+
+    const buildFanTribune = (waveUp) => {
+      const ft = makeOffscreenCanvas(46, 40);
+      const c = ft.ctx;
+      // Bleacher structural frame
+      c.fillStyle = '#1c2434';
+      c.fillRect(2, 14, 42, 25);
+      c.fillStyle = '#2c3850';
+      c.fillRect(3, 16, 40, 20);
+      // Festival canopy roof stripes
+      for (let rx = 2; rx < 44; rx += 4) {
+        c.fillStyle = ((rx >> 2) & 1) === 0 ? '#ff1828' : '#fcfcfc';
+        c.fillRect(rx, 9, 4, 4);
+      }
+      c.fillStyle = '#ffd800';
+      c.fillRect(2, 13, 42, 1);
+      // Packed jumping fans in 3 rows (Ferrari Red, Papaya, Cyan, Yellow, Pink, White)
+      const fanPalette = ['#ff1828', '#ff8000', '#00f5d0', '#ffd800', '#ff48b0', '#fcfcfc'];
+      for (let row = 0; row < 3; row++) {
+        const baseY = 17 + row * 5;
+        for (let col = 0; col < 9; col++) {
+          const fx = 5 + col * 4;
+          const jump = ((col + row + (waveUp ? 1 : 0)) & 1) === 0 ? -1 : 0;
+          const shirtHex = fanPalette[(col + row * 2) % fanPalette.length];
+          c.fillStyle = '#ffcc98';
+          c.fillRect(fx + 1, baseY + jump, 2, 1);
+          c.fillStyle = shirtHex;
+          c.fillRect(fx, baseY + 1 + jump, 3, 3);
+          if (jump < 0) {
+            // Raised cheering arms
+            c.fillRect(fx - 1, baseY + jump, 1, 2);
+            c.fillRect(fx + 3, baseY + jump, 1, 2);
+          }
+        }
+      }
+      // Front cheer banner rail
+      c.fillStyle = waveUp ? '#ff1828' : '#101828';
+      c.fillRect(3, 31, 40, 8);
+      c.fillStyle = '#ffd800';
+      c.fillRect(4, 32, 38, 1);
+      drawRawPixelText(c, waveUp ? 'VAMOS!' : 'GO #1!', 6, 33, '#fcfcfc', 1, '#000000');
+      // Giant waving checkered & team flags above the roof
+      const poleY = waveUp ? 1 : 2;
+      c.fillStyle = '#dce4f0';
+      c.fillRect(7, poleY, 1, 9);
+      c.fillRect(36, poleY, 1, 9);
+      for (let r = 0; r < 3; r++) {
+        for (let col = 0; col < 4; col++) {
+          c.fillStyle = ((r + col + (waveUp ? 1 : 0)) & 1) === 0 ? '#fcfcfc' : '#101010';
+          c.fillRect(8 + col * 2, poleY + r * 2, 2, 2);
+        }
+      }
+      c.fillStyle = '#ff8000';
+      c.fillRect(37, poleY, 7, 5);
+      c.fillStyle = '#00f5d0';
+      c.fillRect(38, poleY + 2, 5, 2);
+      // Camera flash sparkle
+      if (waveUp) {
+        c.fillStyle = '#ffffff';
+        c.fillRect(21, 18, 2, 2);
+      }
+      return ft.canvas;
+    };
+
+    const buildTifosiFlare = (alt) => {
+      const tf = makeOffscreenCanvas(34, 46);
+      const c = tf.ctx;
+      // Cheering Tifosi fan at base
+      c.fillStyle = '#ff1828';
+      c.fillRect(13, 32, 8, 9);
+      c.fillStyle = '#182030';
+      c.fillRect(13, 41, 3, 5);
+      c.fillRect(18, 41, 3, 5);
+      c.fillStyle = '#ffd800';
+      c.fillRect(14, 27, 6, 5);
+      // Rising Italian Tricolore & Rosso smoke flare puffs
+      const shift = alt ? 2 : -1;
+      const puffs = [
+        [16, 23, 4, '#ff2830'],
+        [15 + shift, 17, 6, '#ff3830'],
+        [17 - shift, 11, 7, '#fcfcfc'],
+        [15 + shift, 6, 6, '#00c850'],
+      ];
+      for (const [px, py, pr, hex] of puffs) {
+        c.fillStyle = hex;
+        c.fillRect(px - pr, py - (pr >> 1), pr * 2, pr);
+      }
+      return tf.canvas;
+    };
+
     return {
       pine: pine.canvas,
       sakura: sakura.canvas,
@@ -1539,6 +1668,11 @@ export class Retro1982Renderer {
       autumnPine: autumnPine.canvas,
       neonSign: neonSign.canvas,
       pitSign: pitSign.canvas,
+      torii: torii.canvas,
+      fanTribune0: buildFanTribune(false),
+      fanTribune1: buildFanTribune(true),
+      tifosiFlare0: buildTifosiFlare(false),
+      tifosiFlare1: buildTifosiFlare(true),
       pitCrew0: buildPitCrew(false),
       pitCrew1: buildPitCrew(true),
       marshalGreen0: buildMarshal('GREEN', false),
@@ -2527,45 +2661,93 @@ export class Retro1982Renderer {
         this._lineCenterX[y] = centerX;
         this._lineRoadHalfPx[y] = roadHalfPx;
 
-        // A. Full-width Grass / Verge / Tunnel Scanline
+        // A. Full-width Vibrant Mowed Emerald Stadium Turf / Verge / Tunnel Scanline
         if (inTunnel) {
           ctx.fillStyle = grassBand ? '#242838' : '#1c202c';
-        } else if (forceNight) {
-          ctx.fillStyle = grassBand ? '#008c24' : '#00701c';
+        } else if (forceNight || trackId === 'VEGAS_NEON') {
+          ctx.fillStyle = grassBand ? '#0e9c32' : '#088026';
         } else {
-          ctx.fillStyle = grassBand ? '#00a800' : '#009200';
+          ctx.fillStyle = grassBand ? '#28cf47' : '#1eb83a';
         }
         ctx.fillRect(0, y, W, 1);
 
-        // A2. Clean Grandstand Bleachers with Horizontal Pixel Crowd Bands (No messy stick-flags!)
-        const hasLeftGrandstand = !inTunnel && ((lineS >= 910 || lineS <= 190) || (lineS >= 590 && lineS <= 650));
-        const hasRightGrandstand = !inTunnel && (lineS >= 380 && lineS <= 445);
-        if ((hasLeftGrandstand || hasRightGrandstand) && scale > 0.06) {
-          const crowdTick = ((nowSec * 7) | 0) + (y >> 1);
-          const crowdCols = ['#fc2818', '#fce400', '#00fc58', '#54dcff', '#fcfcfc'];
-          const stepDot = Math.max(2, Math.round(1.4 * pxPerMeter));
+        // A2. Packed Multi-Colored Jumping Grandstands (Mexican Wave, Fan Banners, Waving Flags & Camera Flashes!)
+        const hasLeftGrandstand =
+          !inTunnel &&
+          ((lineS >= 885 || lineS <= 215) ||
+            (lineS >= 310 && lineS <= 395) ||
+            (lineS >= 565 && lineS <= 685));
+        const hasRightGrandstand =
+          !inTunnel &&
+          ((lineS >= 210 && lineS <= 305) ||
+            (lineS >= 365 && lineS <= 485) ||
+            (lineS >= 710 && lineS <= 825));
+        if ((hasLeftGrandstand || hasRightGrandstand) && scale > 0.055) {
+          const crowdTick = ((nowSec * 9) | 0) + (y >> 1);
+          const crowdCols = isMonza
+            ? ['#ff1828', '#ff1828', '#fcfcfc', '#00d858', '#ffd800', '#ff8000']
+            : ['#ff1828', '#ff8000', '#00f5d0', '#ffd800', '#ff48b0', '#fcfcfc', '#00e868'];
+          const stepDot = Math.max(2, Math.round(1.25 * pxPerMeter));
+          const waveJump = Math.sin(absWorldM * 0.14 - nowSec * 6.5) > 0.25 ? 1 : 0;
+          const flagBand = (Math.floor(absWorldM / 5.0) & 3) === 0;
+          const bannerColors = ['#ff1828', '#ffd800', '#00f5d0', '#ff8000'];
+          const bannerHex = bannerColors[Math.floor(absWorldM / 8.0) % bannerColors.length];
 
           if (hasLeftGrandstand) {
-            const standInL = roadCenterInt - Math.round((ROAD_HALF_WIDTH + 4.8) * pxPerMeter);
-            const standOutL = Math.max(0, roadCenterInt - Math.round((ROAD_HALF_WIDTH + 13.8) * pxPerMeter));
+            const standInL = roadCenterInt - Math.round((ROAD_HALF_WIDTH + 4.4) * pxPerMeter);
+            const standOutL = Math.max(0, roadCenterInt - Math.round((ROAD_HALF_WIDTH + 14.4) * pxPerMeter));
             if (standInL > standOutL + 2) {
-              ctx.fillStyle = grassBand ? '#344056' : '#283244';
+              ctx.fillStyle = grassBand ? '#2c3850' : '#1e283a';
               ctx.fillRect(standOutL, y, standInL - standOutL, 1);
-              for (let cx = standOutL + 1; cx < standInL - 1; cx += stepDot) {
-                ctx.fillStyle = crowdCols[(cx + crowdTick) % crowdCols.length];
-                ctx.fillRect(cx, y, Math.max(1, stepDot - 1), 1);
+              // Front fan-club cheer banner rail
+              const railW = Math.max(1, Math.round(0.65 * pxPerMeter));
+              ctx.fillStyle = curbBand ? bannerHex : '#fcfcfc';
+              ctx.fillRect(standInL - railW, y, railW, 1);
+              // Packed jumping fan-club color blocks
+              const fanY = Math.max(minAllowRoadY, y - waveJump);
+              let colIdx = 0;
+              for (let cx = standOutL + 1; cx < standInL - railW; cx += stepDot, colIdx++) {
+                ctx.fillStyle = crowdCols[(colIdx + crowdTick) % crowdCols.length];
+                ctx.fillRect(cx, fanY, Math.max(1, stepDot - 1), 1 + waveJump);
+              }
+              // Waving team & checkered flags above top bleacher tier
+              if (flagBand && scale > 0.11 && y > minAllowRoadY + 3) {
+                const flagX = standOutL + ((crowdTick * 3) % Math.max(3, standInL - standOutL - 3));
+                ctx.fillStyle = ((crowdTick & 1) === 0) ? '#fcfcfc' : '#ff1828';
+                ctx.fillRect(flagX, y - 3, 3, 2);
+              }
+              // Sparkling white camera flash pops
+              if (((standInL * 13 + ((nowSec * 16) | 0) + y * 7) % 47) === 0) {
+                const flashX = standOutL + ((y * 19) % Math.max(2, standInL - standOutL - 2));
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(flashX, Math.max(minAllowRoadY, y - 1), 2, 2);
               }
             }
           }
           if (hasRightGrandstand) {
-            const standInR = roadCenterInt + Math.round((ROAD_HALF_WIDTH + 4.8) * pxPerMeter);
-            const standOutR = Math.min(W, roadCenterInt + Math.round((ROAD_HALF_WIDTH + 13.8) * pxPerMeter));
+            const standInR = roadCenterInt + Math.round((ROAD_HALF_WIDTH + 4.4) * pxPerMeter);
+            const standOutR = Math.min(W, roadCenterInt + Math.round((ROAD_HALF_WIDTH + 14.4) * pxPerMeter));
             if (standOutR > standInR + 2) {
-              ctx.fillStyle = grassBand ? '#344056' : '#283244';
+              ctx.fillStyle = grassBand ? '#2c3850' : '#1e283a';
               ctx.fillRect(standInR, y, standOutR - standInR, 1);
-              for (let cx = standInR + 1; cx < standOutR - 1; cx += stepDot) {
-                ctx.fillStyle = crowdCols[(cx + crowdTick + 2) % crowdCols.length];
-                ctx.fillRect(cx, y, Math.max(1, stepDot - 1), 1);
+              const railW = Math.max(1, Math.round(0.65 * pxPerMeter));
+              ctx.fillStyle = curbBand ? bannerHex : '#fcfcfc';
+              ctx.fillRect(standInR, y, railW, 1);
+              const fanY = Math.max(minAllowRoadY, y - waveJump);
+              let colIdx = 0;
+              for (let cx = standInR + railW + 1; cx < standOutR - 1; cx += stepDot, colIdx++) {
+                ctx.fillStyle = crowdCols[(colIdx + crowdTick + 2) % crowdCols.length];
+                ctx.fillRect(cx, fanY, Math.max(1, stepDot - 1), 1 + waveJump);
+              }
+              if (flagBand && scale > 0.11 && y > minAllowRoadY + 3) {
+                const flagX = standInR + ((crowdTick * 5) % Math.max(3, standOutR - standInR - 3));
+                ctx.fillStyle = ((crowdTick & 1) === 0) ? '#ffd800' : '#00f5d0';
+                ctx.fillRect(flagX, y - 3, 3, 2);
+              }
+              if (((standInR * 11 + ((nowSec * 16) | 0) + y * 5) % 49) === 0) {
+                const flashX = standInR + ((y * 23) % Math.max(2, standOutR - standInR - 2));
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(flashX, Math.max(minAllowRoadY, y - 1), 2, 2);
               }
             }
           }
@@ -2613,7 +2795,32 @@ export class Retro1982Renderer {
           }
         }
 
-        // C. Crisp Red / White 1982 Namco FIA Rumble Kerbs + 1px Sub-Pixel Outer Edge Anti-Chatter
+        // C. Circuit-Colored FIA Runoff Shoulder Stripes + Crisp 1982 Namco Rumble Kerbs
+        const hasRightCurb = !(lineS >= 912 && lineS <= 948) && !(lineS >= 68 && lineS <= 112);
+        const runoffPx = Math.max(1, Math.round((CURB_WIDTH * 1.75) * pxPerMeter));
+        if (runoffPx >= 1 && !inTunnel) {
+          const runTri = Math.floor(absWorldM / 4.5) % 3;
+          let runoffHex;
+          if (isMonza || trackId === 'MONZA_TEMPLE') {
+            runoffHex = runTri === 0 ? '#00a848' : (runTri === 1 ? '#fcfcfc' : '#e42018');
+          } else if (trackId === 'MONACO_HARBOR') {
+            runoffHex = runTri === 0 ? '#e41820' : (runTri === 1 ? '#fce400' : '#fcfcfc');
+          } else if (trackId === 'SILVERSTONE_GP') {
+            runoffHex = runTri === 0 ? '#1448d8' : (runTri === 1 ? '#fcfcfc' : '#e01824');
+          } else if (trackId === 'SUZUKA_130R') {
+            runoffHex = runTri === 0 ? '#e41828' : (runTri === 1 ? '#fcfcfc' : '#ff88b8');
+          } else if (trackId === 'VEGAS_NEON') {
+            runoffHex = runTri === 0 ? '#ff28b8' : (runTri === 1 ? '#00f4ff' : '#fce400');
+          } else {
+            runoffHex = runTri === 0 ? '#1878fc' : (runTri === 1 ? '#fcfcfc' : '#ff2838');
+          }
+          ctx.fillStyle = runoffHex;
+          ctx.fillRect(roadL - curbPx - runoffPx, y, runoffPx, 1);
+          if (hasRightCurb) {
+            ctx.fillRect(roadR + curbPx, y, runoffPx, 1);
+          }
+        }
+
         let curbHex;
         if (isMonza) {
           const tri = Math.floor(absWorldM / 2.5) % 3;
@@ -2623,7 +2830,6 @@ export class Retro1982Renderer {
         }
         ctx.fillStyle = curbHex;
         ctx.fillRect(roadL - curbPx, y, curbPx, 1);
-        const hasRightCurb = !(lineS >= 912 && lineS <= 948) && !(lineS >= 68 && lineS <= 112);
         if (hasRightCurb) {
           ctx.fillRect(roadR, y, curbPx, 1);
         }
@@ -2830,6 +3036,7 @@ export class Retro1982Renderer {
       }
     }
 
+    const fanWaveAlt = (((nowSec * 7) | 0) & 1) === 1;
     for (let slot = 0; slot < 20; slot++) {
       const s = slot * 50 + 28;
       if (tunnelRange && s >= tunnelRange[0] && s <= tunnelRange[1]) continue;
@@ -2839,12 +3046,56 @@ export class Retro1982Renderer {
       if (side > 0 && (s >= 900 || s <= 124)) continue;
 
       let propImg = this._scenicSprites.pine;
-      if (trackId === 'VEGAS_NEON') propImg = slot % 2 === 0 ? this._scenicSprites.neonSign : this._scenicSprites.palm;
-      else if (trackId === 'MONACO_HARBOR') propImg = slot % 2 === 0 ? this._scenicSprites.palm : this._scenicSprites.pine;
-      else if (trackId === 'MONZA_TEMPLE') propImg = slot % 2 === 0 ? this._scenicSprites.autumnPine : this._scenicSprites.pine;
-      else if (trackId === 'SUZUKA_130R') propImg = slot % 3 === 1 ? this._scenicSprites.autumnPine : this._scenicSprites.sakura;
-      else if (trackTheme === 'FUJI' && slot % 3 === 1) propImg = this._scenicSprites.sakura;
-      pushSprite(dsReal, 0, propImg, side * (ROAD_HALF_WIDTH + 14.2), 4.0, 0);
+      let propWidthM = 4.0;
+      if (trackId === 'VEGAS_NEON') {
+        propImg = slot % 2 === 0 ? this._scenicSprites.neonSign : this._scenicSprites.palm;
+      } else if (trackId === 'MONACO_HARBOR') {
+        propImg = slot % 2 === 0 ? this._scenicSprites.palm : this._scenicSprites.pine;
+      } else if (trackId === 'MONZA_TEMPLE') {
+        if (slot % 3 === 0) {
+          propImg = fanWaveAlt ? this._scenicSprites.tifosiFlare1 : this._scenicSprites.tifosiFlare0;
+        } else {
+          propImg = slot % 2 === 0 ? this._scenicSprites.autumnPine : this._scenicSprites.pine;
+        }
+      } else if (trackId === 'SUZUKA_130R') {
+        if (slot % 4 === 0) {
+          propImg = this._scenicSprites.torii;
+          propWidthM = 5.2;
+        } else {
+          propImg = slot % 3 === 1 ? this._scenicSprites.autumnPine : this._scenicSprites.sakura;
+        }
+      } else if (trackTheme === 'FUJI' || trackId === 'FUJI_1982') {
+        if (slot % 4 === 0) {
+          propImg = this._scenicSprites.torii;
+          propWidthM = 5.2;
+        } else if (slot % 2 === 1) {
+          propImg = this._scenicSprites.sakura;
+        }
+      }
+      pushSprite(dsReal, 0, propImg, side * (ROAD_HALF_WIDTH + 14.2), propWidthM, 0);
+    }
+
+    // 6B1. Animated 2.5D Cheering Fan-Club Tribunes with Waving Flags & Cheer Banners!
+    const tribunePosts = [
+      { s: 36, latM: -(ROAD_HALF_WIDTH + 10.6) },
+      { s: 92, latM: -(ROAD_HALF_WIDTH + 10.6) },
+      { s: 156, latM: -(ROAD_HALF_WIDTH + 10.6) },
+      { s: 252, latM: ROAD_HALF_WIDTH + 10.6 },
+      { s: 348, latM: -(ROAD_HALF_WIDTH + 10.6) },
+      { s: 422, latM: ROAD_HALF_WIDTH + 10.6 },
+      { s: 615, latM: -(ROAD_HALF_WIDTH + 10.6) },
+      { s: 765, latM: ROAD_HALF_WIDTH + 10.6 },
+      { s: 942, latM: -(ROAD_HALF_WIDTH + 10.6) },
+    ];
+    for (let tIdx = 0; tIdx < tribunePosts.length; tIdx++) {
+      const tp = tribunePosts[tIdx];
+      if (tunnelRange && tp.s >= tunnelRange[0] && tp.s <= tunnelRange[1]) continue;
+      const dsReal = forwardDeltaS(camS, tp.s) * mPerGameM;
+      if (dsReal > 2.2 && dsReal < 168.0) {
+        const tribWave = ((((nowSec * 6) | 0) + tIdx) & 1) === 1;
+        const tribImg = tribWave ? this._scenicSprites.fanTribune1 : this._scenicSprites.fanTribune0;
+        pushSprite(dsReal, 0, tribImg, tp.latM, 6.2, 0);
+      }
     }
 
     // 6B2. Dynamic < / << / <<< (and > / >> / >>>) 1982 Namco Corner Chevron Signs!
@@ -3361,57 +3612,174 @@ export class Retro1982Renderer {
 
     ctx.imageSmoothingEnabled = false;
 
-    // 4. Classic 1982 Namco Blimp during Pre-Race Grid & Qualifying!
-    if (showBlimp && !forceNight && this._blimpSprite) {
-      const blimpX = ((280 - yawRad * (K_YAW_PX_PER_RAD * 0.5) - nowSec * 9.5) % CLOUD_LOOP_W + CLOUD_LOOP_W) % CLOUD_LOOP_W - 96;
-      const blimpY = Math.max(28, horizonY - 56);
-      if (blimpX + 96 > 0 && blimpX < W) {
-        ctx.drawImage(this._blimpSprite, Math.round(blimpX), blimpY);
+    // 4. Circling 1982 Namco / Goodyear Blimp + Floating Colorful Festival Hot-Air Balloons (0.5x harmonic = 512px loop!)
+    if (!forceNight && this._blimpSprite) {
+      const blimpBase = ((280 - yawRad * (K_YAW_PX_PER_RAD * 0.5) - nowSec * 9.5) % CLOUD_LOOP_W + CLOUD_LOOP_W) % CLOUD_LOOP_W;
+      const blimpY = Math.max(24, horizonY - 58);
+      for (let bx = blimpBase - CLOUD_LOOP_W; bx < W; bx += CLOUD_LOOP_W) {
+        if (bx + 96 > 0 && bx < W) {
+          ctx.drawImage(this._blimpSprite, Math.round(bx), blimpY);
+        }
       }
     }
 
-    // 5. Circuit-Specific Horizon Landmarks Locked to Exact 1024px (1.0x harmonic) 2*PI Domain!
+    if (lightningFlash <= 0.22 && horizonY > 44) {
+      const balloonShift = ((yawRad * (K_YAW_PX_PER_RAD * 0.5)) % CLOUD_LOOP_W + CLOUD_LOOP_W) % CLOUD_LOOP_W;
+      const balloonThemes = [
+        ['#ff1828', '#ffd800', '#fcfcfc'],
+        ['#ff8000', '#00f5d0', '#fcfcfc'],
+        ['#ff28b8', '#54dcff', '#ffd800'],
+        ['#00e868', '#1868ff', '#fcfcfc'],
+        ['#e41828', '#00a848', '#fcfcfc'],
+      ];
+      for (let bIdx = 0; bIdx < 5; bIdx++) {
+        const bColors = balloonThemes[bIdx];
+        const driftX = nowSec * (1.2 + (bIdx & 1) * 0.6);
+        const rawBx = ((bIdx * 103 + 38 + driftX - balloonShift) % CLOUD_LOOP_W + CLOUD_LOOP_W) % CLOUD_LOOP_W;
+        const bobY = Math.round(Math.sin(nowSec * 1.9 + bIdx * 1.4) * 3);
+        const by = Math.max(16, horizonY - 46 - (bIdx % 3) * 11 + bobY);
+        for (let bx = rawBx - CLOUD_LOOP_W; bx < W + 14; bx += CLOUD_LOOP_W) {
+          if (bx > -14 && bx < W + 14) {
+            const xInt = Math.round(bx);
+            // Hot-air balloon envelope (3-stripe dome + tapered lower cone)
+            ctx.fillStyle = bColors[0];
+            ctx.fillRect(xInt - 5, by - 5, 10, 6);
+            ctx.fillStyle = bColors[1];
+            ctx.fillRect(xInt - 4, by - 7, 8, 2);
+            ctx.fillRect(xInt - 2, by - 5, 4, 6);
+            ctx.fillStyle = bColors[2];
+            ctx.fillRect(xInt - 4, by + 1, 8, 2);
+            ctx.fillStyle = bColors[0];
+            ctx.fillRect(xInt - 2, by + 3, 4, 2);
+            // Burner flame pulse
+            if ((((nowSec * 8) | 0) + bIdx) % 3 !== 0) {
+              ctx.fillStyle = '#fce400';
+              ctx.fillRect(xInt - 1, by + 5, 2, 2);
+            }
+            // Wicker gondola basket
+            ctx.fillStyle = '#8c5828';
+            ctx.fillRect(xInt - 2, by + 7, 4, 2);
+          }
+        }
+      }
+    }
+
+    // 5. Circuit-Specific Horizon Festival Landmarks Locked to Exact 1024px (1.0x harmonic) 2*PI Domain!
     const lmScroll = ((Math.round(yawRad * K_YAW_PX_PER_RAD) % PANO_LOOP_W) + PANO_LOOP_W) % PANO_LOOP_W;
 
+    const drawFestivalFerrisWheel = (centerBase, wheelRadius, hubYOffset) => {
+      for (let fwX = centerBase - PANO_LOOP_W; fwX < W + 32; fwX += PANO_LOOP_W) {
+        if (fwX > -32 && fwX < W + 32) {
+          const fwY = horizonY - hubYOffset;
+          // Illuminated A-frame support legs
+          ctx.fillStyle = '#dce8f8';
+          for (let leg = 0; leg < hubYOffset; leg++) {
+            ctx.fillRect(fwX - Math.round(leg * 0.46), fwY + leg, 2, 1);
+            ctx.fillRect(fwX + Math.round(leg * 0.46), fwY + leg, 2, 1);
+          }
+          // Rotating neon spokes & 12 rainbow gondolas
+          const gondolaPalette = ['#ff1828', '#ffd800', '#00f5d0', '#ff48b0', '#00fc58', '#ff8000'];
+          for (let g = 0; g < 12; g++) {
+            const ang = (g / 12) * Math.PI * 2 + nowSec * 0.65;
+            const cAng = Math.cos(ang);
+            const sAng = Math.sin(ang);
+            // Inner spoke dots
+            ctx.fillStyle = (g & 1) === 0 ? '#fce400' : '#54dcff';
+            ctx.fillRect(fwX + Math.round(cAng * (wheelRadius * 0.5)), fwY + Math.round(sAng * (wheelRadius * 0.5)), 1, 1);
+            // Outer gondola cabin
+            const gx = fwX + Math.round(cAng * wheelRadius);
+            const gy = fwY + Math.round(sAng * wheelRadius);
+            ctx.fillStyle = gondolaPalette[g % gondolaPalette.length];
+            ctx.fillRect(gx - 1, gy - 1, 3, 3);
+          }
+          // Center illuminated hub
+          ctx.fillStyle = '#fcfcfc';
+          ctx.fillRect(fwX - 2, fwY - 2, 4, 4);
+          ctx.fillStyle = '#ff1828';
+          ctx.fillRect(fwX - 1, fwY - 1, 2, 2);
+        }
+      }
+    };
+
+    const drawHorizonTorii = (toriiBase) => {
+      for (let tx = toriiBase - PANO_LOOP_W; tx < W + 28; tx += PANO_LOOP_W) {
+        if (tx > -28 && tx < W + 28) {
+          const ty = horizonY - 18;
+          ctx.fillStyle = '#18202c';
+          ctx.fillRect(tx - 12, ty, 24, 2);
+          ctx.fillStyle = '#e41820';
+          ctx.fillRect(tx - 11, ty + 2, 22, 2);
+          ctx.fillRect(tx - 10, ty + 6, 20, 2);
+          ctx.fillRect(tx - 7, ty + 2, 3, 16);
+          ctx.fillRect(tx + 4, ty + 2, 3, 16);
+          ctx.fillStyle = '#fce400';
+          ctx.fillRect(tx - 1, ty + 3, 2, 3);
+        }
+      }
+    };
+
+    const drawSakuraPetals = () => {
+      const petalShift = ((yawRad * (K_YAW_PX_PER_RAD * 0.5)) % CLOUD_LOOP_W + CLOUD_LOOP_W) % CLOUD_LOOP_W;
+      for (let p = 0; p < 18; p++) {
+        const pxBase = ((p * 59 + nowSec * 14 - petalShift) % CLOUD_LOOP_W + CLOUD_LOOP_W) % CLOUD_LOOP_W;
+        const py = 12 + ((p * 19 + Math.round(nowSec * 9)) % Math.max(16, horizonY - 16));
+        ctx.fillStyle = (p & 1) === 0 ? '#ffd0e4' : '#ff80b8';
+        for (let px = pxBase - CLOUD_LOOP_W; px < W; px += CLOUD_LOOP_W) {
+          if (px >= 0 && px < W) {
+            ctx.fillRect(Math.round(px), py, 2, 1);
+          }
+        }
+      }
+    };
+
     if (trackId === 'MONACO_HARBOR') {
-      ctx.fillStyle = '#0848b8';
-      ctx.fillRect(0, horizonY - 6, W, 4);
-      ctx.fillStyle = '#1878e8';
+      // Sparkling Turquoise-Azure Mediterranean Sea + Sun-Glint Ripples + Fleet of Superyachts!
+      ctx.fillStyle = '#0078d4';
+      ctx.fillRect(0, horizonY - 8, W, 3);
+      ctx.fillStyle = '#00a8e8';
+      ctx.fillRect(0, horizonY - 5, W, 3);
+      ctx.fillStyle = '#18dcff';
       ctx.fillRect(0, horizonY - 2, W, 3);
+      // Animated sun-glint water sparkles
+      for (let sIdx = 0; sIdx < 24; sIdx++) {
+        const glintBase = ((sIdx * 43 + ((nowSec * 12) | 0) - lmScroll) % PANO_LOOP_W + PANO_LOOP_W) % PANO_LOOP_W;
+        const glintY = horizonY - 7 + (sIdx % 6);
+        ctx.fillStyle = (sIdx & 1) === 0 ? '#fcfcfc' : '#fce400';
+        for (let gx = glintBase - PANO_LOOP_W; gx < W; gx += PANO_LOOP_W) {
+          if (gx >= 0 && gx < W) ctx.fillRect(gx, glintY, 3, 1);
+        }
+      }
+      // Luxury Superyachts with Party Canopies & Golden Deck Lights
+      const canopyColors = ['#ff1828', '#00f5d0', '#ff8000', '#ffd800', '#ff48b0', '#1868fc'];
       for (let yIdx = 0; yIdx < 6; yIdx++) {
         const baseYx = ((yIdx * 170 + 64 - lmScroll) % PANO_LOOP_W + PANO_LOOP_W) % PANO_LOOP_W;
         for (let yx = baseYx - PANO_LOOP_W; yx < W; yx += PANO_LOOP_W) {
-          if (yx > -30 && yx < W) {
+          if (yx > -34 && yx < W) {
+            // Superyacht multi-deck white hull
             ctx.fillStyle = '#fcfcfc';
-            ctx.fillRect(yx, horizonY - 9, 22, 4);
-            ctx.fillRect(yx + 4, horizonY - 12, 12, 3);
-            ctx.fillStyle = '#1868fc';
-            ctx.fillRect(yx + 5, horizonY - 11, 9, 1);
+            ctx.fillRect(yx, horizonY - 10, 26, 4);
+            ctx.fillRect(yx + 4, horizonY - 14, 16, 4);
+            ctx.fillRect(yx + 7, horizonY - 17, 10, 3);
+            // Gold hull trim stripe
+            ctx.fillStyle = '#ffd800';
+            ctx.fillRect(yx + 1, horizonY - 8, 24, 1);
+            // Azure tinted salon windows
+            ctx.fillStyle = '#00d8ff';
+            ctx.fillRect(yx + 5, horizonY - 12, 12, 1);
+            // Aft party canopy & radar mast
+            ctx.fillStyle = canopyColors[yIdx % canopyColors.length];
+            ctx.fillRect(yx + 16, horizonY - 16, 7, 2);
             ctx.fillStyle = '#fce400';
-            ctx.fillRect(yx + 10, horizonY - 17, 1, 5);
+            ctx.fillRect(yx + 11, horizonY - 22, 1, 5);
           }
         }
       }
     } else if (trackId === 'SUZUKA_130R') {
-      const fwBase = ((340 - lmScroll) % PANO_LOOP_W + PANO_LOOP_W) % PANO_LOOP_W;
-      for (let fwX = fwBase - PANO_LOOP_W; fwX < W + 24; fwX += PANO_LOOP_W) {
-        if (fwX > -24 && fwX < W + 24) {
-          const fwY = horizonY - 22;
-          ctx.fillStyle = '#dce8f8';
-          for (let leg = 0; leg < 20; leg++) {
-            ctx.fillRect(fwX - Math.round(leg * 0.45), fwY + leg, 2, 1);
-            ctx.fillRect(fwX + Math.round(leg * 0.45), fwY + leg, 2, 1);
-          }
-          for (let g = 0; g < 12; g++) {
-            const ang = (g / 12) * Math.PI * 2 + nowSec * 0.55;
-            const gx = fwX + Math.round(Math.cos(ang) * 16);
-            const gy = fwY + Math.round(Math.sin(ang) * 16);
-            ctx.fillStyle = g % 3 === 0 ? '#00fc58' : (g % 3 === 1 ? '#fce400' : '#ff28a8');
-            ctx.fillRect(gx - 1, gy - 1, 3, 3);
-          }
-        }
-      }
+      drawFestivalFerrisWheel(((340 - lmScroll) % PANO_LOOP_W + PANO_LOOP_W) % PANO_LOOP_W, 17, 23);
+      drawHorizonTorii(((690 - lmScroll) % PANO_LOOP_W + PANO_LOOP_W) % PANO_LOOP_W);
+      drawSakuraPetals();
     } else if (trackId === 'SILVERSTONE_GP') {
+      // Iconic Silverstone Wing Pit Complex + Festival Ferris Wheel
       const twBase = ((680 - lmScroll) % PANO_LOOP_W + PANO_LOOP_W) % PANO_LOOP_W;
       for (let twX = twBase - PANO_LOOP_W; twX < W + 40; twX += PANO_LOOP_W) {
         if (twX > -50 && twX < W + 20) {
@@ -3427,6 +3795,90 @@ export class Retro1982Renderer {
           ctx.fillRect(twX + 20, horizonY - 7, 24, 2);
         }
       }
+      drawFestivalFerrisWheel(((240 - lmScroll) % PANO_LOOP_W + PANO_LOOP_W) % PANO_LOOP_W, 14, 19);
+
+      // RAF Red Arrows 3-Jet V-Formation Flyover Trailing Red, White & Blue Smoke Ribbons!
+      const jetBase = ((Math.round(nowSec * 36) + 520 - lmScroll) % PANO_LOOP_W + PANO_LOOP_W) % PANO_LOOP_W;
+      const jetY = Math.max(14, horizonY - 52);
+      const ribbonPalette = ['#ff1828', '#fcfcfc', '#1868ff'];
+      for (let jx = jetBase - PANO_LOOP_W; jx < W + 70; jx += PANO_LOOP_W) {
+        if (jx > -70 && jx < W + 70) {
+          for (let j = 0; j < 3; j++) {
+            const jy = jetY + (j === 1 ? -4 : 2) + j * 3;
+            const leadOffset = j === 1 ? 6 : 0;
+            // Smoke ribbon trail behind jet
+            ctx.fillStyle = ribbonPalette[j];
+            ctx.fillRect(jx - 44 + leadOffset, jy + 1, 42, 2);
+            // Hawk trainer crimson jet fuselage & delta wing
+            ctx.fillStyle = '#e41820';
+            ctx.fillRect(jx + leadOffset, jy, 6, 3);
+            ctx.fillStyle = '#fcfcfc';
+            ctx.fillRect(jx + 2 + leadOffset, jy - 1, 2, 5);
+          }
+        }
+      }
+    } else if (trackId === 'MONZA_TEMPLE') {
+      // Sea of Ferrari Rosso Red Tifosi Horizon Banners & Billowing Italian Tricolore Smoke Flare Plumes!
+      for (let fIdx = 0; fIdx < 8; fIdx++) {
+        const fBase = ((fIdx * 128 + 48 - lmScroll) % PANO_LOOP_W + PANO_LOOP_W) % PANO_LOOP_W;
+        const flareHex = fIdx % 3 === 0 ? '#ff1828' : (fIdx % 3 === 1 ? '#fcfcfc' : '#00c850');
+        for (let fx = fBase - PANO_LOOP_W; fx < W + 24; fx += PANO_LOOP_W) {
+          if (fx > -24 && fx < W + 24) {
+            // Tifosi horizon tribune banner
+            ctx.fillStyle = '#e41820';
+            ctx.fillRect(fx - 10, horizonY - 6, 20, 6);
+            ctx.fillStyle = '#ffd800';
+            ctx.fillRect(fx - 8, horizonY - 4, 16, 2);
+            // Rising smoke plume puffs
+            for (let p = 0; p < 4; p++) {
+              const sway = Math.round(Math.sin(nowSec * 3.2 + fIdx + p * 0.9) * (2 + p));
+              const pw = 6 + p * 3;
+              const ph = 4 + p;
+              ctx.fillStyle = p === 0 ? '#ff2828' : flareHex;
+              ctx.fillRect(fx + sway - (pw >> 1), horizonY - 10 - p * 4, pw, ph);
+            }
+          }
+        }
+      }
+    } else if (trackId === 'VEGAS_NEON') {
+      // Glowing 3D LED Vegas Sphere (Exosphere) + Bellagio Dancing Water Fountains!
+      const spBase = ((420 - lmScroll) % PANO_LOOP_W + PANO_LOOP_W) % PANO_LOOP_W;
+      for (let sx = spBase - PANO_LOOP_W; sx < W + 32; sx += PANO_LOOP_W) {
+        if (sx > -32 && sx < W + 32) {
+          const sy = horizonY - 15;
+          const R = 15;
+          for (let dy = -R; dy <= R; dy++) {
+            const hw = Math.round(Math.sqrt(Math.max(0, R * R - dy * dy)));
+            const ringPulse = ((dy + ((nowSec * 10) | 0)) & 3);
+            ctx.fillStyle = ringPulse === 0 ? '#ff28b8' : (ringPulse === 1 ? '#00f4ff' : (ringPulse === 2 ? '#fce400' : '#6818f8'));
+            ctx.fillRect(sx - hw, sy + dy, hw * 2, 1);
+          }
+          // Exosphere glowing eyes & smile
+          ctx.fillStyle = '#fcfcfc';
+          ctx.fillRect(sx - 6, sy - 4, 3, 3);
+          ctx.fillRect(sx + 3, sy - 4, 3, 3);
+          ctx.fillRect(sx - 5, sy + 3, 10, 2);
+        }
+      }
+      // Bellagio Dancing Fountains
+      const fnBase = ((780 - lmScroll) % PANO_LOOP_W + PANO_LOOP_W) % PANO_LOOP_W;
+      for (let fx = fnBase - PANO_LOOP_W; fx < W + 48; fx += PANO_LOOP_W) {
+        if (fx > -48 && fx < W + 48) {
+          for (let j = -5; j <= 5; j++) {
+            const jx = fx + j * 6;
+            const jetH = Math.max(4, Math.round(12 + Math.sin(nowSec * 5.5 + j * 0.7) * 10));
+            ctx.fillStyle = (j & 1) === 0 ? '#00f4ff' : '#fce400';
+            ctx.fillRect(jx, horizonY - jetH, 2, jetH);
+            ctx.fillStyle = '#fcfcfc';
+            ctx.fillRect(jx - 1, horizonY - jetH - 2, 4, 2);
+          }
+        }
+      }
+    } else {
+      // FUJI_1982 Default: Festival Ferris Wheel + Crimson Shinto Torii Gate + Drifting Pink Sakura Petals!
+      drawFestivalFerrisWheel(((260 - lmScroll) % PANO_LOOP_W + PANO_LOOP_W) % PANO_LOOP_W, 15, 20);
+      drawHorizonTorii(((620 - lmScroll) % PANO_LOOP_W + PANO_LOOP_W) % PANO_LOOP_W);
+      drawSakuraPetals();
     }
   }
 
